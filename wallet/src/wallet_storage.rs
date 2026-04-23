@@ -309,8 +309,7 @@ mod tests_wallet_storage {
 
         let (wallet_address, storage) = setup();
         let mnemonic =
-            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(test_data::ANVIL_MNEMONIC))
-                .unwrap();
+            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(test_data::ANVIL_MNEMONIC)).unwrap();
         let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
         let chain_hash: u64 = 777;
         let chain_id: u64 = 1;
@@ -331,7 +330,7 @@ mod tests_wallet_storage {
         let make_v1 = |acc: &AccountV2, index: usize| AccountV1 {
             name: acc.name.clone(),
             account_type: AccountType::Bip39HD(index),
-            addr: acc.addr,
+            addr: acc.addr.clone(),
             pub_key: PubKey::Secp256k1Keccak256([0u8; 33]),
             chain_hash,
             chain_id,
@@ -378,7 +377,11 @@ mod tests_wallet_storage {
         let accounts = bip_accounts.get(&DerivationPath::BIP84_PURPOSE).unwrap();
         assert_eq!(accounts.len(), 3);
 
-        for (i, (v2_acc, v1_acc)) in accounts.iter().zip([&acc0_v2, &acc1_v2, &acc2_v2]).enumerate() {
+        for (i, (v2_acc, v1_acc)) in accounts
+            .iter()
+            .zip([&acc0_v2, &acc1_v2, &acc2_v2])
+            .enumerate()
+        {
             assert_eq!(v2_acc.name, v1_acc.name);
             assert_eq!(v2_acc.addr, v1_acc.addr);
             assert_eq!(v2_acc.account_type, AccountType::Bip39HD(i));

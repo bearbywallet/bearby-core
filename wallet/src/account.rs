@@ -149,7 +149,7 @@ mod tests {
     use crypto::slip44;
     use pqbip39::mnemonic::Mnemonic;
     use rand::Rng;
-    use secrecy::{ExposeSecret, SecretString};
+    use secrecy::SecretString;
 
     #[test]
     fn test_from_zil_sk_ser() {
@@ -159,8 +159,7 @@ mod tests {
             .parse()
             .unwrap();
         let name = "Account 0";
-        let acc =
-            AccountV2::from_secret_key(sk, name.to_string(), 0, slip44::ZILLIQA).unwrap();
+        let acc = AccountV2::from_secret_key(sk, name.to_string(), 0, slip44::ZILLIQA).unwrap();
 
         for _ in 0..100 {
             let mut nft_addr = [0u8; ADDR_LEN];
@@ -225,13 +224,9 @@ mod tests {
             bitcoin::AddressType::P2wpkh,
         ));
 
-        let acc_segwit = AccountV2::from_secret_key(
-            sk_segwit,
-            "Bitcoin SegWit".to_string(),
-            0,
-            slip44::BITCOIN,
-        )
-        .unwrap();
+        let acc_segwit =
+            AccountV2::from_secret_key(sk_segwit, "Bitcoin SegWit".to_string(), 0, slip44::BITCOIN)
+                .unwrap();
 
         let addr_str = acc_segwit.addr.auto_format();
         assert!(addr_str.starts_with("bc1q"));
@@ -242,13 +237,9 @@ mod tests {
             bitcoin::AddressType::P2pkh,
         ));
 
-        let acc_legacy = AccountV2::from_secret_key(
-            sk_legacy,
-            "Bitcoin Legacy".to_string(),
-            0,
-            slip44::BITCOIN,
-        )
-        .unwrap();
+        let acc_legacy =
+            AccountV2::from_secret_key(sk_legacy, "Bitcoin Legacy".to_string(), 0, slip44::BITCOIN)
+                .unwrap();
 
         let addr_legacy_str = acc_legacy.addr.auto_format();
         assert!(addr_legacy_str.starts_with("1"));

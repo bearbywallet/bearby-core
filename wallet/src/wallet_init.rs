@@ -194,10 +194,11 @@ impl WalletInit for Wallet {
         let cipher_entropy = config
             .keychain
             .encrypt(mnemonic_str, &config.settings.cipher_orders)?;
-        let mnemonic_seed_secret = params
-            .mnemonic
-            .to_seed(&SecretString::from(params.passphrase))?;
-        let mnemonic_seed: [u8; 64] = *mnemonic_seed_secret.expose_secret();
+        let mnemonic_seed_secret = Arc::new(
+            params
+                .mnemonic
+                .to_seed(&SecretString::from(params.passphrase))?,
+        );
         let cipher_proof = config
             .keychain
             .make_proof(&params.proof, &config.settings.cipher_orders)?;
@@ -227,12 +228,12 @@ impl WalletInit for Wallet {
             let slip44 = chain.slip_44;
             let network = chain.bitcoin_network();
             for &bip in crypto::bip49::DerivationPath::supported_bips(slip44) {
-                let seed = mnemonic_seed;
                 let idxs: Vec<(usize, String)> = params
                     .indexes
                     .iter()
                     .map(|(i, name)| (*i, name.clone()))
                     .collect();
+                let seed = Arc::clone(&mnemonic_seed_secret);
                 handles.push(std::thread::spawn(
                     move || -> std::result::Result<(u32, u32, Vec<AccountV2>), WalletErrors> {
                         let mut accounts = Vec::with_capacity(idxs.len());

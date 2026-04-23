@@ -8,7 +8,7 @@ use errors::wallet::WalletErrors;
 use network::{common::Provider, provider::NetworkProvider};
 use pqbip39::mnemonic::Mnemonic;
 use proto::{address::Address, keypair::KeyPair, secret_key::SecretKey, signature::Signature};
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 
 pub trait WalletCrypto {
     type Error;
@@ -69,7 +69,6 @@ impl WalletCrypto for Wallet {
                     .ok_or(WalletErrors::ProviderNotExist(data.chain_hash))?;
                 let m = self.reveal_mnemonic(seed_bytes)?;
                 let seed_secret = m.to_seed(&SecretString::from(passphrase.unwrap_or("")))?;
-                let seed: [u8; 64] = *seed_secret.expose_secret();
                 let hd_index = account.account_type.value();
                 let (bip_purpose, network) = match &account.addr {
                     Address::Secp256k1Bitcoin(_) => {
@@ -88,7 +87,7 @@ impl WalletCrypto for Wallet {
                     bip_purpose,
                     network,
                 );
-                let mut keypair = KeyPair::from_bip39_seed(&seed, &bip_path)?;
+                let mut keypair = KeyPair::from_bip39_seed(&seed_secret, &bip_path)?;
 
                 match account.addr {
                     Address::Secp256k1Sha256(_) => {
@@ -173,6 +172,7 @@ mod tests {
     use crypto::{bip49::DerivationPath, slip44};
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
+    use secrecy::ExposeSecret;
     use storage::LocalStorage;
     use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
 

@@ -9,8 +9,9 @@ use crypto::slip44;
 use errors::wallet::WalletErrors;
 use proto::{pubkey::PubKey, secret_key::SecretKey};
 use rpc::network_config::ChainConfig;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 pub trait AccountManagement {
     type Error;
@@ -191,8 +192,8 @@ impl AccountManagement for Wallet {
             }
             WalletTypes::SecretPhrase(_) => {
                 let m = self.reveal_mnemonic(seed_bytes)?;
-                let mnemonic_seed_secret = m.to_seed(&SecretString::from(passphrase))?;
-                let mnemonic_seed: [u8; 64] = *mnemonic_seed_secret.expose_secret();
+                let mnemonic_seed_secret =
+                    Arc::new(m.to_seed(&SecretString::from(passphrase))?);
                 let eff_derivation_type = if target_slip44 == slip44::SOLANA {
                     2
                 } else {
@@ -201,7 +202,7 @@ impl AccountManagement for Wallet {
 
                 let mut handles = Vec::new();
                 for (bip, missing) in missing_per_bip {
-                    let seed = mnemonic_seed;
+                    let seed = Arc::clone(&mnemonic_seed_secret);
                     let net = network;
                     handles.push(std::thread::spawn(
                         move || -> std::result::Result<(u32, Vec<AccountV2>), WalletErrors> {
@@ -243,7 +244,6 @@ impl AccountManagement for Wallet {
         let mut data = self.get_wallet_data()?;
         let m = self.reveal_mnemonic(seed_bytes)?;
         let mnemonic_seed_secret = m.to_seed(&SecretString::from(passphrase))?;
-        let mnemonic_seed: [u8; 64] = *mnemonic_seed_secret.expose_secret();
         let eff_derivation_type = if data.slip44 == slip44::SOLANA {
             2
         } else {
@@ -266,7 +266,7 @@ impl AccountManagement for Wallet {
             return Err(WalletErrors::ExistsAccount(bip49.get_index()));
         }
 
-        let hd_account = AccountV2::from_hd(&mnemonic_seed, name, &bip49)?;
+        let hd_account = AccountV2::from_hd(&mnemonic_seed_secret, name, &bip49)?;
 
         data.slip44_accounts
             .get_mut(&data.slip44)

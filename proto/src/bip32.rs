@@ -6,6 +6,7 @@ use k256::{
     elliptic_curve::{bigint::U256, scalar::FromUintUnchecked},
     SecretKey,
 };
+use secrecy::{ExposeSecret, SecretBox};
 use sha2::Sha512;
 use std::str::FromStr;
 
@@ -56,11 +57,13 @@ impl FromStr for ChildNumber {
     }
 }
 
-fn derive_master_key(seed: &[u8]) -> Result<(SecretKey, [u8; SHA256_SIZE])> {
+type ChainCode = SecretBox<[u8; SHA256_SIZE]>;
+
+fn derive_master_key(seed: &SecretBox<[u8; 64]>) -> Result<(SecretKey, ChainCode)> {
     let mut hmac = Hmac::<Sha512>::new_from_slice(BITCOIN_SEED)
         .map_err(|e| Bip329Errors::HmacError(e.to_string()))?;
 
-    hmac.update(seed);
+    hmac.update(seed.expose_secret());
 
     let result = hmac.finalize().into_bytes();
     let (key_bytes, chain_code) = result.split_at(32);
@@ -70,11 +73,11 @@ fn derive_master_key(seed: &[u8]) -> Result<(SecretKey, [u8; SHA256_SIZE])> {
 
     Ok((
         SecretKey::from_slice(key_bytes).map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?,
-        chain_code_arr,
+        SecretBox::init_with(|| chain_code_arr),
     ))
 }
 
-pub fn derive_private_key(seed: &[u8], path: &str) -> Result<SecretKey> {
+pub fn derive_private_key(seed: &SecretBox<[u8; 64]>, path: &str) -> Result<SecretKey> {
     if !path.starts_with("m/") {
         return Err(Bip329Errors::InvalidPath(
             "Path must start with 'm/'".to_string(),
@@ -90,7 +93,8 @@ pub fn derive_private_key(seed: &[u8], path: &str) -> Result<SecretKey> {
         }
 
         let child_number = ChildNumber::from_str(part)?;
-        let (child_key, child_chain) = derive_child_key(&key, &chain_code, &child_number)?;
+        let (child_key, child_chain) =
+            derive_child_key(&key, chain_code.expose_secret(), &child_number)?;
         key = child_key;
         chain_code = child_chain;
     }
@@ -102,7 +106,7 @@ fn derive_child_key(
     parent_key: &SecretKey,
     chain_code: &[u8; SHA256_SIZE],
     child: &ChildNumber,
-) -> Result<(SecretKey, [u8; SHA256_SIZE])> {
+) -> Result<(SecretKey, ChainCode)> {
     let mut hmac = Hmac::<Sha512>::new_from_slice(chain_code)
         .map_err(|e| Bip329Errors::HmacError(e.to_string()))?;
 
@@ -126,22 +130,22 @@ fn derive_child_key(
     let parent_sk = k256::Scalar::from_uint_unchecked(parent_scalar);
 
     let sum = child_sk + parent_sk;
-    let result = sum.to_bytes();
+    let sum_bytes = sum.to_bytes();
 
     let mut chain_code_arr = [0u8; 32];
     chain_code_arr.copy_from_slice(new_chain_code);
 
     Ok((
-        SecretKey::from_slice(&result).map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?,
-        chain_code_arr,
+        SecretKey::from_slice(&sum_bytes).map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?,
+        SecretBox::init_with(|| chain_code_arr),
     ))
 }
 
-fn derive_ed25519_master_key(seed: &[u8]) -> Result<(SigningKey, [u8; SHA256_SIZE])> {
+fn derive_ed25519_master_key(seed: &SecretBox<[u8; 64]>) -> Result<(SigningKey, ChainCode)> {
     let mut hmac = Hmac::<Sha512>::new_from_slice(ED25519_SEED)
         .map_err(|e| Bip329Errors::HmacError(e.to_string()))?;
 
-    hmac.update(seed);
+    hmac.update(seed.expose_secret());
 
     let result = hmac.finalize().into_bytes();
     let (key_bytes, chain_code) = result.split_at(32);
@@ -155,14 +159,14 @@ fn derive_ed25519_master_key(seed: &[u8]) -> Result<(SigningKey, [u8; SHA256_SIZ
             .map_err(|_| Bip329Errors::InvalidKey("Invalid ed25519 key length".to_string()))?,
     );
 
-    Ok((signing_key, chain_code_arr))
+    Ok((signing_key, SecretBox::init_with(|| chain_code_arr)))
 }
 
 fn derive_ed25519_child_key(
     parent_key: &SigningKey,
     chain_code: &[u8; SHA256_SIZE],
     child: &ChildNumber,
-) -> Result<(SigningKey, [u8; SHA256_SIZE])> {
+) -> Result<(SigningKey, ChainCode)> {
     if !child.is_hardened() {
         return Err(Bip329Errors::InvalidChild(
             "Ed25519 only supports hardened derivation".to_string(),
@@ -188,10 +192,10 @@ fn derive_ed25519_child_key(
             .map_err(|_| Bip329Errors::InvalidKey("Invalid ed25519 key length".to_string()))?,
     );
 
-    Ok((signing_key, chain_code_arr))
+    Ok((signing_key, SecretBox::init_with(|| chain_code_arr)))
 }
 
-pub fn derive_ed25519_key(seed: &[u8], path: &str) -> Result<SigningKey> {
+pub fn derive_ed25519_key(seed: &SecretBox<[u8; 64]>, path: &str) -> Result<SigningKey> {
     if !path.starts_with("m/") {
         return Err(Bip329Errors::InvalidPath(
             "Path must start with 'm/'".to_string(),
@@ -207,7 +211,8 @@ pub fn derive_ed25519_key(seed: &[u8], path: &str) -> Result<SigningKey> {
         }
 
         let child_number = ChildNumber::from_str(part)?;
-        let (child_key, child_chain) = derive_ed25519_child_key(&key, &chain_code, &child_number)?;
+        let (child_key, child_chain) =
+            derive_ed25519_child_key(&key, chain_code.expose_secret(), &child_number)?;
         key = child_key;
         chain_code = child_chain;
     }
@@ -221,7 +226,7 @@ mod tests {
     use config::bip39::EN_WORDS;
     use crypto::bip49::DerivationPath;
     use pqbip39::mnemonic::Mnemonic;
-    use secrecy::{ExposeSecret, SecretBox, SecretString};
+    use secrecy::{SecretBox, SecretString};
 
     #[test]
     fn bip39_to_address() {
@@ -238,7 +243,7 @@ mod tests {
             DerivationPath::BIP44_PURPOSE,
             None,
         );
-        let account = derive_private_key(seed.expose_secret(), &derivation_path.get_path()).unwrap();
+        let account = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
 
         assert_eq!(
             expected_secret_key.to_vec(),
@@ -264,7 +269,7 @@ mod tests {
             DerivationPath::BIP44_PURPOSE,
             Some(bitcoin::Network::Bitcoin),
         );
-        let btc_secret_key = derive_private_key(seed.expose_secret(), &derivation_path.get_path()).unwrap();
+        let btc_secret_key = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
 
         let sk_bytes = btc_secret_key.to_bytes();
         let keypair = KeyPair::from_secret_key(SecretKey::Secp256k1Bitcoin((
@@ -308,7 +313,7 @@ mod tests {
             DerivationPath::BIP84_PURPOSE,
             Some(bitcoin::Network::Bitcoin),
         );
-        let btc_secret_key = derive_private_key(seed.expose_secret(), &derivation_path.get_path()).unwrap();
+        let btc_secret_key = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
 
         let sk_bytes = btc_secret_key.to_bytes();
         let keypair = KeyPair::from_secret_key(SecretKey::Secp256k1Bitcoin((
@@ -498,7 +503,7 @@ mod tests {
         let vectors = get_solana_test_vectors();
         let tv = &vectors[0];
 
-        let signing_key = derive_ed25519_key(seed.expose_secret(), tv.path).unwrap();
+        let signing_key = derive_ed25519_key(&seed, tv.path).unwrap();
         let pk = signing_key.verifying_key();
 
         assert_eq!(
@@ -527,7 +532,7 @@ mod tests {
         let vectors = get_solana_test_vectors();
 
         for tv in &vectors[1..11] {
-            let signing_key = derive_ed25519_key(seed.expose_secret(), tv.path).unwrap();
+            let signing_key = derive_ed25519_key(&seed, tv.path).unwrap();
             let pk = signing_key.verifying_key();
 
             assert_eq!(
@@ -557,7 +562,7 @@ mod tests {
         let vectors = get_solana_test_vectors();
 
         for tv in &vectors[11..] {
-            let signing_key = derive_ed25519_key(seed.expose_secret(), tv.path).unwrap();
+            let signing_key = derive_ed25519_key(&seed, tv.path).unwrap();
             let pk = signing_key.verifying_key();
 
             assert_eq!(
@@ -584,7 +589,7 @@ mod tests {
     #[test]
     fn solana_ed25519_rejects_non_hardened() {
         let seed = solana_seed();
-        let result = derive_ed25519_key(seed.expose_secret(), "m/44'/501'/0");
+        let result = derive_ed25519_key(&seed, "m/44'/501'/0");
         assert!(result.is_err());
     }
 }
