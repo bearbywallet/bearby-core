@@ -23,6 +23,7 @@ bitcoin.workspace = true
 bincode.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+secrecy.workspace = true
 
 crypto = { path = "../crypto" }
 config = { path = "../config" }

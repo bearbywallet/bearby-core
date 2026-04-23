@@ -535,6 +535,7 @@ mod tests_keypair {
     use super::*;
     use config::bip39::EN_WORDS;
     use pqbip39::mnemonic::Mnemonic;
+    use secrecy::{ExposeSecret, SecretString};
     use serde_json::json;
     use std::borrow::Cow;
 
@@ -643,8 +644,8 @@ mod tests_keypair {
     fn test_bip39_derivation_bitcoin() {
         use test_data::ANVIL_MNEMONIC;
 
-        let m = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
-        let seed = m.to_seed("").unwrap();
+        let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let seed = m.to_seed(&SecretString::from("")).unwrap();
 
         let btc_bip84_path = DerivationPath::new(
             slip44::BITCOIN,
@@ -652,7 +653,7 @@ mod tests_keypair {
             DerivationPath::BIP84_PURPOSE,
             Some(bitcoin::Network::Bitcoin),
         );
-        let btc_key_pair = KeyPair::from_bip39_seed(&seed, &btc_bip84_path).unwrap();
+        let btc_key_pair = KeyPair::from_bip39_seed(seed.expose_secret(), &btc_bip84_path).unwrap();
         let btc_addr = btc_key_pair.get_addr().unwrap();
 
         assert!(matches!(btc_key_pair, KeyPair::Secp256k1Bitcoin(_)));
@@ -667,7 +668,7 @@ mod tests_keypair {
             DerivationPath::BIP44_PURPOSE,
             Some(bitcoin::Network::Bitcoin),
         );
-        let btc_legacy_key_pair = KeyPair::from_bip39_seed(&seed, &btc_bip44_path).unwrap();
+        let btc_legacy_key_pair = KeyPair::from_bip39_seed(seed.expose_secret(), &btc_bip44_path).unwrap();
         let btc_legacy_addr = btc_legacy_key_pair.get_addr().unwrap();
         let btc_legacy_addr_str = btc_legacy_addr.auto_format();
         assert!(btc_legacy_addr_str.starts_with("1"));
@@ -677,8 +678,8 @@ mod tests_keypair {
     fn test_bip39_derivation() {
         use test_data::ANVIL_MNEMONIC;
 
-        let m = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
-        let seed = m.to_seed("").unwrap();
+        let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let seed = m.to_seed(&SecretString::from("")).unwrap();
 
         assert_eq!(
             [
@@ -687,15 +688,15 @@ mod tests_keypair {
                 163, 174, 226, 76, 171, 67, 248, 14, 60, 69, 56, 8, 125, 112, 252, 130, 78, 171,
                 186, 213, 150, 162, 60, 151, 182, 238, 131, 34, 204, 192,
             ],
-            seed
+            *seed.expose_secret()
         );
 
         let zil_path = DerivationPath::new(slip44::ZILLIQA, crypto::bip49::DerivationType::AddressIndex(0, 0, 0), DerivationPath::BIP44_PURPOSE, None);
         let eth_path =
             DerivationPath::new(slip44::ETHEREUM, crypto::bip49::DerivationType::AddressIndex(0, 0, 0), DerivationPath::BIP44_PURPOSE, None);
 
-        let zil_key_pair = KeyPair::from_bip39_seed(&seed, &zil_path).unwrap();
-        let eth_key_pair = KeyPair::from_bip39_seed(&seed, &eth_path).unwrap();
+        let zil_key_pair = KeyPair::from_bip39_seed(seed.expose_secret(), &zil_path).unwrap();
+        let eth_key_pair = KeyPair::from_bip39_seed(seed.expose_secret(), &eth_path).unwrap();
 
         let addr_eth = eth_key_pair.get_addr().unwrap();
         let addr_zil = zil_key_pair.get_addr().unwrap();
@@ -1290,11 +1291,11 @@ mod tests_keypair {
     fn test_tron_bip39_derivation() {
         use test_data::ANVIL_MNEMONIC;
 
-        let m = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
-        let seed = m.to_seed("").unwrap();
+        let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let seed = m.to_seed(&SecretString::from("")).unwrap();
 
         let tron_path = DerivationPath::new(slip44::TRON, crypto::bip49::DerivationType::AddressIndex(0, 0, 0), DerivationPath::BIP44_PURPOSE, None);
-        let tron_key_pair = KeyPair::from_bip39_seed(&seed, &tron_path).unwrap();
+        let tron_key_pair = KeyPair::from_bip39_seed(seed.expose_secret(), &tron_path).unwrap();
         let tron_addr = tron_key_pair.get_addr().unwrap();
 
         assert!(matches!(tron_key_pair, KeyPair::Secp256k1Tron(_)));
@@ -1340,15 +1341,15 @@ mod tests_keypair {
     fn test_tron_multiple_addresses_from_mnemonic() {
         use test_data::ANVIL_MNEMONIC;
 
-        let m = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
-        let seed = m.to_seed("").unwrap();
+        let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let seed = m.to_seed(&SecretString::from("")).unwrap();
 
         let expected_addresses = test_data::tron_addresses::ALL;
 
         for (index, expected_addr) in expected_addresses.iter().enumerate() {
             let tron_path =
                 DerivationPath::new(slip44::TRON, crypto::bip49::DerivationType::AddressIndex(0, 0, index), DerivationPath::BIP44_PURPOSE, None);
-            let keypair = KeyPair::from_bip39_seed(&seed, &tron_path).unwrap();
+            let keypair = KeyPair::from_bip39_seed(seed.expose_secret(), &tron_path).unwrap();
             let addr = keypair.get_addr().unwrap();
             let derived_addr = addr.auto_format();
 
@@ -1378,8 +1379,8 @@ mod tests_keypair {
     #[test]
     fn test_solana_keypair_from_bip39() {
         let phrase = "test test test test test test test test test test test junk";
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, phrase).unwrap();
-        let seed = mnemonic.to_seed("").unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(phrase)).unwrap();
+        let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
 
         let vectors: &[(crypto::bip49::DerivationType, &str)] = &[
             (crypto::bip49::DerivationType::Root, "9tKf8Q98FsGKJiM4oqMnTxmYH3fU2qJzSwzc76vgzyBT"),
@@ -1389,7 +1390,7 @@ mod tests_keypair {
 
         for (derivation, expected_addr) in vectors {
             let path = DerivationPath::new(slip44::SOLANA, *derivation, DerivationPath::BIP44_PURPOSE, None);
-            let keypair = KeyPair::from_bip39_seed(&seed, &path).unwrap();
+            let keypair = KeyPair::from_bip39_seed(seed.expose_secret(), &path).unwrap();
             assert!(matches!(keypair, KeyPair::Ed25519Solana(_)));
             let addr = keypair.get_addr().unwrap().auto_format();
             assert_eq!(addr, *expected_addr);
@@ -1431,11 +1432,11 @@ mod tests_keypair {
     #[test]
     fn test_solana_from_secret_key() {
         let phrase = "test test test test test test test test test test test junk";
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, phrase).unwrap();
-        let seed = mnemonic.to_seed("").unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(phrase)).unwrap();
+        let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
 
         let path = DerivationPath::new(slip44::SOLANA, crypto::bip49::DerivationType::Account(0), DerivationPath::BIP44_PURPOSE, None);
-        let keypair = KeyPair::from_bip39_seed(&seed, &path).unwrap();
+        let keypair = KeyPair::from_bip39_seed(seed.expose_secret(), &path).unwrap();
 
         let sk = keypair.get_secretkey().unwrap();
         let keypair2 = KeyPair::from_secret_key(sk).unwrap();

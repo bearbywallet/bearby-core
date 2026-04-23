@@ -221,6 +221,7 @@ mod tests {
     use config::bip39::EN_WORDS;
     use crypto::bip49::DerivationPath;
     use pqbip39::mnemonic::Mnemonic;
+    use secrecy::{ExposeSecret, SecretBox, SecretString};
 
     #[test]
     fn bip39_to_address() {
@@ -228,8 +229,8 @@ mod tests {
 
         let phrase = "panda eyebrow bullet gorilla call smoke muffin taste mesh discover soft ostrich alcohol speed nation flash devote level hobby quick inner drive ghost inside";
         let expected_secret_key = b"\xff\x1e\x68\xeb\x7b\xf2\xf4\x86\x51\xc4\x7e\xf0\x17\x7e\xb8\x15\x85\x73\x22\x25\x7c\x58\x94\xbb\x4c\xfd\x11\x76\xc9\x98\x93\x14";
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, phrase).unwrap();
-        let seed = mnemonic.to_seed("").unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(phrase)).unwrap();
+        let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
 
         let derivation_path = DerivationPath::new(
             slip44::ETHEREUM,
@@ -237,7 +238,7 @@ mod tests {
             DerivationPath::BIP44_PURPOSE,
             None,
         );
-        let account = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
+        let account = derive_private_key(seed.expose_secret(), &derivation_path.get_path()).unwrap();
 
         assert_eq!(
             expected_secret_key.to_vec(),
@@ -254,8 +255,8 @@ mod tests {
         use crypto::slip44;
 
         let phrase = "test test test test test test test test test test test junk";
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, phrase).unwrap();
-        let seed = mnemonic.to_seed("").unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(phrase)).unwrap();
+        let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
 
         let derivation_path = DerivationPath::new(
             slip44::BITCOIN,
@@ -263,7 +264,7 @@ mod tests {
             DerivationPath::BIP44_PURPOSE,
             Some(bitcoin::Network::Bitcoin),
         );
-        let btc_secret_key = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
+        let btc_secret_key = derive_private_key(seed.expose_secret(), &derivation_path.get_path()).unwrap();
 
         let sk_bytes = btc_secret_key.to_bytes();
         let keypair = KeyPair::from_secret_key(SecretKey::Secp256k1Bitcoin((
@@ -298,8 +299,8 @@ mod tests {
         use crypto::slip44;
 
         let phrase = "test test test test test test test test test test test junk";
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, phrase).unwrap();
-        let seed = mnemonic.to_seed("").unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(phrase)).unwrap();
+        let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
 
         let derivation_path = DerivationPath::new(
             slip44::BITCOIN,
@@ -307,7 +308,7 @@ mod tests {
             DerivationPath::BIP84_PURPOSE,
             Some(bitcoin::Network::Bitcoin),
         );
-        let btc_secret_key = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
+        let btc_secret_key = derive_private_key(seed.expose_secret(), &derivation_path.get_path()).unwrap();
 
         let sk_bytes = btc_secret_key.to_bytes();
         let keypair = KeyPair::from_secret_key(SecretKey::Secp256k1Bitcoin((
@@ -480,10 +481,10 @@ mod tests {
         ]
     }
 
-    fn solana_seed() -> [u8; 64] {
+    fn solana_seed() -> SecretBox<[u8; 64]> {
         let phrase = "test test test test test test test test test test test junk";
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, phrase).unwrap();
-        mnemonic.to_seed("").unwrap()
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(phrase)).unwrap();
+        mnemonic.to_seed(&SecretString::from("")).unwrap()
     }
 
     fn solana_address(signing_key: &SigningKey) -> String {
@@ -497,7 +498,7 @@ mod tests {
         let vectors = get_solana_test_vectors();
         let tv = &vectors[0];
 
-        let signing_key = derive_ed25519_key(&seed, tv.path).unwrap();
+        let signing_key = derive_ed25519_key(seed.expose_secret(), tv.path).unwrap();
         let pk = signing_key.verifying_key();
 
         assert_eq!(
@@ -526,7 +527,7 @@ mod tests {
         let vectors = get_solana_test_vectors();
 
         for tv in &vectors[1..11] {
-            let signing_key = derive_ed25519_key(&seed, tv.path).unwrap();
+            let signing_key = derive_ed25519_key(seed.expose_secret(), tv.path).unwrap();
             let pk = signing_key.verifying_key();
 
             assert_eq!(
@@ -556,7 +557,7 @@ mod tests {
         let vectors = get_solana_test_vectors();
 
         for tv in &vectors[11..] {
-            let signing_key = derive_ed25519_key(&seed, tv.path).unwrap();
+            let signing_key = derive_ed25519_key(seed.expose_secret(), tv.path).unwrap();
             let pk = signing_key.verifying_key();
 
             assert_eq!(
@@ -583,7 +584,7 @@ mod tests {
     #[test]
     fn solana_ed25519_rejects_non_hardened() {
         let seed = solana_seed();
-        let result = derive_ed25519_key(&seed, "m/44'/501'/0");
+        let result = derive_ed25519_key(seed.expose_secret(), "m/44'/501'/0");
         assert!(result.is_err());
     }
 }
