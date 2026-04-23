@@ -1,11 +1,11 @@
 use crate::account_type::AccountType;
-use config::sha::SHA512_SIZE;
 use crypto::bip49::DerivationPath;
 use errors::account::AccountErrors;
 use proto::address::Address;
 use proto::keypair::KeyPair;
 use proto::pubkey::PubKey;
 use proto::secret_key::SecretKey;
+use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
 use storage::codec::Codec;
 
@@ -94,7 +94,7 @@ impl AccountV2 {
     }
 
     pub fn from_hd(
-        mnemonic_seed: &[u8; SHA512_SIZE],
+        mnemonic_seed: &SecretBox<[u8; 64]>,
         name: String,
         bip49: &DerivationPath,
     ) -> Result<Self> {
@@ -142,86 +142,6 @@ impl AccountV2 {
     }
 }
 
-impl AccountV1 {
-    pub fn from_bytes(encoded: &[u8]) -> Result<Self> {
-        <Self as Codec>::from_bytes(encoded).map_err(|e| AccountErrors::BincodeError(e.to_string()))
-    }
-
-    pub fn from_ledger(
-        pub_key: PubKey,
-        name: String,
-        index: usize,
-        chain_hash: u64,
-        chain_id: u64,
-        slip_44: u32,
-    ) -> Result<Self> {
-        let addr = pub_key.get_addr()?;
-        let account_type = AccountType::Ledger(index);
-
-        Ok(Self {
-            slip_44,
-            chain_hash,
-            chain_id,
-            account_type,
-            addr,
-            name,
-            pub_key,
-        })
-    }
-
-    pub fn from_secret_key(
-        sk: SecretKey,
-        name: String,
-        storage_key: usize,
-        chain_hash: u64,
-        chain_id: u64,
-        slip_44: u32,
-    ) -> Result<Self> {
-        let keypair = KeyPair::from_secret_key(sk)?;
-        let pub_key = keypair.get_pubkey()?;
-        let addr = keypair.get_addr()?;
-        let account_type = AccountType::PrivateKey(storage_key);
-
-        Ok(Self {
-            chain_hash,
-            chain_id,
-            account_type,
-            addr,
-            pub_key,
-            name,
-            slip_44,
-        })
-    }
-
-    pub fn from_hd(
-        mnemonic_seed: &[u8; SHA512_SIZE],
-        name: String,
-        bip49: &DerivationPath,
-        chain_hash: u64,
-        chain_id: u64,
-        slip_44: u32,
-    ) -> Result<Self> {
-        let keypair = KeyPair::from_bip39_seed(mnemonic_seed, bip49)?;
-        let pub_key = keypair.get_pubkey()?;
-        let addr = keypair.get_addr()?;
-        let account_type = AccountType::Bip39HD(bip49.get_index());
-
-        Ok(Self {
-            chain_hash,
-            chain_id,
-            account_type,
-            addr,
-            pub_key,
-            name,
-            slip_44,
-        })
-    }
-
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        Codec::to_bytes(self).map_err(|e| AccountErrors::BincodeError(e.to_string()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,7 +160,7 @@ mod tests {
             .unwrap();
         let name = "Account 0";
         let acc =
-            AccountV1::from_secret_key(sk, name.to_string(), 0, 0, 1, slip44::ZILLIQA).unwrap();
+            AccountV2::from_secret_key(sk, name.to_string(), 0, slip44::ZILLIQA).unwrap();
 
         for _ in 0..100 {
             let mut nft_addr = [0u8; ADDR_LEN];
@@ -251,7 +171,7 @@ mod tests {
         }
 
         let buf = acc.to_bytes().unwrap();
-        let res = AccountV1::from_bytes(&buf).unwrap();
+        let res = AccountV2::from_bytes(&buf).unwrap();
 
         assert_eq!(res.pub_key, acc.pub_key);
         assert_eq!(res.addr, acc.addr);
@@ -273,15 +193,7 @@ mod tests {
             None,
         );
         let seed = m.to_seed(&SecretString::from("")).unwrap();
-        let acc = AccountV1::from_hd(
-            seed.expose_secret(),
-            name.to_owned(),
-            &bip49,
-            0,
-            1,
-            slip44::ZILLIQA,
-        )
-        .unwrap();
+        let acc = AccountV2::from_hd(&seed, name.to_owned(), &bip49).unwrap();
 
         for _ in 0..100 {
             let mut nft_addr = [0u8; ADDR_LEN];
@@ -292,7 +204,7 @@ mod tests {
         }
 
         let buf = acc.to_bytes().unwrap();
-        let res = AccountV1::from_bytes(&buf).unwrap();
+        let res = AccountV2::from_bytes(&buf).unwrap();
 
         assert_eq!(res.pub_key, acc.pub_key);
         assert_eq!(res.addr, acc.addr);
@@ -313,12 +225,10 @@ mod tests {
             bitcoin::AddressType::P2wpkh,
         ));
 
-        let acc_segwit = AccountV1::from_secret_key(
+        let acc_segwit = AccountV2::from_secret_key(
             sk_segwit,
             "Bitcoin SegWit".to_string(),
             0,
-            0,
-            1,
             slip44::BITCOIN,
         )
         .unwrap();
@@ -332,12 +242,10 @@ mod tests {
             bitcoin::AddressType::P2pkh,
         ));
 
-        let acc_legacy = AccountV1::from_secret_key(
+        let acc_legacy = AccountV2::from_secret_key(
             sk_legacy,
             "Bitcoin Legacy".to_string(),
             0,
-            0,
-            1,
             slip44::BITCOIN,
         )
         .unwrap();
@@ -351,12 +259,10 @@ mod tests {
             bitcoin::AddressType::P2tr,
         ));
 
-        let acc_taproot = AccountV1::from_secret_key(
+        let acc_taproot = AccountV2::from_secret_key(
             sk_taproot,
             "Bitcoin Taproot".to_string(),
             0,
-            0,
-            1,
             slip44::BITCOIN,
         )
         .unwrap();
@@ -365,9 +271,8 @@ mod tests {
         assert!(addr_taproot_str.starts_with("bc1p"));
 
         let buf = acc_segwit.to_bytes().unwrap();
-        let res = AccountV1::from_bytes(&buf).unwrap();
+        let res = AccountV2::from_bytes(&buf).unwrap();
 
-        assert_eq!(res.pub_key, acc_segwit.pub_key);
         assert_eq!(res.addr, acc_segwit.addr);
         assert_eq!(res, acc_segwit);
     }

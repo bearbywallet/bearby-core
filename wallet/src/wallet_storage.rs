@@ -208,7 +208,7 @@ mod tests_wallet_storage {
     use crate::{wallet_data::WalletDataV2, wallet_types::WalletTypes};
     use config::{session::AuthMethod, sha::SHA256_SIZE};
     use crypto::bip49::DerivationPath;
-    use secrecy::{ExposeSecret, SecretString};
+    use secrecy::SecretString;
     use settings::wallet_settings::WalletSettings;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -297,13 +297,14 @@ mod tests_wallet_storage {
 
     #[test]
     fn test_v1_to_v2_migration() {
-        use crate::account::AccountV1;
+        use crate::account::{AccountV1, AccountV2};
         use crate::account_type::AccountType;
         use crate::wallet_data::WalletDataV1;
         use config::bip39::EN_WORDS;
         use crypto::bip49::DerivationPath;
         use crypto::slip44;
         use pqbip39::mnemonic::Mnemonic;
+        use proto::pubkey::PubKey;
         use storage::data_warp::DataWarp;
 
         let (wallet_address, storage) = setup();
@@ -323,33 +324,23 @@ mod tests_wallet_storage {
             )
         };
 
-        let acc0 = AccountV1::from_hd(
-            seed.expose_secret(),
-            "BTC 0".into(),
-            &bip84(0),
+        let acc0_v2 = AccountV2::from_hd(&seed, "BTC 0".into(), &bip84(0)).unwrap();
+        let acc1_v2 = AccountV2::from_hd(&seed, "BTC 1".into(), &bip84(1)).unwrap();
+        let acc2_v2 = AccountV2::from_hd(&seed, "BTC 2".into(), &bip84(2)).unwrap();
+
+        let make_v1 = |acc: &AccountV2, index: usize| AccountV1 {
+            name: acc.name.clone(),
+            account_type: AccountType::Bip39HD(index),
+            addr: acc.addr,
+            pub_key: PubKey::Secp256k1Keccak256([0u8; 33]),
             chain_hash,
             chain_id,
-            slip44::BITCOIN,
-        )
-        .unwrap();
-        let acc1 = AccountV1::from_hd(
-            seed.expose_secret(),
-            "BTC 1".into(),
-            &bip84(1),
-            chain_hash,
-            chain_id,
-            slip44::BITCOIN,
-        )
-        .unwrap();
-        let acc2 = AccountV1::from_hd(
-            seed.expose_secret(),
-            "BTC 2".into(),
-            &bip84(2),
-            chain_hash,
-            chain_id,
-            slip44::BITCOIN,
-        )
-        .unwrap();
+            slip_44: slip44::BITCOIN,
+        };
+
+        let acc0 = make_v1(&acc0_v2, 0);
+        let acc1 = make_v1(&acc1_v2, 1);
+        let acc2 = make_v1(&acc2_v2, 2);
 
         let v1_data = WalletDataV1 {
             proof_key: 42,
@@ -387,7 +378,7 @@ mod tests_wallet_storage {
         let accounts = bip_accounts.get(&DerivationPath::BIP84_PURPOSE).unwrap();
         assert_eq!(accounts.len(), 3);
 
-        for (i, (v2_acc, v1_acc)) in accounts.iter().zip([&acc0, &acc1, &acc2]).enumerate() {
+        for (i, (v2_acc, v1_acc)) in accounts.iter().zip([&acc0_v2, &acc1_v2, &acc2_v2]).enumerate() {
             assert_eq!(v2_acc.name, v1_acc.name);
             assert_eq!(v2_acc.addr, v1_acc.addr);
             assert_eq!(v2_acc.account_type, AccountType::Bip39HD(i));
