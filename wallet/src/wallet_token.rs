@@ -68,7 +68,7 @@ mod tests_wallet_tokens {
     };
     use errors::wallet::WalletErrors;
     use proto::{address::Address, keypair::KeyPair};
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::ChainConfig;
     use settings::wallet_settings::WalletSettings;
     use storage::LocalStorage;
@@ -97,8 +97,8 @@ mod tests_wallet_tokens {
     }
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let storage = LocalStorage::from(&dir).unwrap();
         let storage = Arc::new(storage);
 

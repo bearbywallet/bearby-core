@@ -230,8 +230,11 @@ impl StorageManagement for Background {
                 let words = String::from_utf8(keystore.keys).map_err(|_| {
                     BackgroundError::Bip39Error(pqbip39::errors::Bip39Error::UnknownWord(0))
                 })?;
-                let mnemonic = Mnemonic::parse_str_without_checksum(&EN_WORDS, &words)?;
-                let mnemonic_entropy: Vec<u8> = mnemonic.to_entropy().collect();
+                let mnemonic = Mnemonic::parse_str_without_checksum(
+                    &EN_WORDS,
+                    &SecretString::from(words),
+                )?;
+                let mnemonic_entropy: Vec<u8> = mnemonic.to_entropy().expose_secret().to_vec();
                 let cipher_entropy = keychain.encrypt(mnemonic_entropy, &cipher_orders)?;
                 let cipher_entropy_key =
                     Wallet::safe_storage_save(&cipher_entropy, Arc::clone(&self.storage))?;
@@ -283,8 +286,10 @@ impl StorageManagement for Background {
             WalletTypes::Ledger(_) => Vec::with_capacity(0),
             WalletTypes::SecretPhrase((_, _)) => wallet
                 .reveal_mnemonic(&argon_seed)?
-                .to_string()
-                .into_bytes(),
+                .to_phrase()
+                .expose_secret()
+                .as_bytes()
+                .to_vec(),
             WalletTypes::SecretKey => wallet
                 .reveal_keypair(0, &argon_seed, None)?
                 .get_secretkey()?
@@ -401,7 +406,7 @@ mod tests_background_storage {
         slip44::{BITCOIN, ETHEREUM, ZILLIQA},
     };
     use proto::keypair::KeyPair;
-    use rand::Rng;
+    use rand::RngExt;
     use wallet::account::AccountV1;
     use wallet::account_type::AccountType;
     use wallet::wallet_data::WalletDataV1;
@@ -412,8 +417,8 @@ mod tests_background_storage {
     };
 
     fn setup_test_background() -> (Background, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let bg = Background::from_storage_path(&dir).unwrap();
         (bg, dir)
     }
@@ -433,7 +438,7 @@ mod tests_background_storage {
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             mnemonic_check: true,
             accounts: &accounts,
             wallet_settings: Default::default(),
@@ -472,7 +477,7 @@ mod tests_background_storage {
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: &words1,
+            mnemonic_str: words1.expose_secret(),
             mnemonic_check: true,
             accounts: &accounts1,
             wallet_settings: Default::default(),
@@ -495,7 +500,7 @@ mod tests_background_storage {
             password: &password2,
             chain_hash: net_conf.hash(),
             mnemonic_check: true,
-            mnemonic_str: &words2,
+            mnemonic_str: words2.expose_secret(),
             accounts: &accounts2,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -526,7 +531,7 @@ mod tests_background_storage {
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: &words1,
+            mnemonic_str: words1.expose_secret(),
             mnemonic_check: true,
             accounts: &accounts1,
             wallet_settings: Default::default(),
@@ -550,7 +555,10 @@ mod tests_background_storage {
         let wallet = bg.get_wallet_by_index(0).unwrap();
         let wallet_data = wallet.get_wallet_data().unwrap();
 
-        assert_eq!(keystore.keys, words1.to_string().into_bytes());
+        assert_eq!(
+            keystore.keys,
+            words1.expose_secret().as_bytes().to_vec()
+        );
         assert_eq!(keystore.chain_config, net_conf);
         assert_eq!(keystore.wallet_address, wallet.wallet_address);
         assert_eq!(keystore.wallet_data, wallet_data);
@@ -616,7 +624,7 @@ mod tests_background_storage {
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: &words1,
+            mnemonic_str: words1.expose_secret(),
             mnemonic_check: true,
             accounts: &accounts1,
             wallet_settings: Default::default(),
@@ -1035,7 +1043,7 @@ mod tests_background_storage {
             wallet_address: [0u8; SHA256_SIZE],
             chain_config: net_conf.clone(),
             ftokens: vec![],
-            keys: words.to_string().into_bytes(),
+            keys: words.expose_secret().as_bytes().to_vec(),
         };
 
         let keystore_bytes = bincode::serialize(&keystore_v0).unwrap();
@@ -1062,7 +1070,7 @@ mod tests_background_storage {
 
         let restored = KeyStore::from_backup(backup_v0, &argon_seed).unwrap();
 
-        assert_eq!(restored.keys, words.to_string().into_bytes());
+        assert_eq!(restored.keys, words.expose_secret().as_bytes().to_vec());
         assert_eq!(restored.chain_config, net_conf);
         assert_eq!(restored.wallet_data.wallet_name, "v0 wallet");
         assert_eq!(restored.wallet_data.slip44, ETHEREUM);

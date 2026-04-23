@@ -1,7 +1,7 @@
 use config::sha::SHA256_SIZE;
 use ed25519_dalek::SigningKey;
 use errors::bip32::Bip329Errors;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use k256::{
     elliptic_curve::{bigint::U256, scalar::FromUintUnchecked},
     SecretKey,

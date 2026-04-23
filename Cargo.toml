@@ -73,7 +73,7 @@ base64 = "0.22"
 thiserror = "2.0.18"
 sled = "0.34.7"
 directories = "6.0.0"
-hmac = "0.12.1"
+hmac = "0.13.0"
 rust-argon2 = "2.1.0"
 bitcoin = { version = "0.32.8", features = ["serde", "base64"] }
 electrum-client = { version = "0.24.1", default-features = false, features = ["proxy", "use-rustls-ring"] }

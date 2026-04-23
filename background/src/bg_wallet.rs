@@ -246,10 +246,11 @@ impl WalletManagement for Background {
             &params.wallet_settings.argon_params.into_config(),
         )?;
         let keychain = KeyChain::from_seed(&argon_seed)?;
+        let mnemonic_str_secret = SecretString::from(params.mnemonic_str);
         let mnemonic = if params.mnemonic_check {
-            Mnemonic::parse_str(&EN_WORDS, params.mnemonic_str)?
+            Mnemonic::parse_str(&EN_WORDS, &mnemonic_str_secret)?
         } else {
-            Mnemonic::parse_str_without_checksum(&EN_WORDS, params.mnemonic_str)?
+            Mnemonic::parse_str_without_checksum(&EN_WORDS, &mnemonic_str_secret)?
         };
         let proof = argon2::derive_key(
             &argon_seed[..PROOF_SIZE],
@@ -519,13 +520,13 @@ mod tests_background {
     use crate::{bg_crypto::CryptoOperations, bg_provider::ProvidersManagement};
     use crypto::{bip49::DerivationPath, slip44};
     use proto::{address::Address, keypair::KeyPair};
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::ChainConfig;
     use wallet::wallet_account::AccountManagement;
 
     fn setup_test_background() -> (Background, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let bg = Background::from_storage_path(&dir).unwrap();
         (bg, dir)
     }
@@ -565,7 +566,7 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_conf.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -592,7 +593,7 @@ mod tests_background {
             mnemonic_check: true,
             chain_hash: net_conf.hash(),
             accounts: &accounts,
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             wallet_settings: Default::default(),
             passphrase: "",
             wallet_name: String::new(),
@@ -626,7 +627,7 @@ mod tests_background {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -680,7 +681,7 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_conf.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -814,7 +815,7 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: btc_conf.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -880,7 +881,7 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: btc_conf.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -934,7 +935,7 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_conf.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -968,7 +969,7 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: btc_conf.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",

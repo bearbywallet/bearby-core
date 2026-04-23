@@ -175,14 +175,14 @@ impl WorkerManager for Background {
 #[cfg(test)]
 mod tests_background_worker {
     use history::{status::TransactionStatus, transaction::HistoricalTransaction};
-    use secrecy::SecretString;
+    use secrecy::{ExposeSecret, SecretString};
     use tokio::sync::mpsc;
 
     use alloy::primitives::map::HashMap;
     use config::address::ADDR_LEN;
     use crypto::{bip49::DerivationPath, slip44};
     use proto::address::Address;
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::ChainConfig;
     use test_data::{gen_eth_account, gen_zil_account, TEST_PASSWORD};
     use token::ft::FToken;
@@ -198,8 +198,8 @@ mod tests_background_worker {
     };
 
     fn setup_test_background() -> (Background, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let bg = Background::from_storage_path(&dir).unwrap();
         (bg, dir)
     }
@@ -252,7 +252,7 @@ mod tests_background_worker {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_config.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -298,7 +298,7 @@ mod tests_background_worker {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -440,7 +440,7 @@ mod tests_background_worker {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",

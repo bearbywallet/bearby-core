@@ -710,8 +710,8 @@ mod tests_background_transactions {
     use crypto::bip49::DerivationPath;
 
     use proto::{address::Address, tx::TransactionRequest};
-    use rand::Rng;
-    use secrecy::SecretString;
+    use rand::RngExt;
+    use secrecy::{ExposeSecret, SecretString};
     use test_data::{
         gen_anvil_net_conf, gen_anvil_token, gen_btc_regtest_conf, gen_eth_account,
         gen_zil_account, gen_zil_testnet_conf, gen_zil_token, ANVIL_MNEMONIC, TEST_PASSWORD,
@@ -721,8 +721,8 @@ mod tests_background_transactions {
     use wallet::{wallet_crypto::WalletCrypto, wallet_transaction::WalletTransaction};
 
     fn setup_test_background() -> (Background, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let bg = Background::from_storage_path(&dir).unwrap();
         (bg, dir)
     }
@@ -1107,7 +1107,10 @@ mod tests_background_transactions {
         let revealed_mnemonic = wallet.reveal_mnemonic(&argon_seed).unwrap();
         let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
 
-        assert_eq!(revealed_mnemonic.to_string(), UNCHECKSUMED_WORD);
+        assert_eq!(
+            revealed_mnemonic.to_phrase().expose_secret(),
+            UNCHECKSUMED_WORD
+        );
         assert_eq!(
             "d7986cf4acc822c1a6cdc4170f5561a6cee1591c37ec6a887bb650d051e4ad71",
             hex::encode(&keypair.get_secretkey().unwrap().as_ref())

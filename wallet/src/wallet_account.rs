@@ -9,6 +9,7 @@ use crypto::slip44;
 use errors::wallet::WalletErrors;
 use proto::{pubkey::PubKey, secret_key::SecretKey};
 use rpc::network_config::ChainConfig;
+use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashSet;
 
 pub trait AccountManagement {
@@ -190,7 +191,8 @@ impl AccountManagement for Wallet {
             }
             WalletTypes::SecretPhrase(_) => {
                 let m = self.reveal_mnemonic(seed_bytes)?;
-                let mnemonic_seed = m.to_seed(passphrase)?;
+                let mnemonic_seed_secret = m.to_seed(&SecretString::from(passphrase))?;
+                let mnemonic_seed: [u8; 64] = *mnemonic_seed_secret.expose_secret();
                 let eff_derivation_type = if target_slip44 == slip44::SOLANA {
                     2
                 } else {
@@ -240,7 +242,8 @@ impl AccountManagement for Wallet {
     ) -> Result<()> {
         let mut data = self.get_wallet_data()?;
         let m = self.reveal_mnemonic(seed_bytes)?;
-        let mnemonic_seed = m.to_seed(passphrase)?;
+        let mnemonic_seed_secret = m.to_seed(&SecretString::from(passphrase))?;
+        let mnemonic_seed: [u8; 64] = *mnemonic_seed_secret.expose_secret();
         let eff_derivation_type = if data.slip44 == slip44::SOLANA {
             2
         } else {
@@ -308,8 +311,9 @@ mod tests {
     use crypto::bip49::DerivationPath;
     use errors::wallet::WalletErrors;
     use pqbip39::mnemonic::Mnemonic;
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::ChainConfig;
+    use secrecy::SecretString;
     use std::sync::Arc;
     use storage::LocalStorage;
     use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
@@ -317,8 +321,8 @@ mod tests {
     const PASSPHRASE: &str = "";
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let storage = LocalStorage::from(&dir).unwrap();
         let storage = Arc::new(storage);
 
@@ -331,7 +335,7 @@ mod tests {
         let (storage, _dir) = setup_test_storage();
 
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
 
         // Create wallet with 3 accounts
         let indexes = [0, 1, 2].map(|i| (i, format!("account {i}")));

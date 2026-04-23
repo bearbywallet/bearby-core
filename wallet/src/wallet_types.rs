@@ -60,13 +60,13 @@ impl FromStr for WalletTypes {
 
 #[cfg(test)]
 mod tests_wallet_type {
-    use rand::RngCore;
+    use rand::Rng;
 
     use super::*;
 
     #[test]
     fn tests_wallet_type_convert() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut ledger_uuid = vec![0u8; 128];
 
         rng.fill_bytes(&mut ledger_uuid);

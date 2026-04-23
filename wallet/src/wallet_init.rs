@@ -5,12 +5,13 @@ use crate::{
     Result, SecretKeyParams, Wallet, WalletAddrType,
 };
 use crypto::bip49::{default_derivation_type, DerivationType};
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 use config::sha::SHA256_SIZE;
 use errors::{account::AccountErrors, wallet::WalletErrors};
 use proto::pubkey::PubKey;
+use secrecy::{ExposeSecret, SecretString};
 use std::{collections::HashMap, sync::Arc};
 use token::ft::FToken;
 
@@ -50,7 +51,7 @@ impl WalletInit for Wallet {
     type Error = WalletErrors;
 
     fn wallet_key_gen() -> WalletAddrType {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaCha20Rng::from_rng(&mut rand::rng());
         let mut chacha_key = [0u8; SHA256_SIZE];
 
         rng.fill_bytes(&mut chacha_key);
@@ -188,11 +189,15 @@ impl WalletInit for Wallet {
         config: WalletConfig,
         ftokens: Vec<FToken>,
     ) -> Result<Self> {
-        let mnemonic_str: Vec<u8> = params.mnemonic.to_string().as_bytes().to_vec();
+        let mnemonic_phrase = params.mnemonic.to_phrase();
+        let mnemonic_str: Vec<u8> = mnemonic_phrase.expose_secret().as_bytes().to_vec();
         let cipher_entropy = config
             .keychain
             .encrypt(mnemonic_str, &config.settings.cipher_orders)?;
-        let mnemonic_seed = params.mnemonic.to_seed(params.passphrase)?;
+        let mnemonic_seed_secret = params
+            .mnemonic
+            .to_seed(&SecretString::from(params.passphrase))?;
+        let mnemonic_seed: [u8; 64] = *mnemonic_seed_secret.expose_secret();
         let cipher_proof = config
             .keychain
             .make_proof(&params.proof, &config.settings.cipher_orders)?;
@@ -305,8 +310,9 @@ mod tests {
     use errors::wallet::WalletErrors;
     use pqbip39::mnemonic::Mnemonic;
     use proto::keypair::KeyPair;
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::ChainConfig;
+    use secrecy::SecretString;
     use storage::LocalStorage;
     use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
 
@@ -318,8 +324,8 @@ mod tests {
     const PASSPHRASE: &str = "";
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let storage = LocalStorage::from(&dir).unwrap();
         let storage = Arc::new(storage);
 
@@ -332,7 +338,7 @@ mod tests {
 
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let indexes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(|i| (i, format!("account {i}")));
         let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let wallet_config = WalletConfig {
@@ -389,7 +395,7 @@ mod tests {
 
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let indexes = [0, 1, 2].map(|i| (i, format!("Bitcoin Account {i}")));
         let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let wallet_config = WalletConfig {
@@ -479,7 +485,7 @@ mod tests {
 
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
 
         // Create 10 BIP44 accounts (Legacy P2PKH)
         let indexes = (0..10)
@@ -544,7 +550,7 @@ mod tests {
 
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
 
         // Create 10 BIP49 accounts (Nested SegWit P2SH-P2WPKH)
         let indexes = (0..10)
@@ -609,7 +615,7 @@ mod tests {
 
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
 
         // Create 10 BIP84 accounts (Native SegWit Bech32 P2WPKH)
         let indexes = (0..10)
@@ -674,7 +680,7 @@ mod tests {
 
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
 
         // Create 10 BIP86 accounts (Taproot Bech32m P2TR)
         let indexes = (0..10)

@@ -22,7 +22,7 @@ use crate::{
 
 use super::secret_key::SecretKey;
 use errors::{bip32::Bip329Errors, keypair::KeyPairError};
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 // One byte for enum type
@@ -160,7 +160,7 @@ impl KeyPair {
     }
 
     pub fn gen_keys_bytes() -> Result<([u8; PUB_KEY_SIZE], [u8; SECRET_KEY_SIZE])> {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaCha20Rng::from_rng(&mut rand::rng());
         let mut sk_bytes = [0u8; SECRET_KEY_SIZE];
 
         rng.fill_bytes(&mut sk_bytes);
@@ -179,7 +179,7 @@ impl KeyPair {
     }
 
     pub fn gen_solana() -> Result<Self> {
-        let mut rng = rand_chacha::ChaCha20Rng::from_entropy();
+        let mut rng = rand_chacha::ChaCha20Rng::from_rng(&mut rand::rng());
         let mut sk_bytes = [0u8; SECRET_KEY_SIZE];
         rng.fill_bytes(&mut sk_bytes);
         let signing_key = SigningKey::from_bytes(&sk_bytes);
@@ -600,10 +600,10 @@ mod tests_keypair {
 
     #[test]
     fn test_sign_message() {
-        use rand::{RngCore, SeedableRng};
+        use rand::{Rng, SeedableRng};
         use rand_chacha::ChaCha20Rng;
 
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaCha20Rng::from_rng(&mut rand::rng());
 
         for _ in 0..10 {
             let key_pair = KeyPair::gen_sha256().unwrap();

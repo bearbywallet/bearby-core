@@ -7,7 +7,7 @@ use crate::Wallet;
 use crate::WalletAddrType;
 use errors::wallet::WalletErrors;
 use history::transaction::HistoricalTransaction;
-use rand::Rng;
+use rand::RngExt;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::sync::Arc;
@@ -134,11 +134,11 @@ impl StorageOperations for Wallet {
     }
 
     fn safe_storage_save(cipher_entropy: &[u8], storage: Arc<LocalStorage>) -> Result<usize> {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaCha20Rng::from_rng(&mut rand::rng());
         let mut cipher_entropy_key: usize;
 
         loop {
-            cipher_entropy_key = rng.gen();
+            cipher_entropy_key = rng.random::<u64>() as usize;
             let key = usize::to_le_bytes(cipher_entropy_key);
             let is_exists_key = storage.exists(&key)?;
 
@@ -208,6 +208,7 @@ mod tests_wallet_storage {
     use crate::{wallet_data::WalletDataV2, wallet_types::WalletTypes};
     use config::{session::AuthMethod, sha::SHA256_SIZE};
     use crypto::bip49::DerivationPath;
+    use secrecy::{ExposeSecret, SecretString};
     use settings::wallet_settings::WalletSettings;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -215,8 +216,8 @@ mod tests_wallet_storage {
     use token::ft::FToken;
 
     fn setup() -> (WalletAddrType, Arc<LocalStorage>) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let wallet_address = [42u8; SHA256_SIZE];
         let storage = Arc::new(LocalStorage::from(&dir).unwrap());
 
@@ -306,8 +307,10 @@ mod tests_wallet_storage {
         use storage::data_warp::DataWarp;
 
         let (wallet_address, storage) = setup();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, test_data::ANVIL_MNEMONIC).unwrap();
-        let seed = mnemonic.to_seed("").unwrap();
+        let mnemonic =
+            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(test_data::ANVIL_MNEMONIC))
+                .unwrap();
+        let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
         let chain_hash: u64 = 777;
         let chain_id: u64 = 1;
 
@@ -321,7 +324,7 @@ mod tests_wallet_storage {
         };
 
         let acc0 = AccountV1::from_hd(
-            &seed,
+            seed.expose_secret(),
             "BTC 0".into(),
             &bip84(0),
             chain_hash,
@@ -330,7 +333,7 @@ mod tests_wallet_storage {
         )
         .unwrap();
         let acc1 = AccountV1::from_hd(
-            &seed,
+            seed.expose_secret(),
             "BTC 1".into(),
             &bip84(1),
             chain_hash,
@@ -339,7 +342,7 @@ mod tests_wallet_storage {
         )
         .unwrap();
         let acc2 = AccountV1::from_hd(
-            &seed,
+            seed.expose_secret(),
             "BTC 2".into(),
             &bip84(2),
             chain_hash,

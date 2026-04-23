@@ -4,7 +4,7 @@ use k256::{
     elliptic_curve::{ops::Reduce, sec1::ToEncodedPoint, Group, PrimeField},
     AffinePoint, FieldBytes, Scalar, U256,
 };
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 
@@ -13,7 +13,7 @@ pub const MAX_TRY_SIGN: usize = 100_000_000;
 type Result<T> = std::result::Result<T, SchorrError>;
 
 pub fn sign(message: &[u8], secret_key: &SecretKey) -> Result<Signature> {
-    let mut rng = ChaCha20Rng::from_entropy();
+    let mut rng = ChaCha20Rng::from_rng(&mut rand::rng());
     let safe_counter: usize = 0;
 
     loop {
@@ -43,7 +43,8 @@ pub fn sign_inner(k: Scalar, message: &[u8], secret_key: &SecretKey) -> Option<S
     hasher.update(q.to_encoded_point(true).to_bytes());
     hasher.update(public_key.to_encoded_point(true).to_bytes());
     hasher.update(message);
-    let r = <Scalar as Reduce<U256>>::reduce_bytes(&hasher.finalize());
+    let digest = hasher.finalize();
+    let r = <Scalar as Reduce<U256>>::reduce_bytes(FieldBytes::from_slice(&digest));
 
     // 4. If r = 0 mod(order), goto 1
     if r.is_zero().into() {
@@ -78,7 +79,8 @@ pub fn verify(message: &[u8], public_key: PublicKey, signature: Signature) -> Op
     hasher.update(q.to_encoded_point(true).to_bytes());
     hasher.update(public_key.to_encoded_point(true).to_bytes());
     hasher.update(message);
-    let r_dash = <Scalar as Reduce<U256>>::reduce_bytes(&hasher.finalize());
+    let digest = hasher.finalize();
+    let r_dash = <Scalar as Reduce<U256>>::reduce_bytes(FieldBytes::from_slice(&digest));
 
     // 5. Return r' == r
     if r_dash != *r {

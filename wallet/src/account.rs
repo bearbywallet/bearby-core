@@ -228,11 +228,12 @@ mod tests {
     use config::{address::ADDR_LEN, bip39::EN_WORDS};
     use crypto::slip44;
     use pqbip39::mnemonic::Mnemonic;
-    use rand::RngCore;
+    use rand::Rng;
+    use secrecy::{ExposeSecret, SecretString};
 
     #[test]
     fn test_from_zil_sk_ser() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let sk: SecretKey = "00e93c035175b08613c4b0251ca92cd007026ca032ba53bafa3c839838f8b52d04"
             .parse()
@@ -259,21 +260,28 @@ mod tests {
 
     #[test]
     fn test_init_from_bip39() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let mnemonic_str =
             "green process gate doctor slide whip priority shrug diamond crumble average help";
         let name = "Account 0";
-        let m = Mnemonic::parse_str(&EN_WORDS, mnemonic_str).unwrap();
+        let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(mnemonic_str)).unwrap();
         let bip49 = DerivationPath::new(
             slip44::ZILLIQA,
             crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP44_PURPOSE,
             None,
         );
-        let seed = m.to_seed("").unwrap();
-        let acc =
-            AccountV1::from_hd(&seed, name.to_owned(), &bip49, 0, 1, slip44::ZILLIQA).unwrap();
+        let seed = m.to_seed(&SecretString::from("")).unwrap();
+        let acc = AccountV1::from_hd(
+            seed.expose_secret(),
+            name.to_owned(),
+            &bip49,
+            0,
+            1,
+            slip44::ZILLIQA,
+        )
+        .unwrap();
 
         for _ in 0..100 {
             let mut nft_addr = [0u8; ADDR_LEN];

@@ -239,7 +239,7 @@ mod tests_providers {
     use crate::{bg_storage::StorageManagement, BackgroundBip39Params, BackgroundSKParams};
     use crypto::slip44;
     use proto::keypair::KeyPair;
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::Explorer;
     use secrecy::SecretString;
     use test_data::{
@@ -248,8 +248,8 @@ mod tests_providers {
     };
 
     fn setup_test_background() -> (Background, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let bg = Background::from_storage_path(&dir).unwrap();
         (bg, dir)
     }

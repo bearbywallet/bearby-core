@@ -207,7 +207,7 @@ mod tests_network {
     use config::address::ADDR_LEN;
     use history::status::TransactionStatus;
     use proto::{tx::ETHTransactionRequest, zil_tx::ZILTransactionRequest};
-    use rand::Rng;
+    use rand::RngExt;
     use test_data::{
         gen_anvil_net_conf, gen_bsc_testnet_conf, gen_eth_mainnet_conf, gen_zil_mainnet_conf,
         gen_zil_testnet_conf,
@@ -215,8 +215,8 @@ mod tests_network {
     use tokio;
 
     fn setup_temp_storage() -> Arc<LocalStorage> {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
 
         let storage = LocalStorage::from(&dir).unwrap();
         Arc::new(storage)

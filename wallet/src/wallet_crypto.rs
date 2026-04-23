@@ -8,6 +8,7 @@ use errors::wallet::WalletErrors;
 use network::{common::Provider, provider::NetworkProvider};
 use pqbip39::mnemonic::Mnemonic;
 use proto::{address::Address, keypair::KeyPair, secret_key::SecretKey, signature::Signature};
+use secrecy::{ExposeSecret, SecretString};
 
 pub trait WalletCrypto {
     type Error;
@@ -67,7 +68,8 @@ impl WalletCrypto for Wallet {
                     .find(|&p| p.config.hash() == data.chain_hash)
                     .ok_or(WalletErrors::ProviderNotExist(data.chain_hash))?;
                 let m = self.reveal_mnemonic(seed_bytes)?;
-                let seed = m.to_seed(passphrase.unwrap_or(""))?;
+                let seed_secret = m.to_seed(&SecretString::from(passphrase.unwrap_or("")))?;
+                let seed: [u8; 64] = *seed_secret.expose_secret();
                 let hd_index = account.account_type.value();
                 let (bip_purpose, network) = match &account.addr {
                     Address::Secp256k1Bitcoin(_) => {
@@ -125,7 +127,10 @@ impl WalletCrypto for Wallet {
                 // TODO: add more Languages
                 // 32 this is max which can be entropy
                 let m = if let Ok(mnemonic_str) = String::from_utf8(decypted.clone()) {
-                    if let Ok(m) = Mnemonic::parse_str_without_checksum(&EN_WORDS, &mnemonic_str) {
+                    if let Ok(m) = Mnemonic::parse_str_without_checksum(
+                        &EN_WORDS,
+                        &SecretString::from(mnemonic_str),
+                    ) {
                         m
                     } else {
                         Mnemonic::from_entropy(&EN_WORDS, &decypted)?
@@ -166,7 +171,7 @@ mod tests {
     use cipher::argon2::{derive_key, ARGON2_DEFAULT_CONFIG};
     use config::{argon::KEY_SIZE, cipher::PROOF_SIZE, session::AuthMethod};
     use crypto::{bip49::DerivationPath, slip44};
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::ChainConfig;
     use storage::LocalStorage;
     use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
@@ -174,8 +179,8 @@ mod tests {
     const PASSPHRASE: &str = "";
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let storage = LocalStorage::from(&dir).unwrap();
         let storage = Arc::new(storage);
 
@@ -222,7 +227,7 @@ mod tests {
         bip: u32,
     ) -> Wallet {
         let keychain = KeyChain::from_seed(argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let wallet_config = WalletConfig {
             keychain,
@@ -509,7 +514,10 @@ mod tests {
 
         let revealed_mnemonic = wallet.reveal_mnemonic(&argon_seed).unwrap();
 
-        assert_eq!(revealed_mnemonic.to_string(), ANVIL_MNEMONIC);
+        assert_eq!(
+            revealed_mnemonic.to_phrase().expose_secret(),
+            ANVIL_MNEMONIC
+        );
     }
 
     #[test]

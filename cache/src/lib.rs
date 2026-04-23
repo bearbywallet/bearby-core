@@ -118,14 +118,12 @@ impl Cache {
 #[cfg(test)]
 mod tests_cache {
     use crate::Cache;
-    use rand::Rng;
+    use rand::RngExt;
     use std::path::PathBuf;
     use tokio;
 
     fn setup_test_dir() -> String {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
-        dir
+        format!("/tmp/{}", rand::rng().random::<u64>())
     }
 
     #[tokio::test]

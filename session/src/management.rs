@@ -5,7 +5,7 @@ use config::{
     sha::{SHA256_SIZE, SHA512_SIZE},
 };
 use errors::session::SessionErrors;
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use secrecy::{ExposeSecret, SecretSlice};
 use std::{
@@ -57,7 +57,7 @@ impl<'a> SessionManager<'a> {
     }
 
     fn generate_random_key() -> [u8; SHA512_SIZE] {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaCha20Rng::from_rng(&mut rand::rng());
         let mut key = [0u8; SHA512_SIZE];
         rng.fill_bytes(&mut key);
         key

@@ -93,8 +93,9 @@ mod tests_security {
     use errors::wallet::WalletErrors;
     use pqbip39::mnemonic::Mnemonic;
     use proto::keypair::KeyPair;
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::ChainConfig;
+    use secrecy::SecretString;
     use settings::wallet_settings::WalletSettings;
     use storage::LocalStorage;
     use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
@@ -115,8 +116,8 @@ mod tests_security {
     }
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let storage = LocalStorage::from(&dir).unwrap();
         let storage = Arc::new(storage);
 
@@ -208,7 +209,7 @@ mod tests_security {
         )
         .unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, ANVIL_MNEMONIC).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let indexes = [0, 1, 2].map(|i| (i, format!("Bitcoin Account {i}")));
         let proof = derive_key(
             &argon_seed[..PROOF_SIZE],

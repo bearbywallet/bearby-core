@@ -59,15 +59,15 @@ impl AddressBookManagement for Background {
 #[cfg(test)]
 mod tests_background {
     use proto::address::Address;
-    use rand::Rng;
+    use rand::RngExt;
 
     use crate::bg_storage::StorageManagement;
 
     use super::*;
 
     fn setup_test_background() -> (Background, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let bg = Background::from_storage_path(&dir).unwrap();
         (bg, dir)
     }

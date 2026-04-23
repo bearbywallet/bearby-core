@@ -370,9 +370,9 @@ mod tests_background_tokens {
 
     use history::status::TransactionStatus;
     use network::btc::BtcOperations;
-    use rand::Rng;
+    use rand::RngExt;
     use rpc::network_config::{ChainConfig, Explorer};
-    use secrecy::SecretString;
+    use secrecy::{ExposeSecret, SecretString};
     use serde_json::Value;
     use std::collections::HashMap;
     use std::str::FromStr;
@@ -393,8 +393,8 @@ mod tests_background_tokens {
     const USDT_TOKEN: &str = "0x55d398326f99059fF775485246999027B3197955";
 
     fn setup_test_background() -> (Background, String) {
-        let mut rng = rand::thread_rng();
-        let dir = format!("/tmp/{}", rng.gen::<usize>());
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
         let bg = Background::from_storage_path(&dir).unwrap();
         (bg, dir)
     }
@@ -452,7 +452,7 @@ mod tests_background_tokens {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_config.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -521,7 +521,7 @@ mod tests_background_tokens {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",
@@ -594,7 +594,7 @@ mod tests_background_tokens {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_config.hash(),
-            mnemonic_str: &words,
+            mnemonic_str: words.expose_secret(),
             accounts: &accounts,
             wallet_settings: Default::default(),
             passphrase: "",

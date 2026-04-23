@@ -1780,6 +1780,7 @@ dependencies = [
  "mockito",
  "rand 0.10.1",
  "reqwest 0.12.28",
+ "test_data",
  "tokio",
 ]
 
@@ -4920,7 +4921,7 @@ dependencies = [
  "ed25519-dalek",
  "errors",
  "hex",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "k256",
  "mockito",
  "pqbip39",
@@ -7939,6 +7940,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rmp-serde",
  "rpc",
+ "secrecy",
  "serde",
  "settings",
  "sha2 0.11.0",
