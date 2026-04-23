@@ -241,7 +241,6 @@ mod tests {
             slip44::ETHEREUM,
             crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP44_PURPOSE,
-            None,
         );
         let account = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
 
@@ -267,7 +266,6 @@ mod tests {
             slip44::BITCOIN,
             crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP44_PURPOSE,
-            Some(bitcoin::Network::Bitcoin),
         );
         let btc_secret_key = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
 
@@ -311,7 +309,6 @@ mod tests {
             slip44::BITCOIN,
             crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP84_PURPOSE,
-            Some(bitcoin::Network::Bitcoin),
         );
         let btc_secret_key = derive_private_key(&seed, &derivation_path.get_path()).unwrap();
 

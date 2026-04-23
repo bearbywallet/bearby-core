@@ -192,8 +192,7 @@ impl AccountManagement for Wallet {
             }
             WalletTypes::SecretPhrase(_) => {
                 let m = self.reveal_mnemonic(seed_bytes)?;
-                let mnemonic_seed_secret =
-                    Arc::new(m.to_seed(&SecretString::from(passphrase))?);
+                let mnemonic_seed_secret = Arc::new(m.to_seed(&SecretString::from(passphrase))?);
                 let eff_derivation_type = if target_slip44 == slip44::SOLANA {
                     2
                 } else {

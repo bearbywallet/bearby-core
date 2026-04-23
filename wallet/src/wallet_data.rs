@@ -5,7 +5,7 @@ use crate::{
     wallet_types::WalletTypes,
 };
 use config::session::AuthMethod;
-use crypto::bip49::{default_derivation_type, DerivationPath};
+use crypto::bip49::DerivationPath;
 use crypto::slip44::ETHEREUM;
 use errors::wallet::WalletErrors;
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,6 @@ pub struct WalletDataV2 {
     pub bip: u32,
     #[serde(default)]
     pub bip_preferences: HashMap<u32, u32>,
-    #[serde(default = "default_derivation_type")]
     pub derivation_type: u8,
 }
 
@@ -67,7 +66,7 @@ impl From<WalletDataV1> for WalletDataV2 {
             biometric_type: v1.biometric_type,
             chain_hash: v1.default_chain_hash,
             bip_preferences: HashMap::new(),
-            derivation_type: default_derivation_type(),
+            derivation_type: 0,
         }
     }
 }

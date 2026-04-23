@@ -1,5 +1,4 @@
 use crate::address::Address;
-use solana_pubkey::Pubkey;
 use crate::btc_tx;
 use crate::keypair::KeyPair;
 use crate::pubkey::PubKey;
@@ -28,6 +27,7 @@ use errors::keypair::KeyPairError;
 use errors::tx::TransactionErrors;
 use k256::SecretKey as K256SecretKey;
 use serde::{Deserialize, Serialize};
+use solana_pubkey::Pubkey;
 
 pub type ETHTransactionRequest = alloy::rpc::types::eth::request::TransactionRequest;
 pub type BTCTransactionRequest = BitcoinTransaction;
@@ -302,12 +302,10 @@ impl TransactionRequest {
                 let pubkey = keypair.get_pubkey()?;
                 let sk_bytes = keypair.get_secretkey()?;
 
-                let secret_key =
-                    bitcoin::secp256k1::SecretKey::from_slice(sk_bytes.as_ref())
-                        .map_err(|e| KeyPairError::EthersInvalidSign(e.to_string()))?;
-                let public_key =
-                    bitcoin::secp256k1::PublicKey::from_slice(pubkey.as_bytes())
-                        .map_err(|e| KeyPairError::EthersInvalidSign(e.to_string()))?;
+                let secret_key = bitcoin::secp256k1::SecretKey::from_slice(sk_bytes.as_ref())
+                    .map_err(|e| KeyPairError::EthersInvalidSign(e.to_string()))?;
+                let public_key = bitcoin::secp256k1::PublicKey::from_slice(pubkey.as_bytes())
+                    .map_err(|e| KeyPairError::EthersInvalidSign(e.to_string()))?;
 
                 let (network, addr_type) =
                     if let KeyPair::Secp256k1Bitcoin((_, _, net, at)) = keypair {
@@ -320,8 +318,7 @@ impl TransactionRequest {
                 btc_tx::sign_psbt(&mut psbt, &secret_key, &public_key, network, addr_type)?;
                 btc_tx::finalize_psbt(&mut psbt, addr_type)?;
 
-                let signed_tx = psbt
-                    .extract_tx_unchecked_fee_rate();
+                let signed_tx = psbt.extract_tx_unchecked_fee_rate();
 
                 metadata.signer = Some(keypair.get_addr()?);
 
@@ -975,7 +972,9 @@ mod tests_tx {
 
         let keypair = KeyPair::gen_solana().unwrap();
         let message = vec![0x01u8, 0x02, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef];
-        let sol_tx = SolanaTransaction { message: message.clone() };
+        let sol_tx = SolanaTransaction {
+            message: message.clone(),
+        };
 
         let tx_req = TransactionRequest::Solana((sol_tx, Default::default()));
         let tx_res = tx_req.sign(&keypair).await.unwrap();
@@ -995,7 +994,9 @@ mod tests_tx {
         let keypair1 = KeyPair::gen_solana().unwrap();
         let keypair2 = KeyPair::gen_solana().unwrap();
         let message = b"hello solana transaction".to_vec();
-        let sol_tx = SolanaTransaction { message: message.clone() };
+        let sol_tx = SolanaTransaction {
+            message: message.clone(),
+        };
 
         let tx_req = TransactionRequest::Solana((sol_tx, Default::default()));
         let mut tx_res = tx_req.sign(&keypair1).await.unwrap();

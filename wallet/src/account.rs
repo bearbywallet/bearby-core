@@ -97,8 +97,9 @@ impl AccountV2 {
         mnemonic_seed: &SecretBox<[u8; 64]>,
         name: String,
         bip49: &DerivationPath,
+        net: Option<bitcoin::Network>,
     ) -> Result<Self> {
-        let keypair = KeyPair::from_bip39_seed(mnemonic_seed, bip49)?;
+        let keypair = KeyPair::from_bip39_seed(mnemonic_seed, bip49, net)?;
         let addr = keypair.get_addr()?;
         let pub_key = if bip49.slip44 == crypto::slip44::ZILLIQA {
             Some(keypair.get_pubkey()?)
@@ -189,10 +190,9 @@ mod tests {
             slip44::ZILLIQA,
             crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP44_PURPOSE,
-            None,
         );
         let seed = m.to_seed(&SecretString::from("")).unwrap();
-        let acc = AccountV2::from_hd(&seed, name.to_owned(), &bip49).unwrap();
+        let acc = AccountV2::from_hd(&seed, name.to_owned(), &bip49, None).unwrap();
 
         for _ in 0..100 {
             let mut nft_addr = [0u8; ADDR_LEN];

@@ -55,11 +55,9 @@ pub struct Bip39Params<'a> {
     pub passphrase: &'a SecretString,
     pub indexes: &'a [(usize, String)],
     pub wallet_name: String,
-    pub bip: u32,
     pub biometric_type: AuthMethod,
     pub chain_config: &'a ChainConfig,
     pub chains: &'a [ChainConfig],
-    pub derivation_type: u8,
 }
 
 pub struct Wallet {

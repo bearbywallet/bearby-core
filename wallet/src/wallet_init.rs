@@ -4,7 +4,8 @@ use crate::{
     wallet_types::WalletTypes,
     Result, SecretKeyParams, Wallet, WalletAddrType,
 };
-use crypto::bip49::{default_derivation_type, DerivationType};
+use crypto::bip49::DerivationType;
+use crypto::slip44::SOLANA;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -171,7 +172,7 @@ impl WalletInit for Wallet {
             selected_account: 0,
             chain_hash: params.chain_config.hash(),
             bip_preferences: HashMap::new(),
-            derivation_type: default_derivation_type(),
+            derivation_type: 0,
         };
         let wallet = Self {
             storage: config.storage,
@@ -203,17 +204,8 @@ impl WalletInit for Wallet {
         let cipher_entropy_key =
             Self::safe_storage_save(&cipher_entropy, Arc::clone(&config.storage))?;
         let wallet_address: [u8; SHA256_SIZE] = Self::wallet_key_gen();
-
-        let supported = crypto::bip49::DerivationPath::supported_bips(params.chain_config.slip_44);
-        if !supported.contains(&params.bip) {
-            return Err(WalletErrors::InvalidBIPPath(
-                params.chain_config.slip_44,
-                params.bip,
-            ));
-        }
-
         let target_network = params.chain_config.bitcoin_network();
-        let derivation_type = params.derivation_type;
+        let target_bip = crypto::bip49::DerivationPath::default_bip(params.chain_config.slip_44);
 
         let mut handles = Vec::new();
         for chain in params
@@ -223,33 +215,30 @@ impl WalletInit for Wallet {
         {
             let slip44 = chain.slip_44;
             let network = chain.bitcoin_network();
-            for &bip in crypto::bip49::DerivationPath::supported_bips(slip44) {
-                let idxs: Vec<(usize, String)> = params
-                    .indexes
-                    .iter()
-                    .map(|(i, name)| (*i, name.clone()))
-                    .collect();
-                let seed = Arc::clone(&mnemonic_seed_secret);
-                handles.push(std::thread::spawn(
-                    move || -> std::result::Result<(u32, u32, Vec<AccountV2>), WalletErrors> {
-                        let mut accounts = Vec::with_capacity(idxs.len());
-                        let eff_derivation_type = if slip44 == crypto::slip44::SOLANA {
-                            2
+            let idxs: Vec<(usize, String)> = params
+                .indexes
+                .iter()
+                .map(|(i, name)| (*i, name.clone()))
+                .collect();
+            let seed = Arc::clone(&mnemonic_seed_secret);
+
+            handles.push(std::thread::spawn(
+                move || -> std::result::Result<(u32, u32, Vec<AccountV2>), WalletErrors> {
+                    let mut accounts = Vec::with_capacity(idxs.len());
+                    let bip = crypto::bip49::DerivationPath::default_bip(slip44);
+
+                    for (idx, name) in idxs {
+                        let path = if slip44 == SOLANA {
+                            crypto::bip49::DerivationPath::with_index(slip44, (idx, 0, 0))
                         } else {
-                            derivation_type
+                            crypto::bip49::DerivationPath::with_index(slip44, (0, 0, idx))
                         };
-                        for (idx, name) in idxs {
-                            let derivation = DerivationType::with_index(eff_derivation_type, idx)?;
-                            let path = crypto::bip49::DerivationPath::new(
-                                slip44, derivation, bip, network,
-                            );
-                            let account = AccountV2::from_hd(&seed, name, &path)?;
-                            accounts.push(account);
-                        }
-                        Ok((slip44, bip, accounts))
-                    },
-                ));
-            }
+                        let account = AccountV2::from_hd(&seed, name, &path, network)?;
+                        accounts.push(account);
+                    }
+                    Ok((slip44, bip, accounts))
+                },
+            ));
         }
 
         let mut slip44_accounts: HashMap<u32, HashMap<u32, Vec<AccountV2>>> = HashMap::new();
@@ -263,7 +252,7 @@ impl WalletInit for Wallet {
         }
 
         let data = WalletDataV2 {
-            bip: params.bip,
+            bip: target_bip,
             wallet_name: params.wallet_name,
             biometric_type: params.biometric_type.clone(),
             proof_key,
@@ -277,7 +266,7 @@ impl WalletInit for Wallet {
             selected_account: 0,
             chain_hash: params.chain_config.hash(),
             bip_preferences: HashMap::new(),
-            derivation_type,
+            derivation_type: 0,
         };
         let wallet = Self {
             storage: config.storage,
@@ -300,18 +289,15 @@ mod tests {
         keychain::KeyChain,
     };
     use config::{argon::KEY_SIZE, bip39::EN_WORDS, cipher::PROOF_SIZE, session::AuthMethod};
-    use crypto::{
-        bip49::{default_derivation_type, DerivationPath},
-        slip44,
-    };
+    use crypto::{bip49::DerivationPath, slip44};
     use errors::wallet::WalletErrors;
     use pqbip39::mnemonic::Mnemonic;
     use proto::keypair::KeyPair;
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
+    use secrecy::SecretString;
     use storage::LocalStorage;
     use test_data::{empty_passphrase, ANVIL_MNEMONIC, TEST_PASSWORD};
-    use secrecy::SecretString;
 
     use crate::{
         wallet_crypto::WalletCrypto, wallet_init::WalletInit, wallet_storage::StorageOperations,

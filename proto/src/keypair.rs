@@ -5,11 +5,11 @@ use alloy::{
     signers::{local::PrivateKeySigner, SignerSync},
 };
 use config::key::{BIP39_SEED_SIZE, ED25519_PUB_KEY_SIZE, PUB_KEY_SIZE, SECRET_KEY_SIZE};
-use secrecy::SecretBox;
-use solana_pubkey::Pubkey;
 use crypto::{bip49::DerivationPath, schnorr, slip44};
 use ed25519_dalek::{Signer as Ed25519Signer, SigningKey};
 use k256::SecretKey as K256SecretKey;
+use secrecy::SecretBox;
+use solana_pubkey::Pubkey;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
@@ -214,7 +214,11 @@ impl KeyPair {
         }
     }
 
-    pub fn from_bip39_seed(seed: &SecretBox<[u8; BIP39_SEED_SIZE]>, bip49: &DerivationPath) -> Result<Self> {
+    pub fn from_bip39_seed(
+        seed: &SecretBox<[u8; BIP39_SEED_SIZE]>,
+        bip49: &DerivationPath,
+        net: Option<bitcoin::Network>,
+    ) -> Result<Self> {
         let path = bip49.get_path();
 
         if bip49.slip44 == slip44::SOLANA {
@@ -240,11 +244,9 @@ impl KeyPair {
                 Ok(Self::Secp256k1Keccak256((pub_key, secret_key)))
             }
             slip44::BITCOIN => {
-                let network = bip49
-                    .network
-                    .ok_or(KeyPairError::ExtendedPrivKeyDeriveError(
-                        Bip329Errors::MissingBitcoinNetwork,
-                    ))?;
+                let network = net.ok_or(KeyPairError::ExtendedPrivKeyDeriveError(
+                    Bip329Errors::MissingBitcoinNetwork,
+                ))?;
                 let addr_type = bip49.get_address_type();
                 Ok(Self::Secp256k1Bitcoin((
                     pub_key, secret_key, network, addr_type,
@@ -539,6 +541,7 @@ mod tests_keypair {
     use secrecy::{ExposeSecret, SecretString};
     use serde_json::json;
     use std::borrow::Cow;
+    use test_data::ANVIL_MNEMONIC;
 
     fn create_test_keypair(key_type: u8) -> KeyPair {
         let pk = [1u8; PUB_KEY_SIZE];
@@ -643,8 +646,6 @@ mod tests_keypair {
 
     #[test]
     fn test_bip39_derivation_bitcoin() {
-        use test_data::ANVIL_MNEMONIC;
-
         let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let seed = m.to_seed(&SecretString::from("")).unwrap();
 
@@ -652,9 +653,9 @@ mod tests_keypair {
             slip44::BITCOIN,
             crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP84_PURPOSE,
-            Some(bitcoin::Network::Bitcoin),
         );
-        let btc_key_pair = KeyPair::from_bip39_seed(&seed, &btc_bip84_path).unwrap();
+        let net = Some(bitcoin::Network::Bitcoin);
+        let btc_key_pair = KeyPair::from_bip39_seed(&seed, &btc_bip84_path, net).unwrap();
         let btc_addr = btc_key_pair.get_addr().unwrap();
 
         assert!(matches!(btc_key_pair, KeyPair::Secp256k1Bitcoin(_)));
@@ -667,9 +668,8 @@ mod tests_keypair {
             slip44::BITCOIN,
             crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP44_PURPOSE,
-            Some(bitcoin::Network::Bitcoin),
         );
-        let btc_legacy_key_pair = KeyPair::from_bip39_seed(&seed, &btc_bip44_path).unwrap();
+        let btc_legacy_key_pair = KeyPair::from_bip39_seed(&seed, &btc_bip44_path, net).unwrap();
         let btc_legacy_addr = btc_legacy_key_pair.get_addr().unwrap();
         let btc_legacy_addr_str = btc_legacy_addr.auto_format();
         assert!(btc_legacy_addr_str.starts_with("1"));
@@ -677,8 +677,6 @@ mod tests_keypair {
 
     #[test]
     fn test_bip39_derivation() {
-        use test_data::ANVIL_MNEMONIC;
-
         let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let seed = m.to_seed(&SecretString::from("")).unwrap();
 
@@ -692,12 +690,19 @@ mod tests_keypair {
             *seed.expose_secret()
         );
 
-        let zil_path = DerivationPath::new(slip44::ZILLIQA, crypto::bip49::DerivationType::AddressIndex(0, 0, 0), DerivationPath::BIP44_PURPOSE, None);
-        let eth_path =
-            DerivationPath::new(slip44::ETHEREUM, crypto::bip49::DerivationType::AddressIndex(0, 0, 0), DerivationPath::BIP44_PURPOSE, None);
+        let zil_path = DerivationPath::new(
+            slip44::ZILLIQA,
+            crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
+            DerivationPath::BIP44_PURPOSE,
+        );
+        let eth_path = DerivationPath::new(
+            slip44::ETHEREUM,
+            crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
+            DerivationPath::BIP44_PURPOSE,
+        );
 
-        let zil_key_pair = KeyPair::from_bip39_seed(&seed, &zil_path).unwrap();
-        let eth_key_pair = KeyPair::from_bip39_seed(&seed, &eth_path).unwrap();
+        let zil_key_pair = KeyPair::from_bip39_seed(&seed, &zil_path, None).unwrap();
+        let eth_key_pair = KeyPair::from_bip39_seed(&seed, &eth_path, None).unwrap();
 
         let addr_eth = eth_key_pair.get_addr().unwrap();
         let addr_zil = zil_key_pair.get_addr().unwrap();
@@ -740,9 +745,16 @@ mod tests_keypair {
 
     #[test]
     fn test_derivation_path_generation() {
-        let eth_path =
-            DerivationPath::new(slip44::ETHEREUM, crypto::bip49::DerivationType::AddressIndex(0, 0, 0), DerivationPath::BIP44_PURPOSE, None);
-        let zil_path = DerivationPath::new(slip44::ZILLIQA, crypto::bip49::DerivationType::AddressIndex(0, 0, 1), DerivationPath::BIP44_PURPOSE, None);
+        let eth_path = DerivationPath::new(
+            slip44::ETHEREUM,
+            crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
+            DerivationPath::BIP44_PURPOSE,
+        );
+        let zil_path = DerivationPath::new(
+            slip44::ZILLIQA,
+            crypto::bip49::DerivationType::AddressIndex(0, 0, 1),
+            DerivationPath::BIP44_PURPOSE,
+        );
 
         assert_eq!(eth_path.get_path(), "m/44'/60'/0'/0/0");
         assert_eq!(zil_path.get_path(), "m/44'/313'/0'/0/1");
@@ -1290,13 +1302,15 @@ mod tests_keypair {
 
     #[test]
     fn test_tron_bip39_derivation() {
-        use test_data::ANVIL_MNEMONIC;
-
         let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let seed = m.to_seed(&SecretString::from("")).unwrap();
 
-        let tron_path = DerivationPath::new(slip44::TRON, crypto::bip49::DerivationType::AddressIndex(0, 0, 0), DerivationPath::BIP44_PURPOSE, None);
-        let tron_key_pair = KeyPair::from_bip39_seed(&seed, &tron_path).unwrap();
+        let tron_path = DerivationPath::new(
+            slip44::TRON,
+            crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
+            DerivationPath::BIP44_PURPOSE,
+        );
+        let tron_key_pair = KeyPair::from_bip39_seed(&seed, &tron_path, None).unwrap();
         let tron_addr = tron_key_pair.get_addr().unwrap();
 
         assert!(matches!(tron_key_pair, KeyPair::Secp256k1Tron(_)));
@@ -1309,7 +1323,11 @@ mod tests_keypair {
 
     #[test]
     fn test_tron_derivation_path() {
-        let tron_path = DerivationPath::new(slip44::TRON, crypto::bip49::DerivationType::AddressIndex(0, 0, 0), DerivationPath::BIP44_PURPOSE, None);
+        let tron_path = DerivationPath::new(
+            slip44::TRON,
+            crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
+            DerivationPath::BIP44_PURPOSE,
+        );
 
         assert_eq!(tron_path.get_path(), "m/44'/195'/0'/0/0");
     }
@@ -1340,17 +1358,18 @@ mod tests_keypair {
 
     #[test]
     fn test_tron_multiple_addresses_from_mnemonic() {
-        use test_data::ANVIL_MNEMONIC;
-
         let m = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let seed = m.to_seed(&SecretString::from("")).unwrap();
 
         let expected_addresses = test_data::tron_addresses::ALL;
 
         for (index, expected_addr) in expected_addresses.iter().enumerate() {
-            let tron_path =
-                DerivationPath::new(slip44::TRON, crypto::bip49::DerivationType::AddressIndex(0, 0, index), DerivationPath::BIP44_PURPOSE, None);
-            let keypair = KeyPair::from_bip39_seed(&seed, &tron_path).unwrap();
+            let tron_path = DerivationPath::new(
+                slip44::TRON,
+                crypto::bip49::DerivationType::AddressIndex(0, 0, index),
+                DerivationPath::BIP44_PURPOSE,
+            );
+            let keypair = KeyPair::from_bip39_seed(&seed, &tron_path, None).unwrap();
             let addr = keypair.get_addr().unwrap();
             let derived_addr = addr.auto_format();
 
@@ -1384,14 +1403,24 @@ mod tests_keypair {
         let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
 
         let vectors: &[(crypto::bip49::DerivationType, &str)] = &[
-            (crypto::bip49::DerivationType::Root, "9tKf8Q98FsGKJiM4oqMnTxmYH3fU2qJzSwzc76vgzyBT"),
-            (crypto::bip49::DerivationType::Account(0), "BtELVjZSaWhMat94P9HyasX3Gvpv6C7WHXJGqWdZbwSQ"),
-            (crypto::bip49::DerivationType::Account(1), "M9juqHHtP85PvRKX3d4FS9jkF1WHZwyX3dG7NcYswdH"),
+            (
+                crypto::bip49::DerivationType::Root,
+                "9tKf8Q98FsGKJiM4oqMnTxmYH3fU2qJzSwzc76vgzyBT",
+            ),
+            (
+                crypto::bip49::DerivationType::Account(0),
+                "BtELVjZSaWhMat94P9HyasX3Gvpv6C7WHXJGqWdZbwSQ",
+            ),
+            (
+                crypto::bip49::DerivationType::Account(1),
+                "M9juqHHtP85PvRKX3d4FS9jkF1WHZwyX3dG7NcYswdH",
+            ),
         ];
 
         for (derivation, expected_addr) in vectors {
-            let path = DerivationPath::new(slip44::SOLANA, *derivation, DerivationPath::BIP44_PURPOSE, None);
-            let keypair = KeyPair::from_bip39_seed(&seed, &path).unwrap();
+            let path =
+                DerivationPath::new(slip44::SOLANA, *derivation, DerivationPath::BIP44_PURPOSE);
+            let keypair = KeyPair::from_bip39_seed(&seed, &path, None).unwrap();
             assert!(matches!(keypair, KeyPair::Ed25519Solana(_)));
             let addr = keypair.get_addr().unwrap().auto_format();
             assert_eq!(addr, *expected_addr);
@@ -1404,7 +1433,10 @@ mod tests_keypair {
         let message = b"hello solana";
 
         let signature = keypair.sign_message(message).unwrap();
-        assert!(matches!(signature, crate::signature::Signature::Ed25519Solana(_)));
+        assert!(matches!(
+            signature,
+            crate::signature::Signature::Ed25519Solana(_)
+        ));
 
         let is_valid = keypair.verify_sig(message, &signature).unwrap();
         assert!(is_valid);
@@ -1436,8 +1468,12 @@ mod tests_keypair {
         let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(phrase)).unwrap();
         let seed = mnemonic.to_seed(&SecretString::from("")).unwrap();
 
-        let path = DerivationPath::new(slip44::SOLANA, crypto::bip49::DerivationType::Account(0), DerivationPath::BIP44_PURPOSE, None);
-        let keypair = KeyPair::from_bip39_seed(&seed, &path).unwrap();
+        let path = DerivationPath::new(
+            slip44::SOLANA,
+            crypto::bip49::DerivationType::Account(0),
+            DerivationPath::BIP44_PURPOSE,
+        );
+        let keypair = KeyPair::from_bip39_seed(&seed, &path, None).unwrap();
 
         let sk = keypair.get_secretkey().unwrap();
         let keypair2 = KeyPair::from_secret_key(sk).unwrap();

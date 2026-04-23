@@ -272,11 +272,9 @@ impl WalletManagement for Background {
                 passphrase: params.passphrase,
                 indexes: params.accounts,
                 wallet_name: params.wallet_name,
-                bip: params.bip,
                 biometric_type: params.biometric_type,
                 chain_config: &provider.config,
                 chains: &chains,
-                derivation_type: params.derivation_type,
             },
             wallet_config,
             ftokens,
@@ -447,10 +445,6 @@ impl WalletManagement for Background {
             return Err(WalletErrors::InvalidBIPPath(data.slip44, new_bip).into());
         }
 
-        if !DerivationPath::supported_bips(slip44::BITCOIN).contains(&new_bip) {
-            return Err(WalletErrors::InvalidBIPPath(data.slip44, new_bip).into());
-        }
-
         if new_bip == data.bip {
             return Ok(());
         }
@@ -574,8 +568,6 @@ mod tests_background {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -600,8 +592,6 @@ mod tests_background {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -635,8 +625,6 @@ mod tests_background {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -689,8 +677,6 @@ mod tests_background {
             wallet_name: "Test Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -823,8 +809,6 @@ mod tests_background {
             wallet_name: "BTC Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP84_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -889,8 +873,6 @@ mod tests_background {
             wallet_name: "BTC Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP84_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -943,8 +925,6 @@ mod tests_background {
             wallet_name: "ETH Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -977,8 +957,6 @@ mod tests_background {
             wallet_name: "BTC Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP84_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();

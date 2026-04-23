@@ -10,23 +10,11 @@ pub enum DerivationType {
     AddressIndex(usize, usize, usize),
 }
 
-impl DerivationType {
-    pub fn with_index(derivation_type: u8, index: usize) -> Result<Self, Bip329Errors> {
-        match Self::from_u8(derivation_type)? {
-            DerivationType::Root => Ok(DerivationType::Root),
-            DerivationType::Account(_) => Ok(DerivationType::Account(index)),
-            DerivationType::AccountChange(_, _) => Ok(DerivationType::AccountChange(index, 0)),
-            DerivationType::AddressIndex(_, _, _) => Ok(DerivationType::AddressIndex(0, 0, index)),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct DerivationPath {
     pub slip44: u32,
     pub bip: u32,
     pub derivation: DerivationType,
-    pub network: Option<bitcoin::Network>,
 }
 
 pub fn split_path(path: &str) -> Result<Vec<u32>, Bip329Errors> {
@@ -68,35 +56,6 @@ pub fn components_to_derivation_path(components: &[u32]) -> Vec<u8> {
     buffer
 }
 
-pub trait DerivationTypeCodec {
-    fn to_u8(&self) -> u8;
-    fn from_u8(val: u8) -> Result<DerivationType, Bip329Errors>;
-}
-
-pub fn default_derivation_type() -> u8 {
-    3
-}
-
-impl DerivationTypeCodec for DerivationType {
-    fn to_u8(&self) -> u8 {
-        match self {
-            DerivationType::Root => 0,
-            DerivationType::Account(_) => 1,
-            DerivationType::AccountChange(_, _) => 2,
-            DerivationType::AddressIndex(_, _, _) => 3,
-        }
-    }
-    fn from_u8(val: u8) -> Result<Self, Bip329Errors> {
-        match val {
-            0 => Ok(DerivationType::Root),
-            1 => Ok(DerivationType::Account(0)),
-            2 => Ok(DerivationType::AccountChange(0, 0)),
-            3 => Ok(DerivationType::AddressIndex(0, 0, 0)),
-            _ => Err(Bip329Errors::InvalidDerivationType(val)),
-        }
-    }
-}
-
 impl DerivationPath {
     pub const HARDENED: u32 = 0x80000000;
     pub const BIP44_PURPOSE: u32 = 44;
@@ -104,29 +63,28 @@ impl DerivationPath {
     pub const BIP84_PURPOSE: u32 = 84;
     pub const BIP86_PURPOSE: u32 = 86;
 
-    pub fn supported_bips<'a>(slip44: u32) -> &'a [u32] {
-        match slip44 {
-            super::slip44::BITCOIN => &[
-                DerivationPath::BIP44_PURPOSE,
-                DerivationPath::BIP49_PURPOSE,
-                DerivationPath::BIP84_PURPOSE,
-                DerivationPath::BIP86_PURPOSE,
-            ],
-            _ => &[44],
-        }
-    }
+    pub fn with_index(slip44: u32, params: (usize, usize, usize)) -> Self {
+        let derivation = match slip44 {
+            super::slip44::SOLANA => DerivationType::AccountChange(params.0, params.1),
+            _ => DerivationType::AddressIndex(params.0, params.1, params.2),
+        };
+        let bip = match slip44 {
+            super::slip44::BITCOIN => Self::BIP86_PURPOSE,
+            _ => Self::BIP44_PURPOSE,
+        };
 
-    pub fn new(
-        slip44: u32,
-        derivation: DerivationType,
-        bip: u32,
-        network: Option<bitcoin::Network>,
-    ) -> Self {
         Self {
             slip44,
             bip,
             derivation,
-            network,
+        }
+    }
+
+    pub fn new(slip44: u32, derivation: DerivationType, bip: u32) -> Self {
+        Self {
+            slip44,
+            bip,
+            derivation,
         }
     }
 
@@ -221,7 +179,6 @@ impl TryFrom<&str> for DerivationPath {
             slip44,
             bip,
             derivation,
-            network: None,
         })
     }
 }
@@ -243,7 +200,6 @@ mod tests {
             slip44::ETHEREUM,
             DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP44_PURPOSE,
-            None,
         );
         assert_eq!(eth_path.get_path(), "m/44'/60'/0'/0/0");
     }
@@ -254,7 +210,6 @@ mod tests {
             slip44::ZILLIQA,
             DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP44_PURPOSE,
-            None,
         );
         assert_eq!(zil_path.get_path(), "m/44'/313'/0'/0/0");
     }
@@ -265,7 +220,6 @@ mod tests {
             slip44::ETHEREUM,
             DerivationType::AddressIndex(0, 0, 5),
             DerivationPath::BIP44_PURPOSE,
-            None,
         );
         assert_eq!(eth_path.get_path(), "m/44'/60'/0'/0/5");
         assert_eq!(eth_path.get_index(), 5);
@@ -277,7 +231,6 @@ mod tests {
             slip44::ETHEREUM,
             DerivationType::AddressIndex(0, 0, 0),
             DerivationPath::BIP44_PURPOSE,
-            None,
         );
         assert_eq!(eth_path.to_string(), "m/44'/60'/0'/0/0");
     }
@@ -379,7 +332,6 @@ mod tests {
             slip44::SOLANA,
             DerivationType::Root,
             DerivationPath::BIP44_PURPOSE,
-            None,
         );
         assert_eq!(path.get_path(), "m/44'/501'");
     }
@@ -391,7 +343,6 @@ mod tests {
                 slip44::SOLANA,
                 DerivationType::Account(i),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             );
             assert_eq!(path.get_path(), format!("m/44'/501'/{}'", i));
             assert_eq!(path.get_index(), i);
@@ -405,7 +356,6 @@ mod tests {
                 slip44::SOLANA,
                 DerivationType::AccountChange(i, 0),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             );
             assert_eq!(path.get_path(), format!("m/44'/501'/{}'/0'", i));
             assert_eq!(path.get_index(), i);
@@ -419,79 +369,66 @@ mod tests {
                 slip44::SOLANA,
                 DerivationType::Root,
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::SOLANA,
                 DerivationType::Account(0),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::SOLANA,
                 DerivationType::Account(5),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::SOLANA,
                 DerivationType::AccountChange(0, 0),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::SOLANA,
                 DerivationType::AccountChange(3, 1),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::ETHEREUM,
                 DerivationType::AddressIndex(0, 0, 0),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::ETHEREUM,
                 DerivationType::AddressIndex(0, 0, 5),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::ETHEREUM,
                 DerivationType::AddressIndex(1, 0, 10),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::ZILLIQA,
                 DerivationType::AddressIndex(0, 0, 0),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::TRON,
                 DerivationType::AddressIndex(0, 0, 3),
                 DerivationPath::BIP44_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::BITCOIN,
                 DerivationType::AddressIndex(0, 0, 0),
                 DerivationPath::BIP86_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::BITCOIN,
                 DerivationType::AddressIndex(0, 0, 0),
                 DerivationPath::BIP49_PURPOSE,
-                None,
             ),
             DerivationPath::new(
                 slip44::BITCOIN,
                 DerivationType::AddressIndex(0, 0, 0),
                 DerivationPath::BIP84_PURPOSE,
-                None,
             ),
         ];
 
