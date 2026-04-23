@@ -35,7 +35,7 @@ pub fn ntru_keys_from_seed(seed_bytes: &[u8; SHA512_SIZE]) -> Result<(PubKey, Pr
 }
 
 pub fn ntru_encrypt(pk: PubKey, plaintext: &[u8]) -> Result<Vec<u8>> {
-    let mut pq_rng = ChaChaRng::from_entropy();
+    let mut pq_rng = ChaChaRng::from_rng(&mut rand::rng());
 
     ntru::std_cipher::bytes_encrypt(&mut pq_rng, plaintext, pk)
         .map_err(NTRULPCipherErrors::EncryptError)
@@ -51,11 +51,12 @@ pub fn ntru_decrypt(sk: PrivKey, ciphertext: Vec<u8>) -> Result<Vec<u8>> {
 mod tests {
     use super::{ntru_keys_from_seed, SHA512_SIZE};
     use crate::ntrup::{ntru_decrypt, ntru_encrypt};
-    use rand::RngCore;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaChaRng;
 
     #[test]
     fn test_encrypt_and_decrypt() {
-        let mut rng = rand::thread_rng();
+        let mut rng = ChaChaRng::from_rng(&mut rand::rng());
         let mut password = [0u8; 2000];
         let mut plaintext = vec![0u8; 255];
         let mut seed = [0u8; SHA512_SIZE];

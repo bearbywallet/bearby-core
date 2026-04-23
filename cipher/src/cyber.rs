@@ -3,16 +3,16 @@ use aes_gcm::{
     Aes256Gcm, Key, Nonce,
 };
 use errors::cipher::CyberErrors;
+use pq_safe_kyber::{decapsulate, encapsulate, keypair, Keypair, KyberError};
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
-use safe_pqc_kyber::{decapsulate, encapsulate, keypair, Keypair, KyberError};
 
 type Result<T> = std::result::Result<T, CyberErrors>;
 
 pub const CYBER_NONCE_SIZE: usize = 12;
 
 pub fn cyber_generate_keypair() -> Keypair {
-    let mut rng = rand::thread_rng();
+    let mut rng = ChaChaRng::from_rng(&mut rand::rng());
     keypair(&mut rng)
 }
 
@@ -30,7 +30,7 @@ pub fn cyber_generate_keypair_from_seed(seed: &[u8]) -> Result<Keypair> {
 }
 
 pub fn cyber_encapsulate_and_encrypt(public_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
-    let mut rng = rand::thread_rng();
+    let mut rng = ChaChaRng::from_rng(&mut rand::rng());
 
     let (kyber_ciphertext, shared_secret) =
         encapsulate(public_key, &mut rng).map_err(map_kyber_error)?;
@@ -54,7 +54,7 @@ pub fn cyber_encapsulate_and_encrypt(public_key: &[u8], plaintext: &[u8]) -> Res
 }
 
 pub fn cyber_decapsulate_and_decrypt(secret_key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
-    let kyber_ciphertext_size = safe_pqc_kyber::KYBER_CIPHERTEXTBYTES;
+    let kyber_ciphertext_size = pq_safe_kyber::KYBER_CIPHERTEXTBYTES;
 
     if ciphertext.len() <= kyber_ciphertext_size + CYBER_NONCE_SIZE {
         return Err(CyberErrors::InvalidCiphertextLength);
@@ -81,7 +81,7 @@ pub fn cyber_decapsulate_and_decrypt(secret_key: &[u8], ciphertext: &[u8]) -> Re
 }
 
 pub fn cyber_encapsulate(public_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-    let mut rng = rand::thread_rng();
+    let mut rng = ChaChaRng::from_rng(&mut rand::rng());
 
     let (ciphertext, shared_secret) = encapsulate(public_key, &mut rng).map_err(map_kyber_error)?;
 
@@ -104,9 +104,8 @@ fn map_kyber_error(err: KyberError) -> CyberErrors {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{RngCore, SeedableRng};
-    use rand_chacha::ChaCha20Rng;
-    use safe_pqc_kyber::{KYBER_PUBLICKEYBYTES, KYBER_SECRETKEYBYTES};
+    use pq_safe_kyber::{KYBER_PUBLICKEYBYTES, KYBER_SECRETKEYBYTES};
+    use rand::Rng;
 
     #[test]
     fn test_keypair_generation() {
@@ -118,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_encapsulate_and_decrypt() {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaChaRng::from_rng(&mut rand::rng());
         let mut plaintext = [0u8; 100];
 
         rng.fill_bytes(&mut plaintext);

@@ -38,12 +38,12 @@ pub fn aes_gcm_decrypt(key: &AESKey, cipher_nonce: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{aes_gcm_decrypt, aes_gcm_encrypt, AES_GCM_KEY_SIZE};
-    use rand::{RngCore, SeedableRng};
-    use rand_chacha::ChaCha20Rng;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaChaRng;
 
     #[test]
     fn encrypt_and_decrypt() {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaChaRng::from_rng(&mut rand::rng());
         let mut plaintext = [0u8; 100];
         let mut key = [0u8; AES_GCM_KEY_SIZE];
 

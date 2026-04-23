@@ -1,6 +1,6 @@
 use errors::cipher::KuznechikErrors;
 use kuznechik::{AlgOfb, KeyStore, Kuznechik};
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 
 type Result<T> = std::result::Result<T, KuznechikErrors>;
@@ -14,7 +14,7 @@ pub fn kuznechik_encrypt(key: &KuznechikKey, plaintext: &[u8]) -> Result<Vec<u8>
     let kuz = KeyStore::with_password(&key_hex);
 
     let mut gamma = vec![0u8; KUZNECHIK_GAMMA_SIZE];
-    let mut rng = ChaChaRng::from_entropy();
+    let mut rng = ChaChaRng::from_rng(&mut rand::rng());
     rng.fill_bytes(&mut gamma);
 
     let mut cipher = AlgOfb::new(&kuz).gamma(gamma.clone());
@@ -46,12 +46,11 @@ pub fn kuznechik_decrypt(key: &KuznechikKey, ciphertext: &[u8]) -> Result<Vec<u8
 #[cfg(test)]
 mod tests_kuznechik {
     use super::*;
-    use rand::{RngCore, SeedableRng};
-    use rand_chacha::ChaCha20Rng;
+    use rand::Rng;
 
     #[test]
     fn encrypt_and_decrypt() {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaChaRng::from_rng(&mut rand::rng());
         let mut plaintext = [0u8; 100];
         let mut key = [0u8; KUZNECHIK_KEY_SIZE];
 

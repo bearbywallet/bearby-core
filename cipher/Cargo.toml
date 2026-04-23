@@ -17,4 +17,4 @@ errors = { path = "../errors" }
 config = { path = "../config" }
 aes-gcm = "0.10.3"
 kuznechik = "0.4.0"
-safe_pqc_kyber = "0.6.3"
+pq-safe-kyber = "0.7.0"

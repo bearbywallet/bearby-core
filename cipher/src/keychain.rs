@@ -17,7 +17,7 @@ use ntrulp::{
     key::{priv_key::PrivKey, pub_key::PubKey},
     params::params::{PUBLICKEYS_BYTES, SECRETKEYS_BYTES},
 };
-use safe_pqc_kyber::Keypair as CyberKeypair;
+use pq_safe_kyber::Keypair as CyberKeypair;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -210,12 +210,12 @@ mod keychain_tests {
     use super::{CipherOrders, KeyChain};
     use config::cipher::PROOF_SIZE;
     use errors::{cipher::AesGCMErrors, keychain::KeyChainErrors};
-    use rand::{RngCore, SeedableRng};
-    use rand_chacha::ChaCha20Rng;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaChaRng;
 
     #[test]
     fn test_init_keychain() {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaChaRng::from_rng(&mut rand::rng());
         let mut password = [0u8; 32];
 
         rng.fill_bytes(&mut password);
@@ -227,7 +227,7 @@ mod keychain_tests {
 
     #[test]
     fn test_bytes() {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaChaRng::from_rng(&mut rand::rng());
         let mut password = [0u8; 32];
         let mut plaintext = [0u8; 1024];
 
@@ -251,7 +251,7 @@ mod keychain_tests {
 
     #[test]
     fn test_encrypt_and_decrypt() {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaChaRng::from_rng(&mut rand::rng());
         let mut password = [0u8; 32];
         let mut plaintext = [0u8; 1024];
 
@@ -280,7 +280,7 @@ mod keychain_tests {
 
     #[test]
     fn test_make_verify_proof() {
-        let mut rng = ChaCha20Rng::from_entropy();
+        let mut rng = ChaChaRng::from_rng(&mut rand::rng());
         let mut password = [0u8; 32];
 
         rng.fill_bytes(&mut password);
