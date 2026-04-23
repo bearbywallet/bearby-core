@@ -33,11 +33,9 @@ pub struct LedgerParams<'a> {
     pub proof: [u8; KEY_SIZE],
     pub account_names: Vec<String>,
     pub wallet_index: usize,
-    pub bip: u32,
     pub wallet_name: String,
     pub biometric_type: AuthMethod,
     pub chain_config: &'a ChainConfig,
-    pub derivation_type: u8,
 }
 
 pub struct SecretKeyParams<'a> {

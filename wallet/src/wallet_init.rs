@@ -4,7 +4,6 @@ use crate::{
     wallet_types::WalletTypes,
     Result, SecretKeyParams, Wallet, WalletAddrType,
 };
-use crypto::bip49::DerivationType;
 use crypto::slip44::SOLANA;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -74,6 +73,7 @@ impl WalletInit for Wallet {
 
         let wallet_address: [u8; SHA256_SIZE] = Self::wallet_key_gen();
         let target_network = params.chain_config.bitcoin_network();
+        let target_bip = crypto::bip49::DerivationPath::default_bip(params.chain_config.slip_44);
         let accounts: Vec<AccountV2> = params
             .accounts
             .into_iter()
@@ -103,7 +103,7 @@ impl WalletInit for Wallet {
             .collect::<std::result::Result<Vec<account::AccountV2>, AccountErrors>>()?;
         let slip44_accounts = HashMap::from([(
             params.chain_config.slip_44,
-            HashMap::from([(params.bip, accounts)]),
+            HashMap::from([(target_bip, accounts)]),
         )]);
 
         let data = WalletDataV2 {
@@ -116,9 +116,9 @@ impl WalletInit for Wallet {
             wallet_type: WalletTypes::Ledger(params.ledger_id),
             selected_account: 0,
             chain_hash: params.chain_config.hash(),
-            bip: params.bip,
+            bip: target_bip,
             bip_preferences: HashMap::new(),
-            derivation_type: params.derivation_type,
+            derivation_type: 0,
         };
         let wallet = Self {
             storage: config.storage,
@@ -339,10 +339,8 @@ mod tests {
                 passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "Wllaet name".to_string(),
-                bip: DerivationPath::BIP44_PURPOSE,
                 biometric_type: AuthMethod::Biometric,
                 chains: &[chain_config.clone()],
-                derivation_type: default_derivation_type(),
             },
             wallet_config,
             vec![],
@@ -393,10 +391,8 @@ mod tests {
                 passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "Bitcoin Wallet".to_string(),
-                bip: DerivationPath::BIP84_PURPOSE,
                 biometric_type: AuthMethod::Biometric,
                 chains: &[chain_config.clone()],
-                derivation_type: default_derivation_type(),
             },
             wallet_config,
             vec![],
@@ -488,10 +484,8 @@ mod tests {
                 passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "BIP44 Legacy Wallet".to_string(),
-                bip: DerivationPath::BIP44_PURPOSE,
                 biometric_type: AuthMethod::Biometric,
                 chains: &[chain_config.clone()],
-                derivation_type: default_derivation_type(),
             },
             wallet_config,
             vec![],
@@ -553,10 +547,8 @@ mod tests {
                 passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "BIP49 Nested SegWit Wallet".to_string(),
-                bip: DerivationPath::BIP49_PURPOSE,
                 biometric_type: AuthMethod::Biometric,
                 chains: &[chain_config.clone()],
-                derivation_type: default_derivation_type(),
             },
             wallet_config,
             vec![],
@@ -618,10 +610,8 @@ mod tests {
                 passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "BIP84 Native SegWit Wallet".to_string(),
-                bip: DerivationPath::BIP84_PURPOSE,
                 biometric_type: AuthMethod::Biometric,
                 chains: &[chain_config.clone()],
-                derivation_type: default_derivation_type(),
             },
             wallet_config,
             vec![],
@@ -683,10 +673,8 @@ mod tests {
                 passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "BIP86 Taproot Wallet".to_string(),
-                bip: DerivationPath::BIP86_PURPOSE,
                 biometric_type: AuthMethod::Biometric,
                 chains: &[chain_config.clone()],
-                derivation_type: default_derivation_type(),
             },
             wallet_config,
             vec![],

@@ -45,12 +45,10 @@ pub struct BackgroundLedgerParams {
     pub wallet_name: String,
     pub account_names: Vec<String>,
     pub wallet_index: usize,
-    pub bip: u32,
     pub biometric_type: AuthMethod,
     pub wallet_settings: WalletSettings,
     pub chain_hash: u64,
     pub ftokens: Vec<FToken>,
-    pub derivation_type: u8,
 }
 
 pub struct Background {
