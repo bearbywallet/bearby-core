@@ -4,7 +4,6 @@ use crate::{
     wallet_types::WalletTypes,
     Result, SecretKeyParams, Wallet, WalletAddrType,
 };
-use crypto::slip44::SOLANA;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -148,6 +147,8 @@ impl WalletInit for Wallet {
         drop(cipher_proof);
         let cipher_entropy_key = Self::safe_storage_save(&cipher_sk, Arc::clone(&config.storage))?;
         let wallet_address: [u8; SHA256_SIZE] = Self::wallet_key_gen();
+        let target_bip = crypto::bip49::DerivationPath::default_bip(params.chain_config.slip_44);
+
         // SecretKey may stores only one account.
         let account = AccountV2::from_secret_key(
             params.sk,
@@ -157,11 +158,11 @@ impl WalletInit for Wallet {
         )?;
         let slip44_accounts = HashMap::from([(
             params.chain_config.slip_44,
-            HashMap::from([(params.bip, vec![account])]),
+            HashMap::from([(target_bip, vec![account])]),
         )]);
 
         let data = WalletDataV2 {
-            bip: params.bip,
+            bip: target_bip,
             wallet_name: params.wallet_name,
             biometric_type: params.biometric_type,
             proof_key,
@@ -228,11 +229,7 @@ impl WalletInit for Wallet {
                     let bip = crypto::bip49::DerivationPath::default_bip(slip44);
 
                     for (idx, name) in idxs {
-                        let path = if slip44 == SOLANA {
-                            crypto::bip49::DerivationPath::with_index(slip44, (idx, 0, 0))
-                        } else {
-                            crypto::bip49::DerivationPath::with_index(slip44, (0, 0, idx))
-                        };
+                        let path = crypto::bip49::DerivationPath::with_index(slip44, (0, 0, idx));
                         let account = AccountV2::from_hd(&seed, name, &path, network)?;
                         accounts.push(account);
                     }
@@ -289,7 +286,7 @@ mod tests {
         keychain::KeyChain,
     };
     use config::{argon::KEY_SIZE, bip39::EN_WORDS, cipher::PROOF_SIZE, session::AuthMethod};
-    use crypto::{bip49::DerivationPath, slip44};
+    use crypto::slip44;
     use errors::wallet::WalletErrors;
     use pqbip39::mnemonic::Mnemonic;
     use proto::keypair::KeyPair;
@@ -433,7 +430,6 @@ mod tests {
                 sk,
                 proof,
                 wallet_name: name.to_string(),
-                bip: DerivationPath::BIP44_PURPOSE,
                 biometric_type: AuthMethod::None,
                 chain_config: &chain_config,
             },

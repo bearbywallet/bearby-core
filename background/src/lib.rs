@@ -31,7 +31,6 @@ pub struct BackgroundSKParams<'a> {
     pub password: &'a SecretString,
     pub secret_key: SecretKey,
     pub wallet_name: String,
-    pub bip: u32,
     pub biometric_type: AuthMethod,
     pub wallet_settings: WalletSettings,
     pub chain_hash: u64,

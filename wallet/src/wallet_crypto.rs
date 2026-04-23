@@ -70,7 +70,7 @@ impl WalletCrypto for Wallet {
                 let m = self.reveal_mnemonic(seed_bytes)?;
                 let seed_secret = m.to_seed(&SecretString::from(passphrase.unwrap_or("")))?;
                 let hd_index = account.account_type.value();
-                let (bip_purpose, network) = match &account.addr {
+                let (_, network) = match &account.addr {
                     Address::Secp256k1Bitcoin(_) => {
                         let purpose = account.addr.get_bip_purpose();
                         let net = account.addr.get_bitcoin_network()?;
@@ -79,15 +79,11 @@ impl WalletCrypto for Wallet {
                     _ => (DerivationPath::BIP44_PURPOSE, None),
                 };
 
-                let derivation =
-                    crypto::bip49::DerivationType::with_index(data.derivation_type, hd_index)?;
-                let bip_path = crypto::bip49::DerivationPath::new(
+                let bip_path = crypto::bip49::DerivationPath::with_index(
                     provider.config.slip_44,
-                    derivation,
-                    bip_purpose,
-                    network,
+                    (0, 0, hd_index),
                 );
-                let mut keypair = KeyPair::from_bip39_seed(&seed_secret, &bip_path)?;
+                let mut keypair = KeyPair::from_bip39_seed(&seed_secret, &bip_path, network)?;
 
                 match account.addr {
                     Address::Secp256k1Sha256(_) => {
@@ -164,12 +160,12 @@ impl WalletCrypto for Wallet {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests_wallet_crypto {
     use super::*;
     use crate::{wallet_init::WalletInit, Bip39Params, SecretKeyParams, Wallet, WalletConfig};
     use cipher::argon2::{derive_key, ARGON2_DEFAULT_CONFIG};
     use config::{argon::KEY_SIZE, cipher::PROOF_SIZE, session::AuthMethod};
-    use crypto::{bip49::DerivationPath, slip44};
+    use crypto::slip44;
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
     use secrecy::ExposeSecret;
@@ -207,7 +203,6 @@ mod tests {
                 sk,
                 proof,
                 wallet_name: "Wallet from SK".to_string(),
-                bip: DerivationPath::BIP44_PURPOSE,
                 biometric_type: AuthMethod::Biometric,
                 chain_config: &chain_config,
             },
@@ -222,7 +217,6 @@ mod tests {
         argon_seed: &Argon2Seed,
         indexes: &[(usize, String)],
         chain_config: &ChainConfig,
-        bip: u32,
     ) -> Wallet {
         let keychain = KeyChain::from_seed(argon_seed).unwrap();
         let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
@@ -244,10 +238,8 @@ mod tests {
                 passphrase: &empty_passphrase(),
                 indexes,
                 wallet_name: "Test Wallet".to_string(),
-                bip,
                 biometric_type: AuthMethod::Biometric,
                 chains: &[chain_config.clone()],
-                derivation_type: crypto::bip49::default_derivation_type(),
             },
             wallet_config,
             vec![],
@@ -311,7 +303,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP44_PURPOSE,
         );
 
         for i in 0..3 {
@@ -343,7 +334,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP44_PURPOSE,
         );
 
         for i in 0..2 {
@@ -375,7 +365,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP44_PURPOSE,
         );
 
         let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
@@ -407,7 +396,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP49_PURPOSE,
         );
 
         let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
@@ -439,7 +427,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP84_PURPOSE,
         );
 
         for i in 0..2 {
@@ -475,7 +462,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP86_PURPOSE,
         );
 
         let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
@@ -507,7 +493,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP44_PURPOSE,
         );
 
         let revealed_mnemonic = wallet.reveal_mnemonic(&argon_seed).unwrap();
@@ -532,7 +517,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP44_PURPOSE,
         );
 
         let wrong_seed = [0u8; KEY_SIZE];
@@ -571,7 +555,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP44_PURPOSE,
         );
 
         let msg = b"Hello, Zilliqa!";
@@ -599,7 +582,6 @@ mod tests {
             &argon_seed,
             &indexes,
             &chain_config,
-            DerivationPath::BIP84_PURPOSE,
         );
 
         let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();

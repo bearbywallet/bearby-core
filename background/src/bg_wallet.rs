@@ -394,7 +394,6 @@ impl WalletManagement for Background {
                 sk: params.secret_key,
                 proof,
                 wallet_name: params.wallet_name,
-                bip: params.bip,
                 biometric_type: params.biometric_type,
                 chain_config: &provider.config,
             },
@@ -635,7 +634,6 @@ mod tests_background {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
         })
         .await
         .unwrap();
@@ -753,7 +751,6 @@ mod tests_background {
             wallet_name: "Bitcoin Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP84_PURPOSE,
         })
         .await
         .unwrap();

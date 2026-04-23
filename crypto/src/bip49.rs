@@ -65,7 +65,7 @@ impl DerivationPath {
 
     pub fn with_index(slip44: u32, params: (usize, usize, usize)) -> Self {
         let derivation = match slip44 {
-            super::slip44::SOLANA => DerivationType::AccountChange(params.0, params.1),
+            super::slip44::SOLANA => DerivationType::AccountChange(params.2, 0),
             _ => DerivationType::AddressIndex(params.0, params.1, params.2),
         };
         let bip = match slip44 {

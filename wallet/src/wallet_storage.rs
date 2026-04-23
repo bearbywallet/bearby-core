@@ -266,7 +266,7 @@ mod tests_wallet_storage {
             biometric_type: AuthMethod::None,
             chain_hash: 0,
             bip_preferences: HashMap::new(),
-            derivation_type: crypto::bip49::default_derivation_type(),
+            derivation_type: 0,
         };
 
         // Test saving wallet data
@@ -314,18 +314,18 @@ mod tests_wallet_storage {
         let chain_hash: u64 = 777;
         let chain_id: u64 = 1;
 
+        let net = Some(bitcoin::Network::Bitcoin);
         let bip84 = |index: usize| {
             DerivationPath::new(
                 slip44::BITCOIN,
                 crypto::bip49::DerivationType::AddressIndex(0, 0, index),
                 DerivationPath::BIP84_PURPOSE,
-                Some(bitcoin::Network::Bitcoin),
             )
         };
 
-        let acc0_v2 = AccountV2::from_hd(&seed, "BTC 0".into(), &bip84(0)).unwrap();
-        let acc1_v2 = AccountV2::from_hd(&seed, "BTC 1".into(), &bip84(1)).unwrap();
-        let acc2_v2 = AccountV2::from_hd(&seed, "BTC 2".into(), &bip84(2)).unwrap();
+        let acc0_v2 = AccountV2::from_hd(&seed, "BTC 0".into(), &bip84(0), net).unwrap();
+        let acc1_v2 = AccountV2::from_hd(&seed, "BTC 1".into(), &bip84(1), net).unwrap();
+        let acc2_v2 = AccountV2::from_hd(&seed, "BTC 2".into(), &bip84(2), net).unwrap();
 
         let make_v1 = |acc: &AccountV2, index: usize| AccountV1 {
             name: acc.name.clone(),

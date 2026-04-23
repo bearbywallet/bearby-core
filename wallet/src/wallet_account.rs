@@ -243,13 +243,7 @@ impl AccountManagement for Wallet {
         let mut data = self.get_wallet_data()?;
         let m = self.reveal_mnemonic(seed_bytes)?;
         let mnemonic_seed_secret = m.to_seed(&SecretString::from(passphrase))?;
-        let eff_derivation_type = if data.slip44 == slip44::SOLANA {
-            2
-        } else {
-            data.derivation_type
-        };
-        let derivation = DerivationType::with_index(eff_derivation_type, index)?;
-        let bip49 = DerivationPath::new(data.slip44, derivation, data.bip, network);
+        let bip49 = DerivationPath::with_index(data.slip44, (0, 0, index));
         let has_account = data
             .slip44_accounts
             .get(&data.slip44)
@@ -265,7 +259,7 @@ impl AccountManagement for Wallet {
             return Err(WalletErrors::ExistsAccount(bip49.get_index()));
         }
 
-        let hd_account = AccountV2::from_hd(&mnemonic_seed_secret, name, &bip49)?;
+        let hd_account = AccountV2::from_hd(&mnemonic_seed_secret, name, &bip49, network)?;
 
         data.slip44_accounts
             .get_mut(&data.slip44)

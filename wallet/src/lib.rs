@@ -44,7 +44,6 @@ pub struct SecretKeyParams<'a> {
     pub wallet_name: String,
     pub biometric_type: AuthMethod,
     pub chain_config: &'a ChainConfig,
-    pub bip: u32,
 }
 
 pub struct Bip39Params<'a> {

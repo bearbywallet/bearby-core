@@ -3,7 +3,7 @@ use config::argon::{APP_ID, KEY_SIZE, WALLET_SALT};
 use errors::cipher::CipherErrors;
 
 type Result<T> = std::result::Result<T, CipherErrors>;
-pub type Argon2Seed = [u8; KEY_SIZE];
+pub type Argon2Seed = [u8; KEY_SIZE]; //TODO: make it secret
 
 pub const ARGON2_DEFAULT_CONFIG: Config = Config {
     variant: Variant::Argon2id,
