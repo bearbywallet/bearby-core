@@ -175,7 +175,7 @@ impl WorkerManager for Background {
 #[cfg(test)]
 mod tests_background_worker {
     use history::{status::TransactionStatus, transaction::HistoricalTransaction};
-    use secrecy::{ExposeSecret, SecretString};
+    use secrecy::SecretString;
     use tokio::sync::mpsc;
 
     use alloy::primitives::map::HashMap;
@@ -184,7 +184,7 @@ mod tests_background_worker {
     use proto::address::Address;
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
-    use test_data::{gen_eth_account, gen_zil_account, TEST_PASSWORD};
+    use test_data::{empty_passphrase, gen_eth_account, gen_zil_account, TEST_PASSWORD};
     use token::ft::FToken;
     use wallet::wallet_storage::StorageOperations;
 
@@ -252,10 +252,10 @@ mod tests_background_worker {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_config.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
@@ -298,10 +298,10 @@ mod tests_background_worker {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
@@ -440,10 +440,10 @@ mod tests_background_worker {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_zilliqa_mainnet_token(net_config.hash())],

@@ -98,7 +98,7 @@ mod tests_security {
     use secrecy::SecretString;
     use settings::wallet_settings::WalletSettings;
     use storage::LocalStorage;
-    use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
+    use test_data::{empty_passphrase, ANVIL_MNEMONIC, TEST_PASSWORD};
 
     use crate::{
         wallet_crypto::WalletCrypto, wallet_init::WalletInit, wallet_security::WalletSecurity,
@@ -228,7 +228,7 @@ mod tests_security {
                 chain_config: &chain_config,
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: "",
+                passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "Bitcoin Wallet".to_string(),
                 bip: DerivationPath::BIP84_PURPOSE,

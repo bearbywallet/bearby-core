@@ -8,4 +8,5 @@ config = { path = "../config" }
 crypto = { path = "../crypto" }
 proto = { path = "../proto" }
 rpc = { path = "../rpc" }
+secrecy.workspace = true
 token = { path = "../token" }

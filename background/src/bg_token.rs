@@ -372,15 +372,15 @@ mod tests_background_tokens {
     use network::btc::BtcOperations;
     use rand::RngExt;
     use rpc::network_config::{ChainConfig, Explorer};
-    use secrecy::{ExposeSecret, SecretString};
+    use secrecy::SecretString;
     use serde_json::Value;
     use std::collections::HashMap;
     use std::str::FromStr;
     use std::thread::sleep;
     use std::time::Duration;
     use test_data::{
-        anvil_accounts, gen_anvil_net_conf, gen_anvil_token, gen_btc_regtest_conf,
-        gen_sol_devnet_conf, gen_sol_token, ANVIL_MNEMONIC,
+        anvil_accounts, empty_passphrase, gen_anvil_net_conf, gen_anvil_token,
+        gen_btc_regtest_conf, gen_sol_devnet_conf, gen_sol_token, ANVIL_MNEMONIC,
     };
     use test_data::{
         gen_eth_account, gen_tron_account, gen_tron_testnet_conf, gen_tron_token, gen_zil_account,
@@ -452,10 +452,10 @@ mod tests_background_tokens {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_config.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
@@ -521,10 +521,10 @@ mod tests_background_tokens {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
@@ -594,10 +594,10 @@ mod tests_background_tokens {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_config.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![zlp_token.clone()],
@@ -661,14 +661,15 @@ mod tests_background_tokens {
             (2, "BTC TapRoot Acc 2".to_string()),
             (3, "BTC TapRoot Acc 3".to_string()),
         ];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "BTC Max wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![test_data::gen_btc_token()],
@@ -899,14 +900,15 @@ mod tests_background_tokens {
             (1, "scilla Acc 3".to_string()),
         ];
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Scilla".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![test_data::gen_zil_token()],
@@ -1053,14 +1055,15 @@ mod tests_background_tokens {
             gen_eth_account(1, "Anvil Acc 1"),
         ];
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Anvil Max Transfer".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_anvil_token()],
@@ -1194,14 +1197,15 @@ mod tests_background_tokens {
 
         let accounts = [gen_tron_account(0, "Tron Acc 0")];
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Tron wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_tron_token()],
@@ -1279,14 +1283,15 @@ mod tests_background_tokens {
 
         let accounts = [(1, "sol 1".to_string()), (2, "sol 2".to_string())];
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Sol wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_sol_token()],

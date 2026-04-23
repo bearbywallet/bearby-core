@@ -243,8 +243,8 @@ mod tests_providers {
     use rpc::network_config::Explorer;
     use secrecy::SecretString;
     use test_data::{
-        gen_anvil_net_conf, gen_btc_testnet_conf, gen_tron_testnet_conf, gen_zil_testnet_conf,
-        ANVIL_MNEMONIC, TEST_PASSWORD,
+        empty_passphrase, gen_anvil_net_conf, gen_btc_testnet_conf, gen_tron_testnet_conf,
+        gen_zil_testnet_conf, ANVIL_MNEMONIC, TEST_PASSWORD,
     };
 
     fn setup_test_background() -> (Background, String) {
@@ -456,14 +456,15 @@ mod tests_providers {
         bg.add_provider(btc.clone()).unwrap();
 
         let accounts = [(0, "acc 0".to_string()), (1, "acc 1".to_string())];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: btc.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             mnemonic_check: true,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: btc.ftokens.clone(),
@@ -528,14 +529,15 @@ mod tests_providers {
         bg.add_provider(eth.clone()).unwrap();
 
         let accounts = [(0, "acc 0".to_string())];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: btc.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             mnemonic_check: true,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -593,14 +595,15 @@ mod tests_providers {
         bg.add_provider(btc.clone()).unwrap();
 
         let accounts = [(0, "acc 0".to_string())];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: eth.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             mnemonic_check: true,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -632,14 +635,15 @@ mod tests_providers {
         bg.add_provider(btc.clone()).unwrap();
 
         let accounts = [(0, "acc 0".to_string())];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: btc.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             mnemonic_check: true,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: btc.ftokens.clone(),

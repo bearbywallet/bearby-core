@@ -7242,6 +7242,7 @@ dependencies = [
  "crypto",
  "proto",
  "rpc",
+ "secrecy",
  "token",
 ]
 

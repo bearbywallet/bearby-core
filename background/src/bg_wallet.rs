@@ -246,7 +246,7 @@ impl WalletManagement for Background {
             &params.wallet_settings.argon_params.into_config(),
         )?;
         let keychain = KeyChain::from_seed(&argon_seed)?;
-        let mnemonic_str_secret = SecretString::from(params.mnemonic_str);
+        let mnemonic_str_secret = <&SecretString>::from(params.mnemonic_str);
         let mnemonic = if params.mnemonic_check {
             Mnemonic::parse_str(&EN_WORDS, &mnemonic_str_secret)?
         } else {
@@ -522,6 +522,7 @@ mod tests_background {
     use proto::{address::Address, keypair::KeyPair};
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
+    use test_data::empty_passphrase;
     use wallet::wallet_account::AccountManagement;
 
     fn setup_test_background() -> (Background, String) {
@@ -566,10 +567,10 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_conf.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -593,9 +594,9 @@ mod tests_background {
             mnemonic_check: true,
             chain_hash: net_conf.hash(),
             accounts: &accounts,
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -627,10 +628,10 @@ mod tests_background {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -681,10 +682,10 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_conf.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Test Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -815,10 +816,10 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: btc_conf.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "BTC Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -881,10 +882,10 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: btc_conf.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "BTC Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -935,10 +936,10 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: net_conf.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "ETH Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -969,10 +970,10 @@ mod tests_background {
             password: &password,
             mnemonic_check: true,
             chain_hash: btc_conf.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "BTC Wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![],

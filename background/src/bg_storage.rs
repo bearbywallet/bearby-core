@@ -412,8 +412,8 @@ mod tests_background_storage {
     use wallet::wallet_data::WalletDataV1;
 
     use test_data::{
-        gen_anvil_net_conf, gen_btc_mainnet_conf, gen_zil_mainnet_conf, ANVIL_MNEMONIC,
-        TEST_PASSWORD,
+        empty_passphrase, gen_anvil_net_conf, gen_btc_mainnet_conf, gen_zil_mainnet_conf,
+        ANVIL_MNEMONIC, TEST_PASSWORD,
     };
 
     fn setup_test_background() -> (Background, String) {
@@ -438,11 +438,11 @@ mod tests_background_storage {
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: words.expose_secret(),
+            mnemonic_str: &words,
             mnemonic_check: true,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -477,11 +477,11 @@ mod tests_background_storage {
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: words1.expose_secret(),
+            mnemonic_str: &words1,
             mnemonic_check: true,
             accounts: &accounts1,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::from("Wallet1"),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -500,10 +500,10 @@ mod tests_background_storage {
             password: &password2,
             chain_hash: net_conf.hash(),
             mnemonic_check: true,
-            mnemonic_str: words2.expose_secret(),
+            mnemonic_str: &words2,
             accounts: &accounts2,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::from("Wallet2"),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -531,11 +531,11 @@ mod tests_background_storage {
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: words1.expose_secret(),
+            mnemonic_str: &words1,
             mnemonic_check: true,
             accounts: &accounts1,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::from("shit walelt"),
             biometric_type: Default::default(),
             ftokens: vec![],
@@ -624,11 +624,11 @@ mod tests_background_storage {
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: net_conf.hash(),
-            mnemonic_str: words1.expose_secret(),
+            mnemonic_str: &words1,
             mnemonic_check: true,
             accounts: &accounts1,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::from("shit walelt"),
             biometric_type: AuthMethod::None,
             ftokens: vec![],
@@ -793,14 +793,15 @@ mod tests_background_storage {
 
         let accounts = [(0, "acc 0".to_string()), (1, "acc 1".to_string())];
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
             password: &password,
             chain_hash: btc.hash(),
-            mnemonic_str: &ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             mnemonic_check: true,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: btc.ftokens.clone(),

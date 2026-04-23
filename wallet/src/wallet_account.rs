@@ -316,9 +316,7 @@ mod tests {
     use secrecy::SecretString;
     use std::sync::Arc;
     use storage::LocalStorage;
-    use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
-
-    const PASSPHRASE: &str = "";
+    use test_data::{empty_passphrase, ANVIL_MNEMONIC, TEST_PASSWORD};
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
         let mut rng = rand::rng();
@@ -352,7 +350,7 @@ mod tests {
             Bip39Params {
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: PASSPHRASE,
+                passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "Select Account Test Wallet".to_string(),
                 bip: DerivationPath::BIP44_PURPOSE,

@@ -2,11 +2,16 @@ use config::address::ADDR_LEN;
 use crypto::slip44;
 use proto::address::Address;
 use rpc::network_config::{ChainConfig, Explorer};
+use secrecy::SecretString;
 use std::collections::HashMap;
 use token::ft::FToken;
 
 pub const TEST_PASSWORD: &str = "TEst password";
 pub const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
+
+pub fn empty_passphrase() -> SecretString {
+    SecretString::new(Box::from(""))
+}
 
 pub fn gen_anvil_net_conf() -> ChainConfig {
     ChainConfig {

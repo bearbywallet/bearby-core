@@ -174,9 +174,7 @@ mod tests {
     use rpc::network_config::ChainConfig;
     use secrecy::ExposeSecret;
     use storage::LocalStorage;
-    use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
-
-    const PASSPHRASE: &str = "";
+    use test_data::{empty_passphrase, ANVIL_MNEMONIC, TEST_PASSWORD};
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
         let mut rng = rand::rng();
@@ -243,7 +241,7 @@ mod tests {
                 chain_config,
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: PASSPHRASE,
+                passphrase: &empty_passphrase(),
                 indexes,
                 wallet_name: "Test Wallet".to_string(),
                 bip,

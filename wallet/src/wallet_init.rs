@@ -11,7 +11,7 @@ use rand_chacha::ChaCha20Rng;
 use config::sha::SHA256_SIZE;
 use errors::{account::AccountErrors, wallet::WalletErrors};
 use proto::pubkey::PubKey;
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::ExposeSecret;
 use std::{collections::HashMap, sync::Arc};
 use token::ft::FToken;
 
@@ -194,11 +194,7 @@ impl WalletInit for Wallet {
         let cipher_entropy = config
             .keychain
             .encrypt(mnemonic_str, &config.settings.cipher_orders)?;
-        let mnemonic_seed_secret = Arc::new(
-            params
-                .mnemonic
-                .to_seed(&SecretString::from(params.passphrase))?,
-        );
+        let mnemonic_seed_secret = Arc::new(params.mnemonic.to_seed(params.passphrase)?);
         let cipher_proof = config
             .keychain
             .make_proof(&params.proof, &config.settings.cipher_orders)?;
@@ -276,7 +272,7 @@ impl WalletInit for Wallet {
             slip44: params.chain_config.slip_44,
             wallet_type: WalletTypes::SecretPhrase((
                 cipher_entropy_key,
-                !params.passphrase.is_empty(),
+                !params.passphrase.expose_secret().is_empty(),
             )),
             selected_account: 0,
             chain_hash: params.chain_config.hash(),
@@ -313,16 +309,14 @@ mod tests {
     use proto::keypair::KeyPair;
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
-    use secrecy::SecretString;
     use storage::LocalStorage;
-    use test_data::{ANVIL_MNEMONIC, TEST_PASSWORD};
+    use test_data::{empty_passphrase, ANVIL_MNEMONIC, TEST_PASSWORD};
+    use secrecy::SecretString;
 
     use crate::{
         wallet_crypto::WalletCrypto, wallet_init::WalletInit, wallet_storage::StorageOperations,
         wallet_types::WalletTypes, Bip39Params, SecretKeyParams, Wallet, WalletConfig,
     };
-
-    const PASSPHRASE: &str = "";
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
         let mut rng = rand::rng();
@@ -356,7 +350,7 @@ mod tests {
                 chain_config: &chain_config,
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: PASSPHRASE,
+                passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "Wllaet name".to_string(),
                 bip: DerivationPath::BIP44_PURPOSE,
@@ -410,7 +404,7 @@ mod tests {
                 chain_config: &chain_config,
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: PASSPHRASE,
+                passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "Bitcoin Wallet".to_string(),
                 bip: DerivationPath::BIP84_PURPOSE,
@@ -505,7 +499,7 @@ mod tests {
                 chain_config: &chain_config,
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: PASSPHRASE,
+                passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "BIP44 Legacy Wallet".to_string(),
                 bip: DerivationPath::BIP44_PURPOSE,
@@ -570,7 +564,7 @@ mod tests {
                 chain_config: &chain_config,
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: PASSPHRASE,
+                passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "BIP49 Nested SegWit Wallet".to_string(),
                 bip: DerivationPath::BIP49_PURPOSE,
@@ -635,7 +629,7 @@ mod tests {
                 chain_config: &chain_config,
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: PASSPHRASE,
+                passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "BIP84 Native SegWit Wallet".to_string(),
                 bip: DerivationPath::BIP84_PURPOSE,
@@ -700,7 +694,7 @@ mod tests {
                 chain_config: &chain_config,
                 proof,
                 mnemonic: &mnemonic,
-                passphrase: PASSPHRASE,
+                passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "BIP86 Taproot Wallet".to_string(),
                 bip: DerivationPath::BIP86_PURPOSE,

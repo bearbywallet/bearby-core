@@ -13,6 +13,7 @@ use errors::wallet::WalletErrors;
 use pqbip39::mnemonic::Mnemonic;
 use proto::secret_key::SecretKey;
 use rpc::network_config::ChainConfig;
+use secrecy::SecretString;
 use settings::wallet_settings::WalletSettings;
 use storage::LocalStorage;
 use wallet_storage::StorageOperations;
@@ -51,7 +52,7 @@ pub struct SecretKeyParams<'a> {
 pub struct Bip39Params<'a> {
     pub proof: [u8; KEY_SIZE],
     pub mnemonic: &'a Mnemonic<'a>,
-    pub passphrase: &'a str,
+    pub passphrase: &'a SecretString,
     pub indexes: &'a [(usize, String)],
     pub wallet_name: String,
     pub bip: u32,

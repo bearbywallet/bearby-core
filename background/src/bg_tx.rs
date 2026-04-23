@@ -713,8 +713,9 @@ mod tests_background_transactions {
     use rand::RngExt;
     use secrecy::{ExposeSecret, SecretString};
     use test_data::{
-        gen_anvil_net_conf, gen_anvil_token, gen_btc_regtest_conf, gen_eth_account,
-        gen_zil_account, gen_zil_testnet_conf, gen_zil_token, ANVIL_MNEMONIC, TEST_PASSWORD,
+        empty_passphrase, gen_anvil_net_conf, gen_anvil_token, gen_btc_regtest_conf,
+        gen_eth_account, gen_zil_account, gen_zil_testnet_conf, gen_zil_token, ANVIL_MNEMONIC,
+        TEST_PASSWORD,
     };
     use token::ft::FToken;
     use tokio;
@@ -737,16 +738,17 @@ mod tests_background_transactions {
         bg.add_provider(zil_config.clone()).unwrap();
         bg.add_provider(anvil_config.clone()).unwrap();
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC.to_string());
         let accounts = [gen_zil_account(0, "ZIL Acc 0")];
 
         bg.add_bip39_wallet(BackgroundBip39Params {
             mnemonic_check: true,
             password: &password,
             chain_hash: zil_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![FToken::zil(zil_config.hash())],
@@ -807,6 +809,7 @@ mod tests_background_transactions {
         let net_config = gen_anvil_net_conf();
 
         bg.add_provider(net_config.clone()).unwrap();
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC.to_string());
         let accounts = [gen_eth_account(5, "Anvil Acc 5")];
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
 
@@ -814,10 +817,10 @@ mod tests_background_transactions {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Anvil wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_anvil_token()],
@@ -894,6 +897,7 @@ mod tests_background_transactions {
 
         bg.add_provider(net_config.clone()).unwrap();
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC.to_string());
         let accounts = [gen_eth_account(6, "Anvil Acc 6")];
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
 
@@ -901,10 +905,10 @@ mod tests_background_transactions {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_hash,
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Anvil wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_anvil_token()],
@@ -1023,6 +1027,7 @@ mod tests_background_transactions {
         let (mut bg, _dir) = setup_test_background();
         let net_config = gen_zil_testnet_conf();
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC.to_string());
         bg.add_provider(net_config.clone()).unwrap();
         let accounts = [gen_zil_account(0, "ZIL Acc 0")];
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
@@ -1031,10 +1036,10 @@ mod tests_background_transactions {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "ZIL wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![FToken::zil(net_config.hash())],
@@ -1075,6 +1080,7 @@ mod tests_background_transactions {
         let net_config = gen_zil_testnet_conf();
 
         bg.add_provider(net_config.clone()).unwrap();
+        let mnemonic_secret = SecretString::from(UNCHECKSUMED_WORD.to_string());
         let accounts = [gen_zil_account(0, "Zil 0")];
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
 
@@ -1084,10 +1090,10 @@ mod tests_background_transactions {
             mnemonic_check: false,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: UNCHECKSUMED_WORD,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Zilliqa legacy wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_zil_token()],
@@ -1128,6 +1134,7 @@ mod tests_background_transactions {
 
         bg.add_provider(net_config.clone()).unwrap();
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC.to_string());
         let accounts = [(0, "BTC Taproot Acc 0".to_string())];
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
 
@@ -1135,10 +1142,10 @@ mod tests_background_transactions {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "BTC Taproot wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![test_data::gen_btc_token()],
@@ -1194,6 +1201,7 @@ mod tests_background_transactions {
         let net_config = gen_tron_testnet_conf();
         bg.add_provider(net_config.clone()).unwrap();
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC.to_string());
         let accounts = [
             gen_tron_account(0, "Tron Acc 0"),
             gen_tron_account(1, "Tron Acc 1"),
@@ -1204,10 +1212,10 @@ mod tests_background_transactions {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Tron wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_tron_token()],
@@ -1317,6 +1325,7 @@ mod tests_background_transactions {
         let (mut bg, _dir) = setup_test_background();
         let net_config = gen_tron_testnet_conf();
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC.to_string());
         bg.add_provider(net_config.clone()).unwrap();
         let accounts = [gen_tron_account(0, "Tron Acc 0")];
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
@@ -1325,10 +1334,10 @@ mod tests_background_transactions {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Tron wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_tron_token()],
@@ -1369,6 +1378,7 @@ mod tests_background_transactions {
         let (mut bg, _dir) = setup_test_background();
         let net_config = gen_tron_testnet_conf();
 
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC.to_string());
         bg.add_provider(net_config.clone()).unwrap();
         let accounts = [gen_tron_account(0, "Tron Acc 0")];
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
@@ -1377,10 +1387,10 @@ mod tests_background_transactions {
             mnemonic_check: true,
             password: &password,
             chain_hash: net_config.hash(),
-            mnemonic_str: ANVIL_MNEMONIC,
+            mnemonic_str: &mnemonic_secret,
             accounts: &accounts,
             wallet_settings: Default::default(),
-            passphrase: "",
+            passphrase: &empty_passphrase(),
             wallet_name: "Tron wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_tron_token()],
