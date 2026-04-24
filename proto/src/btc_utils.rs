@@ -1,3 +1,4 @@
+use config::sha::SHA512_SIZE;
 use crypto::bip49::{DerivationPath, DerivationType};
 use crypto::slip44;
 use errors::bip32::Bip329Errors;
@@ -108,7 +109,8 @@ pub fn create_btc_address(
 }
 
 pub fn generate_btc_addresses(
-    seed: &SecretBox<[u8; 64]>,
+    seed: &SecretBox<[u8; SHA512_SIZE]>,
+    account_index: usize,
     network: bitcoin::Network,
     start_index: u32,
     count: u32,
@@ -131,7 +133,7 @@ pub fn generate_btc_addresses(
             |change: usize, idx: u32| -> std::result::Result<BtcAddressEntry, Bip329Errors> {
                 let path = DerivationPath::new(
                     slip44::BITCOIN,
-                    DerivationType::AddressIndex(0, change, idx as usize),
+                    DerivationType::AddressIndex(account_index, change, idx as usize),
                     bip,
                 );
                 let sk = crate::bip32::derive_private_key(seed, &path.get_path())?;
@@ -176,7 +178,8 @@ mod tests {
     #[test]
     fn test_generate_btc_addresses_default_window() {
         let seed = test_seed();
-        let map = generate_btc_addresses(&seed, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
+        let map =
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
 
         assert_eq!(map.len(), 4);
         for t in ALL_TYPES {
@@ -251,11 +254,12 @@ mod tests {
     fn test_generate_btc_addresses_pagination() {
         let seed = test_seed();
         let page_a =
-            generate_btc_addresses(&seed, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
         let page_b =
-            generate_btc_addresses(&seed, bitcoin::Network::Bitcoin, GAP_LIMIT, GAP_LIMIT).unwrap();
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, GAP_LIMIT, GAP_LIMIT)
+                .unwrap();
         let combined =
-            generate_btc_addresses(&seed, bitcoin::Network::Bitcoin, 0, GAP_LIMIT * 2).unwrap();
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT * 2).unwrap();
 
         for addr_type in ALL_TYPES {
             let a = &page_a[&addr_type];
@@ -286,7 +290,7 @@ mod tests {
             }
         }
 
-        let empty = generate_btc_addresses(&seed, bitcoin::Network::Bitcoin, 0, 0).unwrap();
+        let empty = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 0).unwrap();
         assert_eq!(empty.len(), 4);
         for chain in empty.values() {
             assert!(chain.external.is_empty());
