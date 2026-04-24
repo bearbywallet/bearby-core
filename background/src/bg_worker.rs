@@ -180,7 +180,7 @@ mod tests_background_worker {
 
     use alloy::primitives::map::HashMap;
     use config::address::ADDR_LEN;
-    use crypto::{bip49::DerivationPath, slip44};
+    use crypto::slip44;
     use proto::address::Address;
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
@@ -259,8 +259,6 @@ mod tests_background_worker {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -305,8 +303,6 @@ mod tests_background_worker {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -447,8 +443,6 @@ mod tests_background_worker {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_zilliqa_mainnet_token(net_config.hash())],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();

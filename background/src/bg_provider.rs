@@ -170,13 +170,7 @@ impl ProvidersManagement for Background {
         }
 
         let new_slip44 = provider.config.slip_44;
-        data.bip_preferences.insert(data.slip44, data.bip);
-
-        let new_bip = if let Some(&saved) = data.bip_preferences.get(&new_slip44) {
-            saved
-        } else {
-            DerivationPath::default_bip(new_slip44)
-        };
+        let new_bip = DerivationPath::default_bip(new_slip44);
 
         data.slip44 = new_slip44;
         data.bip = new_bip;
@@ -468,8 +462,6 @@ mod tests_providers {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: btc.ftokens.clone(),
-            bip: DerivationPath::BIP86_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -492,10 +484,6 @@ mod tests_providers {
         assert_eq!(data.bip, DerivationPath::BIP44_PURPOSE);
         assert_eq!(data.chain_hash, trx.hash());
         assert!(data.slip44_accounts.contains_key(&trx.slip_44));
-        assert_eq!(
-            data.bip_preferences.get(&btc.slip_44),
-            Some(&DerivationPath::BIP86_PURPOSE)
-        );
 
         let tron_accounts = data.get_accounts().unwrap();
         assert_eq!(tron_accounts.len(), 2);
@@ -541,8 +529,6 @@ mod tests_providers {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP86_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -607,8 +593,6 @@ mod tests_providers {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -647,8 +631,6 @@ mod tests_providers {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: btc.ftokens.clone(),
-            bip: DerivationPath::BIP86_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -682,7 +664,6 @@ mod tests_providers {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
         })
         .await
         .unwrap();
@@ -709,10 +690,6 @@ mod tests_providers {
         assert_eq!(data.bip, DerivationPath::BIP86_PURPOSE);
         assert!(data.slip44_accounts.contains_key(&slip44::BITCOIN));
         assert_eq!(data.get_accounts().unwrap().len(), 1);
-        assert_eq!(
-            data.bip_preferences.get(&slip44::ZILLIQA),
-            Some(&DerivationPath::BIP44_PURPOSE)
-        );
 
         bg.select_accounts_chain(0, zil.hash(), None).await.unwrap();
 
@@ -723,9 +700,5 @@ mod tests_providers {
             .unwrap();
         assert_eq!(data.slip44, slip44::ZILLIQA);
         assert_eq!(data.get_accounts().unwrap().len(), 1);
-        assert_eq!(
-            data.bip_preferences.get(&slip44::BITCOIN),
-            Some(&DerivationPath::BIP86_PURPOSE)
-        );
     }
 }

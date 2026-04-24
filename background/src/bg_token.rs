@@ -365,7 +365,6 @@ mod tests_background_tokens {
     use wallet::wallet_account::AccountManagement;
 
     use config::address::ADDR_LEN;
-    use crypto::bip49::{DerivationPath, DerivationTypeCodec};
     use crypto::slip44;
 
     use history::status::TransactionStatus;
@@ -459,8 +458,6 @@ mod tests_background_tokens {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -528,8 +525,6 @@ mod tests_background_tokens {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -601,8 +596,6 @@ mod tests_background_tokens {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![zlp_token.clone()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -673,8 +666,6 @@ mod tests_background_tokens {
             wallet_name: "BTC Max wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![test_data::gen_btc_token()],
-            bip: DerivationPath::BIP84_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -692,17 +683,14 @@ mod tests_background_tokens {
         let addr_str_1 = account_1.addr.auto_format();
 
         assert!(
-            addr_str.starts_with("bcrt1"),
-            "Should be SegWit address starting with bc1q, got: {}",
+            addr_str.starts_with("bcrt1p"),
+            "Should be Taproot regtest address starting with bcrt1p, got: {}",
             addr_str
         );
-        assert_eq!(
-            addr_str, "bcrt1qt3az9lwpqfvr466mezsewuzdc4d379ldygnnez",
-            "Account 2 should match expected SegWit address"
-        );
-        assert_eq!(
-            addr_str_1, "bcrt1qcqp7wgm6ke7zvwqnyy5a52ratfuhufw02cr92j",
-            "Account 3 should match expected SegWit address"
+        assert!(
+            addr_str_1.starts_with("bcrt1p"),
+            "Should be Taproot regtest address starting with bcrt1p, got: {}",
+            addr_str_1
         );
 
         bg.sync_ftokens_balances(0).await.unwrap();
@@ -912,8 +900,6 @@ mod tests_background_tokens {
             wallet_name: "Scilla".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![test_data::gen_zil_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1067,8 +1053,6 @@ mod tests_background_tokens {
             wallet_name: "Anvil Max Transfer".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_anvil_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1209,8 +1193,6 @@ mod tests_background_tokens {
             wallet_name: "Tron wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_tron_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1295,8 +1277,6 @@ mod tests_background_tokens {
             wallet_name: "Sol wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_sol_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::DerivationType::AccountChange(0, 0).to_u8(),
         })
         .await
         .unwrap();

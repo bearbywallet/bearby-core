@@ -12,8 +12,7 @@ use config::{
     cipher::{PROOF_SALT, PROOF_SIZE},
     session::AuthMethod,
 };
-use crypto::{bip49::DerivationPath, slip44};
-use errors::{account::AccountErrors, background::BackgroundError, wallet::WalletErrors};
+use errors::{account::AccountErrors, background::BackgroundError};
 use pqbip39::mnemonic::Mnemonic;
 use proto::pubkey::PubKey;
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
@@ -21,9 +20,8 @@ use session::management::{SessionManagement, SessionManager};
 use settings::wallet_settings::WalletSettings;
 use std::sync::Arc;
 use wallet::{
-    wallet_account::AccountManagement, wallet_init::WalletInit, wallet_security::WalletSecurity,
-    wallet_storage::StorageOperations, Bip39Params, LedgerParams, SecretKeyParams, Wallet,
-    WalletConfig,
+    wallet_init::WalletInit, wallet_security::WalletSecurity, wallet_storage::StorageOperations,
+    Bip39Params, LedgerParams, SecretKeyParams, Wallet, WalletConfig,
 };
 
 use crate::{BackgroundBip39Params, BackgroundSKParams};
@@ -76,13 +74,6 @@ pub trait WalletManagement {
     ) -> std::result::Result<(), Self::Error>;
 
     fn delete_wallet(&mut self, wallet_index: usize) -> std::result::Result<(), Self::Error>;
-
-    async fn select_bitcoin_address_format(
-        &self,
-        wallet_index: usize,
-        new_bip: u32,
-        password: Option<&SecretString>,
-    ) -> std::result::Result<(), Self::Error>;
 }
 
 #[async_trait]
@@ -429,64 +420,6 @@ impl WalletManagement for Background {
             .ok_or(BackgroundError::WalletNotExists(wallet_index))
     }
 
-    async fn select_bitcoin_address_format(
-        &self,
-        wallet_index: usize,
-        new_bip: u32,
-        password: Option<&SecretString>,
-    ) -> Result<()> {
-        let wallet = self.get_wallet_by_index(wallet_index)?;
-        let mut data = wallet.get_wallet_data()?;
-
-        if data.slip44 != slip44::BITCOIN {
-            return Err(WalletErrors::InvalidBIPPath(data.slip44, new_bip).into());
-        }
-
-        if new_bip == data.bip {
-            return Ok(());
-        }
-
-        let reference_len = data
-            .slip44_accounts
-            .values()
-            .flat_map(|m| m.values())
-            .map(|a| a.len())
-            .max()
-            .unwrap_or(0);
-        let needs_derivation = data
-            .slip44_accounts
-            .get(&slip44::BITCOIN)
-            .and_then(|bip_map| bip_map.get(&new_bip))
-            .map(|accounts| accounts.len() < reference_len)
-            .unwrap_or(true);
-
-        if needs_derivation {
-            let seed = if data.biometric_type != AuthMethod::None {
-                self.unlock_wallet_with_session(wallet_index).await?
-            } else if let Some(pass) = password {
-                self.unlock_wallet_with_password(pass, None, wallet_index)
-                    .await?
-            } else {
-                return Err(BackgroundError::AuthenticationRequired);
-            };
-
-            let provider = self.get_provider(data.chain_hash)?;
-            wallet.ensure_chain_accounts(
-                &mut data,
-                slip44::BITCOIN,
-                provider.config.bitcoin_network(),
-                &seed,
-                "",
-            )?;
-        }
-
-        data.bip = new_bip;
-        data.bip_preferences.insert(data.slip44, new_bip);
-        wallet.save_wallet_data(data)?;
-
-        Ok(())
-    }
-
     fn delete_wallet(&mut self, wallet_index: usize) -> Result<()> {
         let wallet = self.get_wallet_by_index(wallet_index)?;
         let wallet_address = wallet.wallet_address;
@@ -509,7 +442,7 @@ impl WalletManagement for Background {
 mod tests_background {
     use super::*;
     use crate::{bg_crypto::CryptoOperations, bg_provider::ProvidersManagement};
-    use crypto::{bip49::DerivationPath, slip44};
+    use crypto::slip44;
     use proto::{address::Address, keypair::KeyPair};
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
@@ -780,188 +713,5 @@ mod tests_background {
             restored_data.get_selected_account().unwrap().addr,
             Address::Secp256k1Bitcoin(_)
         ));
-    }
-
-    #[tokio::test]
-    async fn test_select_bitcoin_address_format() {
-        use test_data::{gen_btc_testnet_conf, TEST_PASSWORD};
-
-        let (mut bg, _dir) = setup_test_background();
-        let btc_conf = gen_btc_testnet_conf();
-        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
-        let words = Background::gen_bip39(24).unwrap();
-        let accounts = [(0, "Bitcoin account".to_string())];
-
-        bg.add_provider(btc_conf.clone()).unwrap();
-        bg.add_bip39_wallet(BackgroundBip39Params {
-            password: &password,
-            mnemonic_check: true,
-            chain_hash: btc_conf.hash(),
-            mnemonic_str: &words,
-            accounts: &accounts,
-            wallet_settings: Default::default(),
-            passphrase: &empty_passphrase(),
-            wallet_name: "BTC Wallet".to_string(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        let wallet = bg.get_wallet_by_index(0).unwrap();
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
-
-        bg.select_bitcoin_address_format(0, DerivationPath::BIP86_PURPOSE, Some(&password))
-            .await
-            .unwrap();
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP86_PURPOSE);
-        assert_eq!(data.get_accounts().unwrap().len(), 1);
-        assert_eq!(
-            data.bip_preferences.get(&slip44::BITCOIN),
-            Some(&DerivationPath::BIP86_PURPOSE)
-        );
-
-        bg.select_bitcoin_address_format(0, DerivationPath::BIP44_PURPOSE, Some(&password))
-            .await
-            .unwrap();
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP44_PURPOSE);
-        assert_eq!(data.get_accounts().unwrap().len(), 1);
-        assert_eq!(
-            data.bip_preferences.get(&slip44::BITCOIN),
-            Some(&DerivationPath::BIP44_PURPOSE)
-        );
-
-        bg.select_bitcoin_address_format(0, DerivationPath::BIP49_PURPOSE, Some(&password))
-            .await
-            .unwrap();
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP49_PURPOSE);
-        assert_eq!(data.get_accounts().unwrap().len(), 1);
-        assert_eq!(
-            data.bip_preferences.get(&slip44::BITCOIN),
-            Some(&DerivationPath::BIP49_PURPOSE)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_select_bitcoin_address_format_with_extra_accounts() {
-        use test_data::{gen_btc_testnet_conf, TEST_PASSWORD};
-
-        let (mut bg, _dir) = setup_test_background();
-        let btc_conf = gen_btc_testnet_conf();
-        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
-        let words = Background::gen_bip39(24).unwrap();
-        let accounts = [(0, "Bitcoin account".to_string())];
-
-        bg.add_provider(btc_conf.clone()).unwrap();
-        bg.add_bip39_wallet(BackgroundBip39Params {
-            password: &password,
-            mnemonic_check: true,
-            chain_hash: btc_conf.hash(),
-            mnemonic_str: &words,
-            accounts: &accounts,
-            wallet_settings: Default::default(),
-            passphrase: &empty_passphrase(),
-            wallet_name: "BTC Wallet".to_string(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        let wallet = bg.get_wallet_by_index(0).unwrap();
-        let argon_seed = bg
-            .unlock_wallet_with_password(&password, None, 0)
-            .await
-            .unwrap();
-
-        wallet
-            .add_next_bip39_account(
-                "Bitcoin account 1".to_string(),
-                1,
-                Some(bitcoin::Network::Testnet),
-                "",
-                &argon_seed,
-            )
-            .unwrap();
-
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.get_accounts().unwrap().len(), 2);
-
-        bg.select_bitcoin_address_format(0, DerivationPath::BIP44_PURPOSE, Some(&password))
-            .await
-            .unwrap();
-
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP44_PURPOSE);
-        assert_eq!(data.get_accounts().unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_select_bitcoin_address_format_not_bitcoin() {
-        let (mut bg, _dir) = setup_test_background();
-        let net_conf = create_test_net_conf();
-        let password: SecretString = SecretString::new("test password".into());
-        let words = Background::gen_bip39(24).unwrap();
-        let accounts = [(0, "Account".to_string())];
-
-        bg.add_provider(net_conf.clone()).unwrap();
-        bg.add_bip39_wallet(BackgroundBip39Params {
-            password: &password,
-            mnemonic_check: true,
-            chain_hash: net_conf.hash(),
-            mnemonic_str: &words,
-            accounts: &accounts,
-            wallet_settings: Default::default(),
-            passphrase: &empty_passphrase(),
-            wallet_name: "ETH Wallet".to_string(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        let result = bg
-            .select_bitcoin_address_format(0, DerivationPath::BIP84_PURPOSE, Some(&password))
-            .await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_select_bitcoin_address_format_same_bip() {
-        use test_data::{gen_btc_testnet_conf, TEST_PASSWORD};
-
-        let (mut bg, _dir) = setup_test_background();
-        let btc_conf = gen_btc_testnet_conf();
-        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
-        let words = Background::gen_bip39(24).unwrap();
-        let accounts = [(0, "Bitcoin account".to_string())];
-
-        bg.add_provider(btc_conf.clone()).unwrap();
-        bg.add_bip39_wallet(BackgroundBip39Params {
-            password: &password,
-            mnemonic_check: true,
-            chain_hash: btc_conf.hash(),
-            mnemonic_str: &words,
-            accounts: &accounts,
-            wallet_settings: Default::default(),
-            passphrase: &empty_passphrase(),
-            wallet_name: "BTC Wallet".to_string(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        bg.select_bitcoin_address_format(0, DerivationPath::BIP84_PURPOSE, Some(&password))
-            .await
-            .unwrap();
-
-        let wallet = bg.get_wallet_by_index(0).unwrap();
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
     }
 }

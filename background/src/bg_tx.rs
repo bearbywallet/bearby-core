@@ -707,7 +707,6 @@ mod tests_background_transactions {
     use super::*;
     use crate::{bg_storage::StorageManagement, bg_token::TokensManagement, BackgroundBip39Params};
     use alloy::{primitives::U256, rpc::types::TransactionRequest as ETHTransactionRequest};
-    use crypto::bip49::DerivationPath;
 
     use proto::{address::Address, tx::TransactionRequest};
     use rand::RngExt;
@@ -752,8 +751,6 @@ mod tests_background_transactions {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![FToken::zil(zil_config.hash())],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -824,8 +821,6 @@ mod tests_background_transactions {
             wallet_name: "Anvil wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_anvil_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -912,8 +907,6 @@ mod tests_background_transactions {
             wallet_name: "Anvil wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_anvil_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1043,8 +1036,6 @@ mod tests_background_transactions {
             wallet_name: "ZIL wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![FToken::zil(net_config.hash())],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1097,8 +1088,6 @@ mod tests_background_transactions {
             wallet_name: "Zilliqa legacy wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_zil_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1149,8 +1138,6 @@ mod tests_background_transactions {
             wallet_name: "BTC Taproot wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![test_data::gen_btc_token()],
-            bip: DerivationPath::BIP86_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1219,8 +1206,6 @@ mod tests_background_transactions {
             wallet_name: "Tron wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_tron_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1341,8 +1326,6 @@ mod tests_background_transactions {
             wallet_name: "Tron wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_tron_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -1394,8 +1377,6 @@ mod tests_background_transactions {
             wallet_name: "Tron wallet".to_string(),
             biometric_type: Default::default(),
             ftokens: vec![gen_tron_token()],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();

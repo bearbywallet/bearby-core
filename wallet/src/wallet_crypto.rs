@@ -352,103 +352,6 @@ mod tests_wallet_crypto {
     }
 
     #[test]
-    fn test_reveal_keypair_bitcoin_bip44_p2pkh() {
-        let (storage, _dir) = setup_test_storage();
-        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
-
-        let indexes = [0].map(|i| (i, format!("Bitcoin BIP44 Account {i}")));
-
-        let mut chain_config = ChainConfig::default();
-        chain_config.slip_44 = slip44::BITCOIN;
-        let wallet = create_test_wallet_from_mnemonic(
-            Arc::clone(&storage),
-            &argon_seed,
-            &indexes,
-            &chain_config,
-        );
-
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
-
-        let data = wallet.get_wallet_data().unwrap();
-        let account_addr = &data.get_account(0).unwrap().addr;
-        let keypair_addr = keypair.get_addr().unwrap();
-
-        assert_eq!(account_addr, &keypair_addr);
-
-        assert!(matches!(keypair_addr, Address::Secp256k1Bitcoin(_)));
-
-        // Verify it's using P2pkh (legacy address starting with 1)
-        let addr_str = keypair_addr.auto_format();
-        assert!(addr_str.starts_with('1'));
-    }
-
-    #[test]
-    fn test_reveal_keypair_bitcoin_bip49_p2sh() {
-        let (storage, _dir) = setup_test_storage();
-        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
-
-        let indexes = [0].map(|i| (i, format!("Bitcoin BIP49 Account {i}")));
-
-        let mut chain_config = ChainConfig::default();
-        chain_config.slip_44 = slip44::BITCOIN;
-        let wallet = create_test_wallet_from_mnemonic(
-            Arc::clone(&storage),
-            &argon_seed,
-            &indexes,
-            &chain_config,
-        );
-
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
-
-        let data = wallet.get_wallet_data().unwrap();
-        let account_addr = &data.get_account(0).unwrap().addr;
-        let keypair_addr = keypair.get_addr().unwrap();
-
-        assert_eq!(account_addr, &keypair_addr);
-
-        assert!(matches!(keypair_addr, Address::Secp256k1Bitcoin(_)));
-
-        // Verify it's using P2sh (nested SegWit address starting with 3)
-        let addr_str = keypair_addr.auto_format();
-        assert!(addr_str.starts_with('3'));
-    }
-
-    #[test]
-    fn test_reveal_keypair_bitcoin_bip84_p2wpkh() {
-        let (storage, _dir) = setup_test_storage();
-        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
-
-        let indexes = [0, 1].map(|i| (i, format!("Bitcoin BIP84 Account {i}")));
-
-        let mut chain_config = ChainConfig::default();
-        chain_config.slip_44 = slip44::BITCOIN;
-        let wallet = create_test_wallet_from_mnemonic(
-            Arc::clone(&storage),
-            &argon_seed,
-            &indexes,
-            &chain_config,
-        );
-
-        for i in 0..2 {
-            let keypair = wallet.reveal_keypair(i, &argon_seed, None).unwrap();
-
-            // Verify the address matches
-            let data = wallet.get_wallet_data().unwrap();
-            let account_addr = &data.get_account(i).unwrap().addr;
-            let keypair_addr = keypair.get_addr().unwrap();
-
-            assert_eq!(account_addr, &keypair_addr);
-
-            // Verify it's a Bitcoin address
-            assert!(matches!(keypair_addr, Address::Secp256k1Bitcoin(_)));
-
-            // Verify it's using P2wpkh (native SegWit address starting with bc1q)
-            let addr_str = keypair_addr.auto_format();
-            assert!(addr_str.starts_with("bc1q"));
-        }
-    }
-
-    #[test]
     fn test_reveal_keypair_bitcoin_bip86_p2tr() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
@@ -593,6 +496,6 @@ mod tests_wallet_crypto {
         assert_eq!(account_addr, &keypair_addr);
 
         let addr_str = keypair_addr.auto_format();
-        assert!(addr_str.starts_with("tb1q"));
+        assert!(addr_str.starts_with("tb1p"));
     }
 }

@@ -89,7 +89,6 @@ mod tests_security {
     use cipher::{argon2::derive_key, keychain::KeyChain, options::CipherOrders};
     use config::{bip39::EN_WORDS, cipher::PROOF_SIZE, session::AuthMethod};
 
-    use crypto::bip49::DerivationPath;
     use errors::wallet::WalletErrors;
     use pqbip39::mnemonic::Mnemonic;
     use proto::keypair::KeyPair;
@@ -158,7 +157,6 @@ mod tests_security {
                 sk,
                 proof,
                 wallet_name: name.to_string(),
-                bip: DerivationPath::BIP44_PURPOSE,
                 biometric_type: AuthMethod::None,
                 chain_config: &chain_config,
             },
@@ -231,8 +229,6 @@ mod tests_security {
                 passphrase: &empty_passphrase(),
                 indexes: &indexes,
                 wallet_name: "Bitcoin Wallet".to_string(),
-                bip: DerivationPath::BIP84_PURPOSE,
-                derivation_type: crypto::bip49::default_derivation_type(),
                 biometric_type: AuthMethod::None,
                 chains: &[chain_config.clone()],
             },

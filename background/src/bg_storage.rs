@@ -446,8 +446,6 @@ mod tests_background_storage {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -485,8 +483,6 @@ mod tests_background_storage {
             wallet_name: String::from("Wallet1"),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -507,8 +503,6 @@ mod tests_background_storage {
             wallet_name: String::from("Wallet2"),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -539,8 +533,6 @@ mod tests_background_storage {
             wallet_name: String::from("shit walelt"),
             biometric_type: Default::default(),
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -582,7 +574,6 @@ mod tests_background_storage {
             wallet_settings: Default::default(),
             chain_hash: net_conf.hash(),
             ftokens: net_conf.ftokens.clone(),
-            bip: DerivationPath::BIP44_PURPOSE,
         })
         .await
         .unwrap();
@@ -632,8 +623,6 @@ mod tests_background_storage {
             wallet_name: String::from("shit walelt"),
             biometric_type: AuthMethod::None,
             ftokens: vec![],
-            bip: DerivationPath::BIP44_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -714,7 +703,6 @@ mod tests_background_storage {
             wallet_settings: Default::default(),
             chain_hash: net_conf.hash(),
             ftokens: net_conf.ftokens.clone(),
-            bip: DerivationPath::BIP44_PURPOSE,
         })
         .await
         .unwrap();
@@ -805,8 +793,6 @@ mod tests_background_storage {
             wallet_name: String::new(),
             biometric_type: Default::default(),
             ftokens: btc.ftokens.clone(),
-            bip: DerivationPath::BIP86_PURPOSE,
-            derivation_type: crypto::bip49::default_derivation_type(),
         })
         .await
         .unwrap();
@@ -828,62 +814,8 @@ mod tests_background_storage {
             };
 
         let btc = &data.slip44_accounts[&0];
-        assert_eq!(btc.len(), 4);
-        assert!(btc.contains_key(&44));
-        assert!(btc.contains_key(&49));
-        assert!(btc.contains_key(&84));
+        assert_eq!(btc.len(), 1);
         assert!(btc.contains_key(&86));
-
-        let bip44_btc = &btc[&44];
-        assert_eq!(bip44_btc.len(), 2);
-        check_account(
-            &bip44_btc[0],
-            "acc 0",
-            0,
-            "1Ei9UmLQv4o4UJTy5r5mnGFeC9auM3W5P1",
-        );
-        check_account(
-            &bip44_btc[1],
-            "acc 1",
-            1,
-            "14RBPsg6mBkLSJokkzeuoCkTtoeD3nK2Kz",
-        );
-        assert!(bip44_btc[0].pub_key.is_none());
-        assert!(bip44_btc[1].pub_key.is_none());
-
-        let bip49_btc = &btc[&49];
-        assert_eq!(bip49_btc.len(), 2);
-        check_account(
-            &bip49_btc[0],
-            "acc 0",
-            0,
-            "39sr5B8UAdxeoXbnpdw4frfxXwWwEChwzp",
-        );
-        check_account(
-            &bip49_btc[1],
-            "acc 1",
-            1,
-            "37EtUYWDGFUYhF65JqZMkkiUd4dDmwHv8J",
-        );
-        assert!(bip49_btc[0].pub_key.is_none());
-        assert!(bip49_btc[1].pub_key.is_none());
-
-        let bip84_btc = &btc[&84];
-        assert_eq!(bip84_btc.len(), 2);
-        check_account(
-            &bip84_btc[0],
-            "acc 0",
-            0,
-            "bc1q4qw42stdzjqs59xvlrlxr8526e3nunw7mp73te",
-        );
-        check_account(
-            &bip84_btc[1],
-            "acc 1",
-            1,
-            "bc1qp533522veg9uyhpx3sva9vqrnfzmt262n4lsuq",
-        );
-        assert!(bip84_btc[0].pub_key.is_none());
-        assert!(bip84_btc[1].pub_key.is_none());
 
         let bip86_btc = &btc[&86];
         assert_eq!(bip86_btc.len(), 2);
