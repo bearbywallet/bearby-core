@@ -471,8 +471,16 @@ impl BtcOperations for NetworkProvider {
             }
             let n = chain.external.len();
             for i in 0..n {
-                scripts.push(chain.external[i].address.script_pubkey());
-                scripts.push(chain.internal[i].address.script_pubkey());
+                let ext_addr = chain.external[i]
+                    .address
+                    .to_bitcoin_addr()
+                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
+                scripts.push(ext_addr.script_pubkey());
+                let int_addr = chain.internal[i]
+                    .address
+                    .to_bitcoin_addr()
+                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
+                scripts.push(int_addr.script_pubkey());
             }
             layout.push((*key, n));
         }
@@ -777,7 +785,7 @@ mod tests {
         for (addr_type, chain) in &chains {
             for (label, vec) in [("ext", &chain.external), ("int", &chain.internal)] {
                 for entry in vec.iter().take(2) {
-                    let script = entry.address.script_pubkey();
+                    let script = entry.address.to_bitcoin_addr().unwrap().script_pubkey();
                     let mut sh = sha256::Hash::hash(script.as_bytes()).to_byte_array();
                     sh.reverse();
                     let sh_hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();

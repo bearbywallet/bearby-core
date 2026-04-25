@@ -4,20 +4,23 @@ use crypto::slip44;
 use errors::bip32::Bip329Errors;
 use errors::keypair::PubKeyError;
 use secrecy::SecretBox;
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+
+use crate::address::Address;
 
 type Result<T> = std::result::Result<T, PubKeyError>;
 
 pub const GAP_LIMIT: u32 = 20;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BtcAddressEntry {
-    pub address: bitcoin::Address,
+    pub address: Address,
     pub path: DerivationPath,
     pub history: Vec<bitcoin::Txid>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddressChain {
     pub external: Vec<BtcAddressEntry>,
     pub internal: Vec<BtcAddressEntry>,
@@ -158,7 +161,7 @@ pub fn generate_btc_addresses(
                 let address = create_btc_address(&pk_bytes, network, addr_type)
                     .map_err(|e| Bip329Errors::InvalidKey(format!("{:?}", e)))?;
                 Ok(BtcAddressEntry {
-                    address,
+                    address: Address::Secp256k1Bitcoin(address.to_string().into_bytes()),
                     path,
                     history: Vec::new(),
                 })
@@ -173,6 +176,87 @@ pub fn generate_btc_addresses(
     }
 
     Ok(result)
+}
+
+impl Serialize for BtcAddressEntry {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("BtcAddressEntry", 3)?;
+        state.serialize_field("address", &self.address.to_string())?;
+        state.serialize_field("path", &self.path)?;
+        state.serialize_field("history", &self.history)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for BtcAddressEntry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field {
+            Address,
+            Path,
+            History,
+        }
+
+        struct BtcAddressEntryVisitor;
+
+        impl<'de> de::Visitor<'de> for BtcAddressEntryVisitor {
+            type Value = BtcAddressEntry;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("struct BtcAddressEntry")
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut address: Option<String> = None;
+                let mut path: Option<DerivationPath> = None;
+                let mut history: Option<Vec<bitcoin::Txid>> = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::Address => {
+                            if address.is_some() {
+                                return Err(de::Error::duplicate_field("address"));
+                            }
+                            address = Some(map.next_value()?);
+                        }
+                        Field::Path => {
+                            if path.is_some() {
+                                return Err(de::Error::duplicate_field("path"));
+                            }
+                            path = Some(map.next_value()?);
+                        }
+                        Field::History => {
+                            if history.is_some() {
+                                return Err(de::Error::duplicate_field("history"));
+                            }
+                            history = Some(map.next_value()?);
+                        }
+                    }
+                }
+
+                let address = address.ok_or_else(|| de::Error::missing_field("address"))?;
+                let path = path.ok_or_else(|| de::Error::missing_field("path"))?;
+                let history = history.unwrap_or_default();
+
+                let addr = Address::from_bitcoin_address(&address)
+                    .map_err(|e| de::Error::custom(format!("invalid bitcoin address: {}", e)))?;
+
+                Ok(BtcAddressEntry {
+                    address: addr,
+                    path,
+                    history,
+                })
+            }
+        }
+
+        const FIELDS: &[&str] = &["address", "path", "history"];
+        deserializer.deserialize_struct("BtcAddressEntry", FIELDS, BtcAddressEntryVisitor)
+    }
 }
 
 #[cfg(test)]
@@ -321,17 +405,14 @@ mod tests {
     }
 
     fn dummy_txid() -> bitcoin::Txid {
-        bitcoin::Txid::from_str(
-            "76464c2b9e2af4d63ef38a77964b3b77e629dddefc5cb9eb1a3645b1608b790f",
-        )
-        .unwrap()
+        bitcoin::Txid::from_str("76464c2b9e2af4d63ef38a77964b3b77e629dddefc5cb9eb1a3645b1608b790f")
+            .unwrap()
     }
 
     #[test]
     fn test_get_external_returns_last_unused() {
         let seed = test_seed();
-        let mut map =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         chain.external[0].history = vec![dummy_txid()];
@@ -344,8 +425,7 @@ mod tests {
     #[test]
     fn test_get_internal_returns_last_unused() {
         let seed = test_seed();
-        let mut map =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         chain.internal[0].history = vec![dummy_txid()];
@@ -359,8 +439,7 @@ mod tests {
     #[test]
     fn test_get_external_errors_when_all_used() {
         let seed = test_seed();
-        let mut map =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         for entry in &mut chain.external {
@@ -384,8 +463,7 @@ mod tests {
     #[test]
     fn test_get_internal_errors_when_all_used() {
         let seed = test_seed();
-        let mut map =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         for entry in &mut chain.internal {
