@@ -103,6 +103,7 @@ impl Wallet {
 
 pub mod account;
 pub mod account_type;
+pub mod bitcoin_wallet;
 pub mod wallet_account;
 pub mod wallet_crypto;
 pub mod wallet_data;

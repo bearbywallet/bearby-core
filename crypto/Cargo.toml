@@ -11,6 +11,7 @@ k256.workspace = true
 sha2.workspace = true
 pqbip39.workspace = true
 bitcoin.workspace = true
+serde.workspace = true
 errors = { path = "../errors" }
 config = { path = "../config" }
 

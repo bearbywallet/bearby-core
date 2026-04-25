@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use errors::bip32::Bip329Errors;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum DerivationType {
     Root,
     Account(usize),
@@ -10,7 +11,7 @@ pub enum DerivationType {
     AddressIndex(usize, usize, usize),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DerivationPath {
     pub slip44: u32,
     pub bip: u32,

@@ -4,7 +4,7 @@ use crypto::slip44;
 use errors::bip32::Bip329Errors;
 use errors::keypair::PubKeyError;
 use secrecy::SecretBox;
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::address::Address;
@@ -13,7 +13,7 @@ type Result<T> = std::result::Result<T, PubKeyError>;
 
 pub const GAP_LIMIT: u32 = 20;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BtcAddressEntry {
     pub address: Address,
     pub path: DerivationPath,
@@ -176,87 +176,6 @@ pub fn generate_btc_addresses(
     }
 
     Ok(result)
-}
-
-impl Serialize for BtcAddressEntry {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("BtcAddressEntry", 3)?;
-        state.serialize_field("address", &self.address.to_string())?;
-        state.serialize_field("path", &self.path)?;
-        state.serialize_field("history", &self.history)?;
-        state.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for BtcAddressEntry {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(field_identifier, rename_all = "lowercase")]
-        enum Field {
-            Address,
-            Path,
-            History,
-        }
-
-        struct BtcAddressEntryVisitor;
-
-        impl<'de> de::Visitor<'de> for BtcAddressEntryVisitor {
-            type Value = BtcAddressEntry;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("struct BtcAddressEntry")
-            }
-
-            fn visit_map<A: de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> std::result::Result<Self::Value, A::Error> {
-                let mut address: Option<String> = None;
-                let mut path: Option<DerivationPath> = None;
-                let mut history: Option<Vec<bitcoin::Txid>> = None;
-
-                while let Some(key) = map.next_key()? {
-                    match key {
-                        Field::Address => {
-                            if address.is_some() {
-                                return Err(de::Error::duplicate_field("address"));
-                            }
-                            address = Some(map.next_value()?);
-                        }
-                        Field::Path => {
-                            if path.is_some() {
-                                return Err(de::Error::duplicate_field("path"));
-                            }
-                            path = Some(map.next_value()?);
-                        }
-                        Field::History => {
-                            if history.is_some() {
-                                return Err(de::Error::duplicate_field("history"));
-                            }
-                            history = Some(map.next_value()?);
-                        }
-                    }
-                }
-
-                let address = address.ok_or_else(|| de::Error::missing_field("address"))?;
-                let path = path.ok_or_else(|| de::Error::missing_field("path"))?;
-                let history = history.unwrap_or_default();
-
-                let addr = Address::from_bitcoin_address(&address)
-                    .map_err(|e| de::Error::custom(format!("invalid bitcoin address: {}", e)))?;
-
-                Ok(BtcAddressEntry {
-                    address: addr,
-                    path,
-                    history,
-                })
-            }
-        }
-
-        const FIELDS: &[&str] = &["address", "path", "history"];
-        deserializer.deserialize_struct("BtcAddressEntry", FIELDS, BtcAddressEntryVisitor)
-    }
 }
 
 #[cfg(test)]
