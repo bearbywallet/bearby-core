@@ -37,3 +37,5 @@ rpc = { path = "../rpc" }
 mockito = "1.5.0"
 rand.workspace = true
 test_data = { path = "../test_data" }
+pqbip39.workspace = true
+secrecy.workspace = true

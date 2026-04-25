@@ -14,6 +14,7 @@ pub const GAP_LIMIT: u32 = 20;
 pub struct BtcAddressEntry {
     pub address: bitcoin::Address,
     pub path: DerivationPath,
+    pub history: Vec<bitcoin::Txid>,
 }
 
 #[derive(Debug)]
@@ -140,7 +141,11 @@ pub fn generate_btc_addresses(
                 let pk_bytes = sk.public_key().to_sec1_bytes();
                 let address = create_btc_address(&pk_bytes, network, addr_type)
                     .map_err(|e| Bip329Errors::InvalidKey(format!("{:?}", e)))?;
-                Ok(BtcAddressEntry { address, path })
+                Ok(BtcAddressEntry {
+                    address,
+                    path,
+                    history: Vec::new(),
+                })
             };
 
         for idx in start_index..end {

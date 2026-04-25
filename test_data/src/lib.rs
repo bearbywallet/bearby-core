@@ -210,7 +210,7 @@ pub fn gen_btc_regtest_conf() -> ChainConfig {
         ftokens: vec![gen_btc_regtest_token()],
         logo: String::new(),
         diff_block_time: 0,
-        testnet: None,
+        testnet: Some(true),
         chain_ids: [1, 0],
         name: "Bitcoin(regtest)".to_string(),
         chain: "BTC".to_string(),

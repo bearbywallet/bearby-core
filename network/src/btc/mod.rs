@@ -10,13 +10,16 @@ use errors::tx::TransactionErrors;
 use history::status::TransactionStatus;
 use history::transaction::HistoricalTransaction;
 use proto::address::Address;
+use proto::btc_utils::{AddressChain, ByteCodec};
 use proto::tx::{TransactionReceipt, TransactionRequest};
+use std::collections::HashMap;
 use token::ft::FToken;
 
 const DEFAULT_FEE_RATE_BTC: f64 = 0.00001;
 const SATOSHIS_PER_BTC: f64 = 100_000_000.0;
 const BYTES_PER_KB: f64 = 1000.0;
 const DEFAULT_TX_SIZE_BYTES: u64 = 250;
+const HISTORY_BATCH_CHUNK: usize = 25;
 
 fn calculate_tx_vsize(tx: &TransactionRequest) -> u64 {
     match tx {
@@ -160,6 +163,10 @@ pub trait BtcOperations {
         &self,
         address: &Address,
     ) -> Result<Vec<electrum_client::ListUnspentRes>>;
+    async fn batch_script_get_history(
+        &self,
+        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    ) -> Result<()>;
 }
 
 #[async_trait]
@@ -437,6 +444,96 @@ impl BtcOperations for NetworkProvider {
             Ok(unspents)
         })
     }
+
+    async fn batch_script_get_history(
+        &self,
+        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    ) -> Result<()> {
+        if chains.is_empty() {
+            return Ok(());
+        }
+
+        let mut keys: Vec<bitcoin::AddressType> = chains.keys().copied().collect();
+        keys.sort_by_key(|k| k.to_byte());
+
+        let mut scripts: Vec<bitcoin::ScriptBuf> = Vec::new();
+        let mut layout: Vec<(bitcoin::AddressType, usize)> = Vec::with_capacity(keys.len());
+
+        for key in &keys {
+            let chain = chains.get(key).expect("key from map");
+            if chain.external.len() != chain.internal.len() {
+                return Err(NetworkErrors::RPCError(format!(
+                    "AddressChain length mismatch for {:?}: external={}, internal={}",
+                    key,
+                    chain.external.len(),
+                    chain.internal.len()
+                )));
+            }
+            let n = chain.external.len();
+            for i in 0..n {
+                scripts.push(chain.external[i].address.script_pubkey());
+                scripts.push(chain.internal[i].address.script_pubkey());
+            }
+            layout.push((*key, n));
+        }
+
+        if scripts.is_empty() {
+            return Ok(());
+        }
+
+        let script_refs: Vec<&bitcoin::Script> = scripts.iter().map(|s| s.as_ref()).collect();
+        let mut results = self.with_electrum_client(|client| {
+            let mut all: Vec<Vec<electrum_client::GetHistoryRes>> =
+                Vec::with_capacity(script_refs.len());
+            for chunk in script_refs.chunks(HISTORY_BATCH_CHUNK) {
+                let chunk_results = client.batch_script_get_history(chunk).map_err(|e| {
+                    NetworkErrors::RPCError(format!("Failed to batch script history: {}", e))
+                })?;
+                all.extend(chunk_results);
+            }
+            Ok(all)
+        })?;
+
+        let mut cursor = 0usize;
+        for (addr_type, n) in layout {
+            let chain = chains.get_mut(&addr_type).expect("layout key");
+            let mut truncate_at: Option<usize> = None;
+
+            for i in 0..n {
+                let ext_history = std::mem::take(&mut results[cursor]);
+                cursor += 1;
+                let int_history = std::mem::take(&mut results[cursor]);
+                cursor += 1;
+
+                let ext_txids: Vec<bitcoin::Txid> =
+                    ext_history.into_iter().map(|h| h.tx_hash).collect();
+                let int_txids: Vec<bitcoin::Txid> =
+                    int_history.into_iter().map(|h| h.tx_hash).collect();
+
+                let both_empty = ext_txids.is_empty() && int_txids.is_empty();
+                chain.external[i].history = ext_txids;
+                chain.internal[i].history = int_txids;
+
+                if both_empty {
+                    truncate_at = Some(i);
+                    break;
+                }
+            }
+
+            if let Some(at) = truncate_at {
+                cursor += (n - at - 1) * 2;
+                let keep = if addr_type == bitcoin::AddressType::P2tr {
+                    at + 1
+                } else {
+                    at
+                };
+                chain.external.truncate(keep);
+                chain.internal.truncate(keep);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -620,5 +717,129 @@ mod tests {
         assert_eq!(slow, 1);
         assert_eq!(market, 1);
         assert_eq!(fast, 1);
+    }
+
+    fn anvil_seed() -> secrecy::SecretBox<[u8; config::sha::SHA512_SIZE]> {
+        use config::bip39::EN_WORDS;
+        use pqbip39::mnemonic::Mnemonic;
+        use secrecy::SecretString;
+        use test_data::ANVIL_MNEMONIC;
+
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        mnemonic.to_seed(&SecretString::from("")).unwrap()
+    }
+
+    #[test]
+    fn print_get_history_payloads() {
+        use bitcoin::hashes::{sha256, Hash};
+        use proto::btc_utils::{generate_btc_addresses, GAP_LIMIT};
+
+        let seed = anvil_seed();
+        let chains =
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
+
+        let mut all_scripthashes: Vec<String> = Vec::new();
+
+        for (addr_type, chain) in &chains {
+            for (label, vec) in [("ext", &chain.external), ("int", &chain.internal)] {
+                for entry in vec.iter().take(2) {
+                    let script = entry.address.script_pubkey();
+                    let mut sh = sha256::Hash::hash(script.as_bytes()).to_byte_array();
+                    sh.reverse();
+                    let sh_hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
+                    println!(
+                        "{:?} {} {} -> sh={}",
+                        addr_type, label, entry.address, sh_hex
+                    );
+                    all_scripthashes.push(sh_hex);
+                }
+            }
+        }
+
+        println!("\n--- single-call payload (paste into openssl s_client, append \\n) ---");
+        println!(
+            r#"{{"id":1,"method":"blockchain.scripthash.get_history","params":["{}"]}}"#,
+            all_scripthashes[0]
+        );
+
+        println!("\n--- batch (3) payload ---");
+        let batch_items: Vec<String> = all_scripthashes
+            .iter()
+            .take(3)
+            .enumerate()
+            .map(|(i, sh)| {
+                format!(
+                    r#"{{"id":{},"method":"blockchain.scripthash.get_history","params":["{}"]}}"#,
+                    i + 1,
+                    sh
+                )
+            })
+            .collect();
+        println!("[{}]", batch_items.join(","));
+    }
+
+    #[tokio::test]
+    async fn test_batch_script_get_history_empty_chains() {
+        use test_data::gen_btc_regtest_conf;
+
+        let provider = NetworkProvider::new(gen_btc_regtest_conf());
+        let mut chains: HashMap<bitcoin::AddressType, AddressChain> = HashMap::new();
+
+        provider
+            .batch_script_get_history(&mut chains)
+            .await
+            .unwrap();
+
+        assert!(chains.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_batch_script_get_history_account_zero() {
+        use proto::btc_utils::{generate_btc_addresses, GAP_LIMIT};
+        use test_data::gen_btc_regtest_conf;
+
+        let provider = NetworkProvider::new(gen_btc_regtest_conf());
+        let seed = anvil_seed();
+
+        let mut chains =
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
+
+        let original_lengths: HashMap<bitcoin::AddressType, usize> =
+            chains.iter().map(|(k, c)| (*k, c.external.len())).collect();
+
+        provider
+            .batch_script_get_history(&mut chains)
+            .await
+            .unwrap();
+
+        for (addr_type, chain) in &chains {
+            assert_eq!(
+                chain.external.len(),
+                chain.internal.len(),
+                "{:?} external/internal length mismatch",
+                addr_type
+            );
+            assert!(
+                chain.external.len() <= original_lengths[addr_type],
+                "{:?} chain unexpectedly grew",
+                addr_type
+            );
+            for i in 0..chain.external.len() {
+                let both_empty =
+                    chain.external[i].history.is_empty() && chain.internal[i].history.is_empty();
+                if *addr_type == bitcoin::AddressType::P2tr
+                    && i + 1 == chain.external.len()
+                    && both_empty
+                {
+                    continue;
+                }
+                assert!(
+                    !chain.external[i].history.is_empty() || !chain.internal[i].history.is_empty(),
+                    "{:?} kept index {} should have history on at least one side",
+                    addr_type,
+                    i,
+                );
+            }
+        }
     }
 }
