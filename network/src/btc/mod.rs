@@ -497,7 +497,7 @@ impl BtcOperations for NetworkProvider {
         let mut cursor = 0usize;
         for (addr_type, n) in layout {
             let chain = chains.get_mut(&addr_type).expect("layout key");
-            let mut truncate_at: Option<usize> = None;
+            let mut last_used: Option<usize> = None;
 
             for i in 0..n {
                 let ext_history = std::mem::take(&mut results[cursor]);
@@ -514,21 +514,55 @@ impl BtcOperations for NetworkProvider {
                 chain.external[i].history = ext_txids;
                 chain.internal[i].history = int_txids;
 
-                if both_empty {
-                    truncate_at = Some(i);
-                    break;
+                if !both_empty {
+                    last_used = Some(i);
                 }
             }
 
-            if let Some(at) = truncate_at {
-                cursor += (n - at - 1) * 2;
-                let keep = if addr_type == bitcoin::AddressType::P2tr {
-                    at + 1
+            let old_ext = std::mem::take(&mut chain.external);
+            let old_int = std::mem::take(&mut chain.internal);
+
+            if addr_type == bitcoin::AddressType::P2tr {
+                if let Some(last) = last_used {
+                    let mut new_ext = Vec::with_capacity(last + 2);
+                    let mut new_int = Vec::with_capacity(last + 2);
+
+                    for (i, (ext_entry, int_entry)) in
+                        old_ext.into_iter().zip(old_int.into_iter()).enumerate()
+                    {
+                        if i <= last {
+                            if !ext_entry.history.is_empty() {
+                                new_ext.push(ext_entry);
+                            }
+                            if !int_entry.history.is_empty() {
+                                new_int.push(int_entry);
+                            }
+                        } else if i == last + 1 {
+                            new_ext.push(ext_entry);
+                            new_int.push(int_entry);
+                            break;
+                        }
+                    }
+
+                    chain.external = new_ext;
+                    chain.internal = new_int;
                 } else {
-                    at
-                };
-                chain.external.truncate(keep);
-                chain.internal.truncate(keep);
+                    let mut old_ext_iter = old_ext.into_iter();
+                    let mut old_int_iter = old_int.into_iter();
+                    if let (Some(ext), Some(int)) = (old_ext_iter.next(), old_int_iter.next()) {
+                        chain.external = vec![ext];
+                        chain.internal = vec![int];
+                    }
+                }
+            } else {
+                chain.external = old_ext
+                    .into_iter()
+                    .filter(|e| !e.history.is_empty())
+                    .collect();
+                chain.internal = old_int
+                    .into_iter()
+                    .filter(|e| !e.history.is_empty())
+                    .collect();
             }
         }
 
@@ -813,29 +847,40 @@ mod tests {
             .unwrap();
 
         for (addr_type, chain) in &chains {
-            assert_eq!(
-                chain.external.len(),
-                chain.internal.len(),
-                "{:?} external/internal length mismatch",
+            assert!(
+                chain.external.len() <= original_lengths[addr_type],
+                "{:?} external chain unexpectedly grew",
                 addr_type
             );
             assert!(
-                chain.external.len() <= original_lengths[addr_type],
-                "{:?} chain unexpectedly grew",
+                chain.internal.len() <= original_lengths[addr_type],
+                "{:?} internal chain unexpectedly grew",
                 addr_type
             );
-            for i in 0..chain.external.len() {
-                let both_empty =
-                    chain.external[i].history.is_empty() && chain.internal[i].history.is_empty();
+            for (i, entry) in chain.external.iter().enumerate() {
                 if *addr_type == bitcoin::AddressType::P2tr
+                    && entry.history.is_empty()
                     && i + 1 == chain.external.len()
-                    && both_empty
                 {
                     continue;
                 }
                 assert!(
-                    !chain.external[i].history.is_empty() || !chain.internal[i].history.is_empty(),
-                    "{:?} kept index {} should have history on at least one side",
+                    !entry.history.is_empty(),
+                    "{:?} kept external index {} should have history",
+                    addr_type,
+                    i,
+                );
+            }
+            for (i, entry) in chain.internal.iter().enumerate() {
+                if *addr_type == bitcoin::AddressType::P2tr
+                    && entry.history.is_empty()
+                    && i + 1 == chain.internal.len()
+                {
+                    continue;
+                }
+                assert!(
+                    !entry.history.is_empty(),
+                    "{:?} kept internal index {} should have history",
                     addr_type,
                     i,
                 );
