@@ -23,6 +23,22 @@ pub struct AddressChain {
     pub internal: Vec<BtcAddressEntry>,
 }
 
+impl AddressChain {
+    pub fn get_external(&self) -> Result<&BtcAddressEntry> {
+        self.external
+            .iter()
+            .rfind(|e| e.history.is_empty())
+            .ok_or(PubKeyError::NoUnusedAddress)
+    }
+
+    pub fn get_internal(&self) -> Result<&BtcAddressEntry> {
+        self.internal
+            .iter()
+            .rfind(|e| e.history.is_empty())
+            .ok_or(PubKeyError::NoUnusedAddress)
+    }
+}
+
 pub trait ByteCodec: Sized {
     fn to_byte(&self) -> u8;
     fn from_byte(byte: u8) -> Result<Self>;
@@ -166,10 +182,11 @@ mod tests {
     use pqbip39::mnemonic::Mnemonic;
     use secrecy::SecretString;
     use std::collections::HashSet;
+    use std::str::FromStr;
+    use test_data::ANVIL_MNEMONIC;
 
     fn test_seed() -> SecretBox<[u8; 64]> {
-        let phrase = "test test test test test test test test test test test junk";
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(phrase)).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         mnemonic.to_seed(&SecretString::from("")).unwrap()
     }
 
@@ -301,5 +318,91 @@ mod tests {
             assert!(chain.external.is_empty());
             assert!(chain.internal.is_empty());
         }
+    }
+
+    fn dummy_txid() -> bitcoin::Txid {
+        bitcoin::Txid::from_str(
+            "76464c2b9e2af4d63ef38a77964b3b77e629dddefc5cb9eb1a3645b1608b790f",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_get_external_returns_last_unused() {
+        let seed = test_seed();
+        let mut map =
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
+
+        chain.external[0].history = vec![dummy_txid()];
+
+        let result = chain.get_external().unwrap();
+        assert_eq!(result.path.get_index(), 2);
+        assert!(result.history.is_empty());
+    }
+
+    #[test]
+    fn test_get_internal_returns_last_unused() {
+        let seed = test_seed();
+        let mut map =
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
+
+        chain.internal[0].history = vec![dummy_txid()];
+        chain.internal[1].history = vec![dummy_txid()];
+
+        let result = chain.get_internal().unwrap();
+        assert_eq!(result.path.get_index(), 2);
+        assert!(result.history.is_empty());
+    }
+
+    #[test]
+    fn test_get_external_errors_when_all_used() {
+        let seed = test_seed();
+        let mut map =
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
+
+        for entry in &mut chain.external {
+            entry.history = vec![dummy_txid()];
+        }
+
+        let err = chain.get_external().unwrap_err();
+        assert_eq!(err, PubKeyError::NoUnusedAddress);
+    }
+
+    #[test]
+    fn test_get_external_errors_when_empty_chain() {
+        let seed = test_seed();
+        let map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 0).unwrap();
+        let chain = map.get(&bitcoin::AddressType::P2wpkh).unwrap();
+
+        let err = chain.get_external().unwrap_err();
+        assert_eq!(err, PubKeyError::NoUnusedAddress);
+    }
+
+    #[test]
+    fn test_get_internal_errors_when_all_used() {
+        let seed = test_seed();
+        let mut map =
+            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
+
+        for entry in &mut chain.internal {
+            entry.history = vec![dummy_txid()];
+        }
+
+        let err = chain.get_internal().unwrap_err();
+        assert_eq!(err, PubKeyError::NoUnusedAddress);
+    }
+
+    #[test]
+    fn test_get_internal_errors_when_empty_chain() {
+        let seed = test_seed();
+        let map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 0).unwrap();
+        let chain = map.get(&bitcoin::AddressType::P2wpkh).unwrap();
+
+        let err = chain.get_internal().unwrap_err();
+        assert_eq!(err, PubKeyError::NoUnusedAddress);
     }
 }

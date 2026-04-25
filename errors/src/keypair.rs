@@ -108,6 +108,9 @@ pub enum PubKeyError {
 
     #[error("Not implemented")]
     NotImpl,
+
+    #[error("No unused address available")]
+    NoUnusedAddress,
 }
 
 impl From<AddressError> for PubKeyError {
