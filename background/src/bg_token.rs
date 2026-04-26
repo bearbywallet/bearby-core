@@ -111,7 +111,7 @@ impl TokensManagement for Background {
                 let amount_sat = amount.to::<u64>();
                 let provider = self.get_provider(token.chain_hash)?;
 
-                let (tx, witness_utxos) = crate::bg_tx::build_unsigned_btc_transaction(
+                let (tx, witness_utxos) = wallet::bitcoin_wallet::build_unsigned_btc_transaction(
                     &provider,
                     &sender.addr,
                     vec![(to, amount_sat)],

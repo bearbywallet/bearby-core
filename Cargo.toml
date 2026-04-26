@@ -75,7 +75,7 @@ sled = "0.34.7"
 directories = "6.0.0"
 hmac = "0.13.0"
 rust-argon2 = "2.1.0"
-bitcoin = { version = "0.32.8", features = ["serde", "base64"] }
+bitcoin = { version = "0.32.8", features = ["serde", "base64"], default-features = false }
 electrum-client = { version = "0.24.1", default-features = false, features = ["proxy", "use-rustls-ring"] }
 rustls = { version = "0.23.37", features = ["ring", "std"], default-features = false }
 keyring = { version = "3.6.3", features = ["windows-native", "sync-secret-service"] }

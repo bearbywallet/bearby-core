@@ -1,16 +1,168 @@
-use crate::{account::AccountV2, Result, Wallet, WalletAddrType};
+use crate::{account::AccountV2, wallet_crypto::WalletCrypto, wallet_storage::StorageOperations, Result, Wallet, WalletAddrType};
 use async_trait::async_trait;
+use cipher::argon2::Argon2Seed;
 use config::sha::SHA512_SIZE;
 use config::storage::BTC_ADDRESSES_DB_KEY_V1;
 use errors::wallet::WalletErrors;
 use network::btc::BtcOperations;
 use network::provider::NetworkProvider;
-use proto::btc_utils::{generate_btc_addresses, AddressChain, ByteCodec, GAP_LIMIT};
+use proto::{
+    address::Address,
+    btc_utils::{generate_btc_addresses, AddressChain, ByteCodec, GAP_LIMIT},
+    tx::{TransactionMetadata, TransactionReceipt, TransactionRequest},
+};
 use rpc::network_config::ChainConfig;
 use secrecy::SecretBox;
 use std::collections::HashMap;
 
 const MAX_GAP_EXTENSIONS: u32 = 3;
+
+pub fn get_dust_limit(addr: &Address) -> u64 {
+    match addr.get_bitcoin_address_type() {
+        Ok(bitcoin::AddressType::P2wpkh) => 294,
+        Ok(bitcoin::AddressType::P2tr) => 330,
+        _ => 546,
+    }
+}
+
+pub async fn build_unsigned_btc_transaction(
+    provider: &NetworkProvider,
+    from_addr: &Address,
+    destinations: Vec<(Address, u64)>,
+    fee_rate_sat_per_vbyte: Option<u64>,
+) -> Result<(bitcoin::Transaction, Vec<bitcoin::TxOut>)> {
+    use bitcoin::{
+        absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence,
+        Transaction, TxIn, TxOut, Witness,
+    };
+
+    let unspents = provider
+        .btc_list_unspent(from_addr)
+        .await
+        .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
+
+    if unspents.is_empty() {
+        return Err(WalletErrors::BincodeError(format!(
+            "No UTXOs available for address: {}",
+            from_addr
+        )));
+    }
+
+    const TX_OVERHEAD_VSIZE: usize = 10;
+    const DEFAULT_FEE_RATE: u64 = 10;
+
+    let input_vsize = match from_addr.get_bitcoin_address_type() {
+        Ok(bitcoin::AddressType::P2wpkh) => 68,
+        Ok(bitcoin::AddressType::P2tr) => 58,
+        _ => 148,
+    };
+
+    let output_vsize = match from_addr.get_bitcoin_address_type() {
+        Ok(bitcoin::AddressType::P2wpkh) => 31,
+        Ok(bitcoin::AddressType::P2tr) => 43,
+        _ => 34,
+    };
+
+    let total_input: u64 = unspents.iter().map(|u| u.value).sum();
+    let original_total_output: u64 = destinations.iter().map(|(_, amount)| amount).sum();
+    let estimated_vsize =
+        (unspents.len() * input_vsize + destinations.len() * output_vsize + TX_OVERHEAD_VSIZE) as u64;
+    let fee_rate = fee_rate_sat_per_vbyte.unwrap_or(DEFAULT_FEE_RATE);
+    let estimated_fee = estimated_vsize * fee_rate;
+
+    let (adjusted_destinations, total_output) =
+        if total_input < original_total_output + estimated_fee {
+            let max_threshold = estimated_fee.saturating_mul(3).max(10000);
+            let is_max_transfer = destinations.len() == 1
+                && original_total_output <= total_input
+                && original_total_output + estimated_fee > total_input
+                && (original_total_output + estimated_fee).saturating_sub(total_input)
+                    < max_threshold;
+
+            if is_max_transfer {
+                let adjusted_amount = total_input.saturating_sub(estimated_fee);
+                let dust_limit = get_dust_limit(from_addr);
+
+                if adjusted_amount < dust_limit {
+                    return Err(WalletErrors::BincodeError(format!(
+                        "Insufficient funds: balance too low after fee (have: {}, fee: {})",
+                        total_input, estimated_fee
+                    )));
+                }
+                let adjusted_dests = vec![(destinations[0].0.clone(), adjusted_amount)];
+                (adjusted_dests, adjusted_amount)
+            } else {
+                return Err(WalletErrors::BincodeError(format!(
+                    "Insufficient funds: have {}, need {} (output: {}, fee: {})",
+                    total_input,
+                    original_total_output + estimated_fee,
+                    original_total_output,
+                    estimated_fee
+                )));
+            }
+        } else {
+            (destinations.clone(), original_total_output)
+        };
+
+    let mut inputs = Vec::new();
+    for unspent in &unspents {
+        inputs.push(TxIn {
+            previous_output: OutPoint {
+                txid: unspent.tx_hash,
+                vout: unspent.tx_pos as u32,
+            },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        });
+    }
+
+    let mut outputs = Vec::new();
+    for (dest_addr, amount) in adjusted_destinations {
+        let btc_addr = dest_addr
+            .to_bitcoin_addr()
+            .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
+        outputs.push(TxOut {
+            value: Amount::from_sat(amount),
+            script_pubkey: btc_addr.script_pubkey(),
+        });
+    }
+
+    let change = total_input - total_output - estimated_fee;
+    let dust_limit = get_dust_limit(from_addr);
+
+    if change > dust_limit {
+        let change_addr = from_addr
+            .to_bitcoin_addr()
+            .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
+        outputs.push(TxOut {
+            value: Amount::from_sat(change),
+            script_pubkey: change_addr.script_pubkey(),
+        });
+    }
+
+    let tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: inputs,
+        output: outputs,
+    };
+
+    let from_script = from_addr
+        .to_bitcoin_addr()
+        .map_err(|e| WalletErrors::BincodeError(e.to_string()))?
+        .script_pubkey();
+
+    let witness_utxos: Vec<TxOut> = unspents
+        .iter()
+        .map(|u| TxOut {
+            value: Amount::from_sat(u.value),
+            script_pubkey: from_script.clone(),
+        })
+        .collect();
+
+    Ok((tx, witness_utxos))
+}
 
 #[async_trait]
 pub trait BitcoinWallet {
@@ -30,6 +182,16 @@ pub trait BitcoinWallet {
     ) -> std::result::Result<HashMap<bitcoin::AddressType, AddressChain>, Self::Error>;
 
     fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize) -> Vec<u8>;
+
+    async fn prepare_and_sign_btc_transaction(
+        &self,
+        provider: &NetworkProvider,
+        account_index: usize,
+        seed_bytes: &Argon2Seed,
+        passphrase: Option<&str>,
+        destinations: Vec<(Address, u64)>,
+        fee_rate_sat_per_vbyte: Option<u64>,
+    ) -> std::result::Result<TransactionReceipt, Self::Error>;
 }
 
 #[async_trait]
@@ -152,6 +314,39 @@ impl BitcoinWallet for Wallet {
     fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize) -> Vec<u8> {
         let idx_bytes = account_index.to_le_bytes();
         [key.as_slice(), BTC_ADDRESSES_DB_KEY_V1, idx_bytes.as_slice()].concat()
+    }
+
+    async fn prepare_and_sign_btc_transaction(
+        &self,
+        provider: &NetworkProvider,
+        account_index: usize,
+        seed_bytes: &Argon2Seed,
+        passphrase: Option<&str>,
+        destinations: Vec<(Address, u64)>,
+        fee_rate_sat_per_vbyte: Option<u64>,
+    ) -> Result<TransactionReceipt> {
+        let data = self.get_wallet_data()?;
+        let account = data.get_account(account_index)?;
+        let keypair = self.reveal_keypair(account_index, seed_bytes, passphrase)?;
+
+        let (tx, witness_utxos) = build_unsigned_btc_transaction(
+            provider,
+            &account.addr,
+            destinations,
+            fee_rate_sat_per_vbyte,
+        )
+        .await?;
+
+        let metadata = TransactionMetadata {
+            chain_hash: data.chain_hash,
+            btc_witness_utxos: Some(witness_utxos),
+            ..Default::default()
+        };
+
+        let tx_request = TransactionRequest::Bitcoin((tx, metadata));
+        let signed_receipt = tx_request.sign(&keypair).await?;
+
+        Ok(signed_receipt)
     }
 }
 
