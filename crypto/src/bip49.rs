@@ -109,11 +109,16 @@ impl DerivationPath {
         }
     }
 
-    pub fn get_index(&self) -> usize {
+    pub fn get_account_index(&self) -> usize {
         match self.derivation {
             DerivationType::Root => 0,
             DerivationType::Account(idx) => idx,
             DerivationType::AccountChange(account, _) => account,
+            DerivationType::AddressIndex(account, _, _)
+                if self.slip44 == super::slip44::BITCOIN =>
+            {
+                account
+            }
             DerivationType::AddressIndex(_, _, index) => index,
         }
     }
@@ -223,7 +228,7 @@ mod tests {
             DerivationPath::BIP44_PURPOSE,
         );
         assert_eq!(eth_path.get_path(), "m/44'/60'/0'/0/5");
-        assert_eq!(eth_path.get_index(), 5);
+        assert_eq!(eth_path.get_account_index(), 5);
     }
 
     #[test]
@@ -346,7 +351,7 @@ mod tests {
                 DerivationPath::BIP44_PURPOSE,
             );
             assert_eq!(path.get_path(), format!("m/44'/501'/{}'", i));
-            assert_eq!(path.get_index(), i);
+            assert_eq!(path.get_account_index(), i);
         }
     }
 
@@ -359,7 +364,7 @@ mod tests {
                 DerivationPath::BIP44_PURPOSE,
             );
             assert_eq!(path.get_path(), format!("m/44'/501'/{}'/0'", i));
-            assert_eq!(path.get_index(), i);
+            assert_eq!(path.get_account_index(), i);
         }
     }
 

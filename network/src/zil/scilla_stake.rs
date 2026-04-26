@@ -560,9 +560,7 @@ fn calculate_rewards(
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(U256::ZERO);
-            let last_amt = *deleg_stake_per_cycle_map
-                .get(&c1)
-                .unwrap_or(&zero_bigint);
+            let last_amt = *deleg_stake_per_cycle_map.get(&c1).unwrap_or(&zero_bigint);
 
             deleg_stake_per_cycle_map.insert(cycle, last_amt + dir_amt + buf_amt);
         }

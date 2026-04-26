@@ -216,8 +216,7 @@ mod storage_tests {
         let warp = DataWarp::from_bytes(raw.into()).unwrap();
         assert_eq!(warp.version, 0);
 
-        let restored: TokenV1 =
-            bincode::deserialize(&warp.payload).unwrap();
+        let restored: TokenV1 = bincode::deserialize(&warp.payload).unwrap();
         assert_eq!(restored, token_v1);
 
         let msgpack_payload = rmp_serde::to_vec_named(&restored).unwrap();
@@ -307,22 +306,19 @@ mod storage_tests {
         let raw_a = db.get(b"settings_wallet_a").unwrap().unwrap().to_vec();
         let warp_a = DataWarp::from_bytes(raw_a.into()).unwrap();
         assert_eq!(warp_a.version, 0);
-        let restored_a: Settings =
-            bincode::deserialize(&warp_a.payload).unwrap();
+        let restored_a: Settings = bincode::deserialize(&warp_a.payload).unwrap();
         assert_eq!(restored_a.theme, "dark");
         assert_eq!(restored_a.locale, "en");
 
         let raw_b = db.get(b"settings_wallet_b").unwrap().unwrap().to_vec();
         let warp_b = DataWarp::from_bytes(raw_b.into()).unwrap();
         assert_eq!(warp_b.version, 1);
-        let restored_b: SettingsV2 =
-            rmp_serde::from_slice(&warp_b.payload).unwrap();
+        let restored_b: SettingsV2 = rmp_serde::from_slice(&warp_b.payload).unwrap();
         assert_eq!(restored_b.theme, "light");
         assert_eq!(restored_b.locale, "fr");
         assert!(!restored_b.notifications);
 
-        let original_a: Settings =
-            crate::codec::deserialize(&warp_a).unwrap();
+        let original_a: Settings = crate::codec::deserialize(&warp_a).unwrap();
         assert_eq!(original_a.theme, "dark");
 
         let migrated_warp = crate::codec::serialize(&original_a).unwrap();
@@ -336,8 +332,7 @@ mod storage_tests {
         let raw_a2 = db.get(b"settings_wallet_a").unwrap().unwrap().to_vec();
         let warp_a2 = DataWarp::from_bytes(raw_a2.into()).unwrap();
         assert_eq!(warp_a2.version, 1);
-        let upgraded_a: SettingsV2 =
-            crate::codec::deserialize(&warp_a2).unwrap();
+        let upgraded_a: SettingsV2 = crate::codec::deserialize(&warp_a2).unwrap();
         assert_eq!(upgraded_a.theme, "dark");
         assert_eq!(upgraded_a.locale, "en");
         assert!(upgraded_a.notifications);

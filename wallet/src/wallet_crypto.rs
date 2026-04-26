@@ -212,7 +212,7 @@ mod tests_wallet_crypto {
         .unwrap()
     }
 
-    fn create_test_wallet_from_mnemonic(
+    async fn create_test_wallet_from_mnemonic(
         storage: Arc<LocalStorage>,
         argon_seed: &Argon2Seed,
         indexes: &[(usize, String)],
@@ -244,6 +244,7 @@ mod tests_wallet_crypto {
             wallet_config,
             vec![],
         )
+        .await
         .unwrap()
     }
 
@@ -289,8 +290,8 @@ mod tests_wallet_crypto {
         ));
     }
 
-    #[test]
-    fn test_reveal_keypair_zilliqa_bip44() {
+    #[tokio::test]
+    async fn test_reveal_keypair_zilliqa_bip44() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
 
@@ -303,7 +304,8 @@ mod tests_wallet_crypto {
             &argon_seed,
             &indexes,
             &chain_config,
-        );
+        )
+        .await;
 
         for i in 0..3 {
             let keypair = wallet.reveal_keypair(i, &argon_seed, None).unwrap();
@@ -320,8 +322,8 @@ mod tests_wallet_crypto {
         }
     }
 
-    #[test]
-    fn test_reveal_keypair_ethereum_bip44() {
+    #[tokio::test]
+    async fn test_reveal_keypair_ethereum_bip44() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
 
@@ -334,7 +336,8 @@ mod tests_wallet_crypto {
             &argon_seed,
             &indexes,
             &chain_config,
-        );
+        )
+        .await;
 
         for i in 0..2 {
             let keypair = wallet.reveal_keypair(i, &argon_seed, None).unwrap();
@@ -351,8 +354,8 @@ mod tests_wallet_crypto {
         }
     }
 
-    #[test]
-    fn test_reveal_keypair_bitcoin_bip86_p2tr() {
+    #[tokio::test]
+    async fn test_reveal_keypair_bitcoin_bip86_p2tr() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
 
@@ -365,7 +368,8 @@ mod tests_wallet_crypto {
             &argon_seed,
             &indexes,
             &chain_config,
-        );
+        )
+        .await;
 
         let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
 
@@ -382,8 +386,8 @@ mod tests_wallet_crypto {
         assert!(addr_str.starts_with("bc1p"));
     }
 
-    #[test]
-    fn test_reveal_mnemonic_success() {
+    #[tokio::test]
+    async fn test_reveal_mnemonic_success() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
 
@@ -396,7 +400,8 @@ mod tests_wallet_crypto {
             &argon_seed,
             &indexes,
             &chain_config,
-        );
+        )
+        .await;
 
         let revealed_mnemonic = wallet.reveal_mnemonic(&argon_seed).unwrap();
 
@@ -406,8 +411,8 @@ mod tests_wallet_crypto {
         );
     }
 
-    #[test]
-    fn test_reveal_mnemonic_wrong_seed() {
+    #[tokio::test]
+    async fn test_reveal_mnemonic_wrong_seed() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
 
@@ -420,7 +425,8 @@ mod tests_wallet_crypto {
             &argon_seed,
             &indexes,
             &chain_config,
-        );
+        )
+        .await;
 
         let wrong_seed = [0u8; KEY_SIZE];
         let result = wallet.reveal_mnemonic(&wrong_seed);
@@ -444,8 +450,8 @@ mod tests_wallet_crypto {
         assert!(matches!(result, Err(WalletErrors::InvalidAccountType)));
     }
 
-    #[test]
-    fn test_sign_message_with_revealed_keypair() {
+    #[tokio::test]
+    async fn test_sign_message_with_revealed_keypair() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
 
@@ -458,7 +464,8 @@ mod tests_wallet_crypto {
             &argon_seed,
             &indexes,
             &chain_config,
-        );
+        )
+        .await;
 
         let msg = b"Hello, Zilliqa!";
         let signature = wallet.sign_message(msg, 0, &argon_seed, None).unwrap();
@@ -470,8 +477,8 @@ mod tests_wallet_crypto {
         assert!(verified);
     }
 
-    #[test]
-    fn test_reveal_keypair_bitcoin_testnet() {
+    #[tokio::test]
+    async fn test_reveal_keypair_bitcoin_testnet() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
 
@@ -485,7 +492,8 @@ mod tests_wallet_crypto {
             &argon_seed,
             &indexes,
             &chain_config,
-        );
+        )
+        .await;
 
         let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
 

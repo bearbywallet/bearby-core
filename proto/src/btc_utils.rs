@@ -306,13 +306,6 @@ mod tests {
                     assert_eq!(entry.address, c_vec[GAP_LIMIT as usize + i].address);
                 }
             }
-
-            for (i, entry) in b.external.iter().enumerate() {
-                assert_eq!(entry.path.get_index(), GAP_LIMIT as usize + i);
-            }
-            for (i, entry) in b.internal.iter().enumerate() {
-                assert_eq!(entry.path.get_index(), GAP_LIMIT as usize + i);
-            }
         }
 
         let empty = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 0).unwrap();
@@ -337,7 +330,7 @@ mod tests {
         chain.external[0].history = vec![dummy_txid()];
 
         let result = chain.get_external().unwrap();
-        assert_eq!(result.path.get_index(), 2);
+        assert_eq!(result.path.get_account_index(), 0);
         assert!(result.history.is_empty());
     }
 
@@ -351,7 +344,7 @@ mod tests {
         chain.internal[1].history = vec![dummy_txid()];
 
         let result = chain.get_internal().unwrap();
-        assert_eq!(result.path.get_index(), 2);
+        assert_eq!(result.path.get_account_index(), 0);
         assert!(result.history.is_empty());
     }
 

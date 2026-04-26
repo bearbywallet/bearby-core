@@ -269,9 +269,9 @@ impl WalletManagement for Background {
             },
             wallet_config,
             ftokens,
-        )?;
+        )
+        .await?;
         let data = wallet.get_wallet_data()?;
-
         if data.biometric_type != AuthMethod::None {
             let session = SessionManager::new(
                 Arc::clone(&self.storage),

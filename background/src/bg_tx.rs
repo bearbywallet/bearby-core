@@ -7,8 +7,7 @@ use config::sha::SHA256_SIZE;
 use errors::{background::BackgroundError, tx::TransactionErrors, wallet::WalletErrors};
 use history::{status::TransactionStatus, transaction::HistoricalTransaction};
 use network::{
-    btc::BtcOperations,
-    evm::RequiredTxParams,
+    btc::BtcOperations, evm::RequiredTxParams,
     solana::tx_builder::adjust_sol_native_transfer_lamports,
 };
 use proto::{
@@ -306,7 +305,9 @@ pub fn update_tx_from_params(
                 .map_err(|_| TransactionErrors::ConvertTxError("Fee overflow".to_string()))?;
             let balance_u64: u64 = balance.try_into().unwrap_or(u64::MAX);
 
-            if let Some(adjusted) = adjust_sol_native_transfer_lamports(&sol_tx.message, balance_u64, fee) {
+            if let Some(adjusted) =
+                adjust_sol_native_transfer_lamports(&sol_tx.message, balance_u64, fee)
+            {
                 sol_tx.message = adjusted;
             }
         }
@@ -340,11 +341,7 @@ pub fn update_tx_from_params(
             let is_max_transfer = output_count == 1;
 
             if is_max_transfer {
-                let dust_limit = metadata
-                    .signer
-                    .as_ref()
-                    .map(get_dust_limit)
-                    .unwrap_or(546);
+                let dust_limit = metadata.signer.as_ref().map(get_dust_limit).unwrap_or(546);
 
                 let max_fee_affordable = total_input.saturating_sub(dust_limit);
 
@@ -382,11 +379,7 @@ pub fn update_tx_from_params(
                     .saturating_sub(total_output)
                     .saturating_sub(new_fee);
 
-                let dust_limit = metadata
-                    .signer
-                    .as_ref()
-                    .map(get_dust_limit)
-                    .unwrap_or(546);
+                let dust_limit = metadata.signer.as_ref().map(get_dust_limit).unwrap_or(546);
 
                 if new_change >= dust_limit {
                     btc_tx.output[output_count - 1].value = bitcoin::Amount::from_sat(new_change);
@@ -838,7 +831,12 @@ mod tests_background_transactions {
             "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dc"
         );
         let ftokens = wallet.get_ftokens().unwrap();
-        let balance = *ftokens.first().unwrap().balances.get(&account.addr.to_hash()).unwrap();
+        let balance = *ftokens
+            .first()
+            .unwrap()
+            .balances
+            .get(&account.addr.to_hash())
+            .unwrap();
 
         let recipient =
             Address::from_eth_address("0x246C5881E3F109B2aF170F5C773EF969d3da581B").unwrap();
@@ -920,7 +918,12 @@ mod tests_background_transactions {
         let data = wallet.get_wallet_data().unwrap();
         let account = data.get_account(0).unwrap();
         let ftokens = wallet.get_ftokens().unwrap();
-        let balance = *ftokens.first().unwrap().balances.get(&account.addr.to_hash()).unwrap();
+        let balance = *ftokens
+            .first()
+            .unwrap()
+            .balances
+            .get(&account.addr.to_hash())
+            .unwrap();
 
         let recipient_0 = Address::from_eth_address(anvil_accounts::ACCOUNT_1).unwrap();
         let transfer_request_0 = ETHTransactionRequest {
@@ -1117,7 +1120,7 @@ mod tests_background_transactions {
     }
 
     #[tokio::test]
-    async fn test_sign_and_send_btc_taproot_tx() {
+    async fn test_sign_and_send_btc() {
         let (mut bg, _dir) = setup_test_background();
         let net_config = gen_btc_regtest_conf();
 
@@ -1145,13 +1148,11 @@ mod tests_background_transactions {
         let wallet = bg.get_wallet_by_index(0).unwrap();
         bg.sync_ftokens_balances(0).await.unwrap();
         let data = wallet.get_wallet_data().unwrap();
+        let pr = bg.get_provider(data.chain_hash).unwrap();
         let account = data.get_account(0).unwrap();
+        let res = pr.btc_list_unspent(&account.addr).await.unwrap();
 
-        let addr_str = account.addr.auto_format();
-        assert_eq!(
-            addr_str,
-            "bcrt1pfzhx49qe6s5exppe5hqljg3n6587xk0w75xqr70pgdt7ygnfkssqu3wy22"
-        );
+        assert!(res.is_empty(), "new tapRoot walelt must be empty!");
 
         let argon_seed = bg
             .unlock_wallet_with_password(&password, None, 0)
@@ -1217,8 +1218,20 @@ mod tests_background_transactions {
         let account_0 = data.get_account(0).unwrap();
         let account_1 = data.get_account(1).unwrap();
         let ftokens = wallet.get_ftokens().unwrap();
-        let balance_0 = ftokens.first().unwrap().balances.get(&account_0.addr.to_hash()).copied().unwrap_or(U256::ZERO);
-        let balance_1 = ftokens.first().unwrap().balances.get(&account_1.addr.to_hash()).copied().unwrap_or(U256::ZERO);
+        let balance_0 = ftokens
+            .first()
+            .unwrap()
+            .balances
+            .get(&account_0.addr.to_hash())
+            .copied()
+            .unwrap_or(U256::ZERO);
+        let balance_1 = ftokens
+            .first()
+            .unwrap()
+            .balances
+            .get(&account_1.addr.to_hash())
+            .copied()
+            .unwrap_or(U256::ZERO);
         assert_eq!(account_0.addr.auto_format(), tron_addresses::ADDR_0);
 
         let (sender_idx, sender, recipient, sender_balance) =

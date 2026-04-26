@@ -102,7 +102,11 @@ pub fn extract_token2022_metadata(extensions: &[MintExtensionEntry]) -> Option<(
         .state
         .as_ref()?;
     let name = state.get("name")?.as_str()?.trim_matches('\0').to_string();
-    let symbol = state.get("symbol")?.as_str()?.trim_matches('\0').to_string();
+    let symbol = state
+        .get("symbol")?
+        .as_str()?
+        .trim_matches('\0')
+        .to_string();
     if name.is_empty() && symbol.is_empty() {
         None
     } else {

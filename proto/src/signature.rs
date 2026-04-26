@@ -65,10 +65,10 @@ impl Signature {
                 Ok(recovered_address == signer_address)
             }
             Signature::Ed25519Solana(sig_bytes) => {
-                let pk_bytes: [u8; ED25519_PUB_KEY_SIZE] = pk
-                    .as_ref()
-                    .try_into()
-                    .map_err(|_| SignatureError::FailIntoPubKey(errors::keypair::PubKeyError::InvalidLength))?;
+                let pk_bytes: [u8; ED25519_PUB_KEY_SIZE] =
+                    pk.as_ref().try_into().map_err(|_| {
+                        SignatureError::FailIntoPubKey(errors::keypair::PubKeyError::InvalidLength)
+                    })?;
                 let verifying_key = VerifyingKey::from_bytes(&pk_bytes)
                     .map_err(|_| SignatureError::FailParseSignature)?;
                 let sig = Ed25519Sig::from_bytes(sig_bytes);

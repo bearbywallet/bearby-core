@@ -333,7 +333,9 @@ impl EvmOperations for NetworkProvider {
                 }
                 Address::Secp256k1Keccak256(_) | Address::Secp256k1Tron(_) => {
                     let balance = process_eth_balance_response(response)?;
-                    tokens[*token_idx].balances.insert(account.to_hash(), balance);
+                    tokens[*token_idx]
+                        .balances
+                        .insert(account.to_hash(), balance);
                 }
                 _ => {}
             }
@@ -531,7 +533,9 @@ mod tests {
         let mut tx = HistoricalTransaction {
             status: TransactionStatus::Pending,
             metadata: TransactionMetadata {
-                hash: Some("960188a94300ab78687bc8b9e42824c86d2c11a8ac7518022d868a96dd8c92a7".to_string()),
+                hash: Some(
+                    "960188a94300ab78687bc8b9e42824c86d2c11a8ac7518022d868a96dd8c92a7".to_string(),
+                ),
                 chain_hash: gen_tron_testnet_conf().hash(),
                 ..Default::default()
             },

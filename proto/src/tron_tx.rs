@@ -1277,10 +1277,7 @@ mod tests {
             json["raw_data"]["timestamp"].as_i64().unwrap(),
             1699999990000
         );
-        assert_eq!(
-            json["raw_data_hex"],
-            hex::encode(&receipt.raw_data_bytes)
-        );
+        assert_eq!(json["raw_data_hex"], hex::encode(&receipt.raw_data_bytes));
         assert!(json["signature"].is_array());
         assert_eq!(json["signature"][0], hex::encode(&receipt.signature));
     }
@@ -1313,10 +1310,7 @@ mod tests {
             json["raw_data"]["contract"][0]["type"],
             "TriggerSmartContract"
         );
-        assert_eq!(
-            json["raw_data"]["fee_limit"].as_i64().unwrap(),
-            100_000_000
-        );
+        assert_eq!(json["raw_data"]["fee_limit"].as_i64().unwrap(), 100_000_000);
         assert!(json["signature"].is_array());
     }
 

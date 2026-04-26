@@ -24,8 +24,7 @@ impl AddressBookManagement for Background {
 
         book.retain(|entry| entry.addr != *address);
 
-        self.storage
-            .set_versioned(ADDRESS_BOOK_DB_KEY_V1, &book)?;
+        self.storage.set_versioned(ADDRESS_BOOK_DB_KEY_V1, &book)?;
         self.storage.flush()?;
 
         Ok(())
@@ -48,8 +47,7 @@ impl AddressBookManagement for Background {
 
         book.push(address);
 
-        self.storage
-            .set_versioned(ADDRESS_BOOK_DB_KEY_V1, &book)?;
+        self.storage.set_versioned(ADDRESS_BOOK_DB_KEY_V1, &book)?;
         self.storage.flush()?;
 
         Ok(())

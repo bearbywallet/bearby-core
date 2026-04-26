@@ -759,8 +759,8 @@ mod tests_keypair {
         assert_eq!(eth_path.get_path(), "m/44'/60'/0'/0/0");
         assert_eq!(zil_path.get_path(), "m/44'/313'/0'/0/1");
 
-        assert_eq!(eth_path.get_index(), 0);
-        assert_eq!(zil_path.get_index(), 1);
+        assert_eq!(eth_path.get_account_index(), 0);
+        assert_eq!(zil_path.get_account_index(), 1);
     }
 
     #[tokio::test]

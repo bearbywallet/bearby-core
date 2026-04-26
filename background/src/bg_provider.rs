@@ -161,9 +161,9 @@ impl ProvidersManagement for Background {
         }
 
         for provider_ftoken in &provider.config.ftokens {
-            let exists = ftokens
-                .iter()
-                .any(|t| t.addr == provider_ftoken.addr && t.chain_hash == provider_ftoken.chain_hash);
+            let exists = ftokens.iter().any(|t| {
+                t.addr == provider_ftoken.addr && t.chain_hash == provider_ftoken.chain_hash
+            });
             if !exists {
                 ftokens.insert(0, provider_ftoken.clone());
             }

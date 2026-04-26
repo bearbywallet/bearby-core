@@ -3,8 +3,8 @@ use solana_hash::Hash;
 use solana_message::legacy::Message;
 use solana_pubkey::Pubkey;
 use solana_system_interface::instruction::transfer as system_transfer;
-use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
+use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 use spl_token::instruction::transfer as token_transfer;
 
 pub fn build_sol_transfer_message(
@@ -75,11 +75,9 @@ pub fn build_spl_transfer_message(
     let hash = Hash::from(*blockhash);
     let create_dest_ata_ix =
         create_associated_token_account_idempotent(owner, to_wallet, mint, token_program);
-    let transfer_ix =
-        token_transfer(token_program, &source_ata, &dest_ata, owner, &[], amount)
-            .map_err(|e| e.to_string())?;
-    let msg =
-        Message::new_with_blockhash(&[create_dest_ata_ix, transfer_ix], Some(owner), &hash);
+    let transfer_ix = token_transfer(token_program, &source_ata, &dest_ata, owner, &[], amount)
+        .map_err(|e| e.to_string())?;
+    let msg = Message::new_with_blockhash(&[create_dest_ata_ix, transfer_ix], Some(owner), &hash);
 
     bincode::serialize(&msg).map_err(|e| e.to_string())
 }
@@ -126,7 +124,9 @@ mod tests {
         let owner = Pubkey::new_unique();
         let mint = Pubkey::new_unique();
         let to = Pubkey::new_unique();
-        let msg = build_spl_transfer_message(&owner, &mint, &to, 1_000, &[0u8; 32], &spl_token::id()).unwrap();
+        let msg =
+            build_spl_transfer_message(&owner, &mint, &to, 1_000, &[0u8; 32], &spl_token::id())
+                .unwrap();
         assert!(!msg.is_empty());
         let decoded: SolanaMessage = bincode::deserialize(&msg).unwrap();
         assert_eq!(decoded.instructions.len(), 2);

@@ -14,8 +14,7 @@ pub fn build_psbt(
     tx: BitcoinTransaction,
     witness_utxos: &[bitcoin::TxOut],
 ) -> Result<Psbt, TransactionErrors> {
-    let mut psbt =
-        Psbt::from_unsigned_tx(tx).map_err(|_| TransactionErrors::PsbtCreationFailed)?;
+    let mut psbt = Psbt::from_unsigned_tx(tx).map_err(|_| TransactionErrors::PsbtCreationFailed)?;
 
     for (input, utxo) in psbt.inputs.iter_mut().zip(witness_utxos.iter()) {
         input.witness_utxo = Some(utxo.clone());
@@ -33,7 +32,10 @@ pub fn sign_psbt(
 ) -> Result<(), TransactionErrors> {
     let secp = Secp256k1::new();
     let priv_key = PrivateKey::new(*secret_key, network);
-    let dummy_origin = (bip32::Fingerprint::default(), bip32::DerivationPath::default());
+    let dummy_origin = (
+        bip32::Fingerprint::default(),
+        bip32::DerivationPath::default(),
+    );
 
     match addr_type {
         bitcoin::AddressType::P2tr => {
@@ -107,13 +109,11 @@ pub fn finalize_psbt(
                 if let Some((&pubkey, sig)) = input.partial_sigs.iter().next() {
                     let sig_bytes = sig.serialize();
                     let pk_bytes = pubkey.to_bytes();
-                    let sig_push = <&bitcoin::script::PushBytes>::try_from(
-                        sig_bytes.as_ref() as &[u8],
-                    )
-                    .map_err(|_| TransactionErrors::PsbtFinalizeFailed)?;
-                    let pk_push =
-                        <&bitcoin::script::PushBytes>::try_from(pk_bytes.as_slice())
+                    let sig_push =
+                        <&bitcoin::script::PushBytes>::try_from(sig_bytes.as_ref() as &[u8])
                             .map_err(|_| TransactionErrors::PsbtFinalizeFailed)?;
+                    let pk_push = <&bitcoin::script::PushBytes>::try_from(pk_bytes.as_slice())
+                        .map_err(|_| TransactionErrors::PsbtFinalizeFailed)?;
                     let script_sig = Builder::new()
                         .push_slice(sig_push)
                         .push_slice(pk_push)

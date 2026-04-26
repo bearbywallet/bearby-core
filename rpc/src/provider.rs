@@ -127,7 +127,6 @@ where
     {
         Err(RpcError::NetworkDown)
     }
-
 }
 
 #[async_trait]

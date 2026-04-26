@@ -157,9 +157,8 @@ impl AccountManagement for Wallet {
                     let new_sk = match target_slip44 {
                         slip44::TRON => SecretKey::Secp256k1Tron(raw_key),
                         slip44::BITCOIN => {
-                            let addr_type =
-                                DerivationPath::with_index(slip44::BITCOIN, (0, 0, 0))
-                                    .get_address_type();
+                            let addr_type = DerivationPath::with_index(slip44::BITCOIN, (0, 0, 0))
+                                .get_address_type();
                             SecretKey::Secp256k1Bitcoin((
                                 raw_key,
                                 network.unwrap_or(bitcoin::Network::Bitcoin),
@@ -183,8 +182,7 @@ impl AccountManagement for Wallet {
                 let accounts = bip_map.entry(target_bip).or_default();
                 for (idx, name) in missing {
                     let path = DerivationPath::with_index(target_slip44, (0, 0, idx));
-                    let account =
-                        AccountV2::from_hd(&mnemonic_seed_secret, name, &path, network)?;
+                    let account = AccountV2::from_hd(&mnemonic_seed_secret, name, &path, network)?;
                     accounts.push(account);
                 }
             }
@@ -213,12 +211,12 @@ impl AccountManagement for Wallet {
             .map(|accounts| {
                 accounts
                     .iter()
-                    .any(|account| account.account_type.value() == bip49.get_index())
+                    .any(|account| account.account_type.value() == bip49.get_account_index())
             })
             .unwrap_or(false);
 
         if has_account {
-            return Err(WalletErrors::ExistsAccount(bip49.get_index()));
+            return Err(WalletErrors::ExistsAccount(bip49.get_account_index()));
         }
 
         let hd_account = AccountV2::from_hd(&mnemonic_seed_secret, name, &bip49, network)?;
@@ -281,8 +279,8 @@ mod tests {
         (storage, dir)
     }
 
-    #[test]
-    fn test_select_account() {
+    #[tokio::test]
+    async fn test_select_account() {
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let (storage, _dir) = setup_test_storage();
 
@@ -314,6 +312,7 @@ mod tests {
             wallet_config,
             vec![],
         )
+        .await
         .unwrap();
         let data = wallet.get_wallet_data().unwrap();
 

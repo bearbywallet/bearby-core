@@ -161,9 +161,7 @@ pub fn get_device_identifier() -> Result<Vec<String>, io::Error> {
         .output()?;
 
     if !output.status.success() {
-        return Err(io::Error::other(
-            "ioreg command failed",
-        ));
+        return Err(io::Error::other("ioreg command failed"));
     }
 
     let output_str = String::from_utf8_lossy(&output.stdout);
@@ -186,9 +184,9 @@ pub fn get_device_identifier() -> Result<Vec<String>, io::Error> {
 
 #[cfg(target_os = "ios")]
 pub fn get_device_identifier() -> Result<Vec<String>, io::Error> {
+    use objc2::msg_send;
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
-    use objc2::msg_send;
     use objc2_foundation::{NSString, NSUUID};
 
     unsafe {

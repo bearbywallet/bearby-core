@@ -106,7 +106,7 @@ impl AccountV2 {
         } else {
             None
         };
-        let account_type = AccountType::Bip39HD(bip49.get_index());
+        let account_type = AccountType::Bip39HD(bip49.get_account_index());
 
         Ok(Self {
             account_type,

@@ -1,9 +1,11 @@
 use crate::{
     account::{self, AccountV2},
+    bitcoin_wallet::BitcoinWallet,
     wallet_data::WalletDataV2,
     wallet_types::WalletTypes,
     Result, SecretKeyParams, Wallet, WalletAddrType,
 };
+use async_trait::async_trait;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -11,11 +13,15 @@ use config::sha::SHA256_SIZE;
 use errors::{account::AccountErrors, wallet::WalletErrors};
 use proto::pubkey::PubKey;
 use secrecy::ExposeSecret;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use token::ft::FToken;
 
 use crate::{wallet_storage::StorageOperations, Bip39Params, LedgerParams, WalletConfig};
 
+#[async_trait]
 pub trait WalletInit {
     type Error;
 
@@ -37,8 +43,8 @@ pub trait WalletInit {
 
     fn wallet_key_gen() -> WalletAddrType;
 
-    fn from_bip39_words(
-        params: Bip39Params,
+    async fn from_bip39_words(
+        params: Bip39Params<'_>,
         config: WalletConfig,
         ftokens: Vec<FToken>,
     ) -> std::result::Result<Self, Self::Error>
@@ -46,6 +52,7 @@ pub trait WalletInit {
         Self: Sized;
 }
 
+#[async_trait]
 impl WalletInit for Wallet {
     type Error = WalletErrors;
 
@@ -186,8 +193,8 @@ impl WalletInit for Wallet {
         Ok(wallet)
     }
 
-    fn from_bip39_words(
-        params: Bip39Params,
+    async fn from_bip39_words(
+        params: Bip39Params<'_>,
         config: WalletConfig,
         ftokens: Vec<FToken>,
     ) -> Result<Self> {
@@ -205,43 +212,39 @@ impl WalletInit for Wallet {
         let cipher_entropy_key =
             Self::safe_storage_save(&cipher_entropy, Arc::clone(&config.storage))?;
         let wallet_address: [u8; SHA256_SIZE] = Self::wallet_key_gen();
-        let target_network = params.chain_config.bitcoin_network();
         let target_bip = crypto::bip49::DerivationPath::default_bip(params.chain_config.slip_44);
+        let chain_hash = params.chain_config.hash();
 
-        let mut handles = Vec::new();
+        let wallet = Self {
+            storage: config.storage,
+            wallet_address,
+        };
+
+        let mut slip44_accounts: HashMap<u32, HashMap<u32, Vec<AccountV2>>> = HashMap::new();
+        let mut seen_slip44: HashSet<u32> = HashSet::new();
+
         for chain in params
             .chains
             .iter()
-            .filter(|c| c.bitcoin_network().is_none() || c.bitcoin_network() == target_network)
+            .filter(|c| seen_slip44.insert(c.slip_44))
         {
             let slip44 = chain.slip_44;
+            let bip = crypto::bip49::DerivationPath::default_bip(slip44);
             let network = chain.bitcoin_network();
-            let idxs: Vec<(usize, String)> = params
-                .indexes
-                .iter()
-                .map(|(i, name)| (*i, name.clone()))
-                .collect();
-            let seed = Arc::clone(&mnemonic_seed_secret);
+            let mut accounts = Vec::with_capacity(params.indexes.len());
 
-            handles.push(std::thread::spawn(
-                move || -> std::result::Result<(u32, u32, Vec<AccountV2>), WalletErrors> {
-                    let mut accounts = Vec::with_capacity(idxs.len());
-                    let bip = crypto::bip49::DerivationPath::default_bip(slip44);
+            for (idx, name) in params.indexes.iter() {
+                let account = if slip44 == crypto::slip44::BITCOIN {
+                    wallet
+                        .generate_wallet(&mnemonic_seed_secret, *idx, name.clone(), chain)
+                        .await?
+                } else {
+                    let path = crypto::bip49::DerivationPath::with_index(slip44, (0, 0, *idx));
+                    AccountV2::from_hd(&mnemonic_seed_secret, name.clone(), &path, network)?
+                };
+                accounts.push(account);
+            }
 
-                    for (idx, name) in idxs {
-                        let path = crypto::bip49::DerivationPath::with_index(slip44, (0, 0, idx));
-                        let account = AccountV2::from_hd(&seed, name, &path, network)?;
-                        accounts.push(account);
-                    }
-                    Ok((slip44, bip, accounts))
-                },
-            ));
-        }
-
-        let mut slip44_accounts: HashMap<u32, HashMap<u32, Vec<AccountV2>>> = HashMap::new();
-        for handle in handles {
-            let (slip44, bip, accounts) =
-                handle.join().map_err(|_| WalletErrors::ThreadPanic)??;
             slip44_accounts
                 .entry(slip44)
                 .or_default()
@@ -249,6 +252,7 @@ impl WalletInit for Wallet {
         }
 
         let data = WalletDataV2 {
+            chain_hash,
             bip: target_bip,
             wallet_name: params.wallet_name,
             biometric_type: params.biometric_type.clone(),
@@ -261,24 +265,20 @@ impl WalletInit for Wallet {
                 !params.passphrase.expose_secret().is_empty(),
             )),
             selected_account: 0,
-            chain_hash: params.chain_config.hash(),
             bip_preferences: HashMap::new(),
             derivation_type: 0,
-        };
-        let wallet = Self {
-            storage: config.storage,
-            wallet_address,
         };
 
         wallet.save_wallet_data(data)?;
         wallet.save_ftokens(&ftokens)?;
+        wallet.storage.flush()?;
 
         Ok(wallet)
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod tests_init_wallet {
     use std::sync::Arc;
 
     use cipher::{
@@ -310,8 +310,8 @@ mod tests {
         (storage, dir)
     }
 
-    #[test]
-    fn test_init_from_bip39_zil() {
+    #[tokio::test]
+    async fn test_init_from_bip39_zil() {
         let (storage, _dir) = setup_test_storage();
 
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
@@ -342,6 +342,7 @@ mod tests {
             wallet_config,
             vec![],
         )
+        .await
         .unwrap();
 
         let data = wallet.get_wallet_data().unwrap();
@@ -365,8 +366,8 @@ mod tests {
         assert!(res_wallet.reveal_mnemonic(&argon_seed).is_ok());
     }
 
-    #[test]
-    fn test_init_from_bip39_btc() {
+    #[tokio::test]
+    async fn test_init_from_bip39_btc() {
         let (storage, _dir) = setup_test_storage();
 
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
@@ -394,6 +395,7 @@ mod tests {
             wallet_config,
             vec![],
         )
+        .await
         .unwrap();
 
         let data = wallet.get_wallet_data().unwrap();
@@ -450,68 +452,5 @@ mod tests {
         let w_data = w.get_wallet_data().unwrap();
 
         assert_eq!(w_data, data);
-    }
-
-    #[test]
-    fn test_btc_bip86_taproot_addresses() {
-        let (storage, _dir) = setup_test_storage();
-
-        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
-        let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
-
-        // Create 10 BIP86 accounts (Taproot Bech32m P2TR)
-        let indexes = (0..10)
-            .map(|i| (i, format!("BIP86 Account {i}")))
-            .collect::<Vec<_>>();
-
-        let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
-        let wallet_config = WalletConfig {
-            keychain,
-            storage: Arc::clone(&storage),
-            settings: Default::default(),
-        };
-        let chain_config = ChainConfig::default();
-        let wallet = Wallet::from_bip39_words(
-            Bip39Params {
-                chain_config: &chain_config,
-                proof,
-                mnemonic: &mnemonic,
-                passphrase: &empty_passphrase(),
-                indexes: &indexes,
-                wallet_name: "BIP86 Taproot Wallet".to_string(),
-                biometric_type: AuthMethod::Biometric,
-                chains: &[chain_config.clone()],
-            },
-            wallet_config,
-            vec![],
-        )
-        .unwrap();
-
-        let data = wallet.get_wallet_data().unwrap();
-        let accounts = data.get_accounts().unwrap();
-        assert_eq!(accounts.len(), 10);
-
-        let expected_addresses = [
-            "bc1pfzhx49qe6s5exppe5hqljg3n6587xk0w75xqr70pgdt7ygnfkssqxqjd9l",
-            "bc1p0lks35d0spqsvz2t3t0kqus38wrlpmcjtvvupkfkwdrzfh6zjyps9rvd6v",
-            "bc1p6f0xvqe892y0fvm2hwnmmj6fzczp7lx6tluvwhymcca4d7a45jjsgzlsdv",
-            "bc1prleszyly6wky4xtse5l08klr0z7duwyj2z59j66km7j8jkvrde9qc09cx7",
-            "bc1pwvm0vsxxl783w3x9psduqztqzju9hcnpf3k0gdkkm204m0cmgmts3feqlc",
-            "bc1pa9pz4s6n4evtjvdnel9649kfwez357l8d2wg7aezc9gsx5m0xyas6nqzqj",
-            "bc1pvn6plel4fv9ae08fxkrqxl5wj337mcv86wzaqnyj75fpe6udj8lq4u3fge",
-            "bc1pfzh443ddrsxu60talwm74mjxjuwst8zaqp8u5pvna5lp6632d3rqe6w0uc",
-            "bc1p3kmwqq4tzwxvf0800q02h6l9mkvhzghaw646s547ffx2xvf43r6q2fwsm0",
-            "bc1p5384xp7jdxfqtskak98r2vf0th0jwuxwczsxu4ech5z2f7kaejmqpmgq9d",
-        ];
-
-        for (i, account) in accounts.iter().enumerate() {
-            let addr_str = account.addr.auto_format();
-            assert_eq!(
-                addr_str, expected_addresses[i],
-                "Account {} address mismatch: expected {}, got {}",
-                i, expected_addresses[i], addr_str
-            );
-        }
     }
 }

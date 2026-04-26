@@ -196,8 +196,8 @@ mod tests_security {
         assert_eq!(wallet.reveal_keypair(0, &new_argon_seed, None), Ok(keypair));
     }
 
-    #[test]
-    fn test_migrate_bip39() {
+    #[tokio::test]
+    async fn test_migrate_bip39() {
         let (storage, _dir) = setup_test_storage();
         let settings = gen_settings();
         let argon_seed = derive_key(
@@ -235,6 +235,7 @@ mod tests_security {
             wallet_config,
             vec![],
         )
+        .await
         .unwrap();
 
         assert_eq!(wallet.reveal_mnemonic(&argon_seed), Ok(mnemonic.clone()));
