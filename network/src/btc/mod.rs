@@ -410,17 +410,21 @@ impl BtcOperations for NetworkProvider {
 
         for token in tokens.iter_mut() {
             if token.native {
-                for (account, balance) in accounts.iter().zip(balances.iter()) {
-                    let confirmed = balance.confirmed;
-                    let unconfirmed = if balance.unconfirmed < 0 {
-                        0u64
-                    } else {
-                        balance.unconfirmed as u64
-                    };
-                    let total_balance = confirmed + unconfirmed;
+                let total: u64 = balances
+                    .iter()
+                    .map(|b| {
+                        b.confirmed
+                            + if b.unconfirmed < 0 {
+                                0u64
+                            } else {
+                                b.unconfirmed as u64
+                            }
+                    })
+                    .sum();
+                if let Some(receive_addr) = accounts.last() {
                     token
                         .balances
-                        .insert(account.to_hash(), U256::from(total_balance));
+                        .insert(receive_addr.to_hash(), U256::from(total));
                 }
             }
         }

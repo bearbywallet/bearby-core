@@ -2,7 +2,7 @@ use crate::{bg_provider::ProvidersManagement, bg_wallet::WalletManagement, Backg
 use alloy::{primitives::U256, rpc::types::TransactionInput};
 use async_trait::async_trait;
 use config::sha::SHA256_SIZE;
-use crypto::slip44::{SOLANA, TRON};
+use crypto::slip44::{BITCOIN, SOLANA, TRON};
 use errors::background::BackgroundError;
 use network::{
     evm::generate_erc20_transfer_data,
@@ -18,7 +18,9 @@ use proto::{
 };
 use serde_json::json;
 use token::ft::FToken;
-use wallet::{account::AccountV2, wallet_storage::StorageOperations};
+use wallet::{
+    account::AccountV2, bitcoin_wallet::BitcoinWallet, wallet_storage::StorageOperations,
+};
 
 #[async_trait]
 pub trait TokensManagement {
@@ -336,13 +338,40 @@ impl TokensManagement for Background {
             return Ok(());
         }
 
-        let selected_account = data.get_selected_account()?;
-        let addresses = vec![&selected_account.addr];
         let provider = self.get_provider(data.chain_hash)?;
+
+        let btc_chains = if provider.config.slip_44 == BITCOIN {
+            w.get_btc_addresses(data.selected_account).ok()
+        } else {
+            None
+        };
+
         let matching_tokens: Vec<&mut FToken> = ftokens
             .iter_mut()
             .filter(|token| token.chain_hash == data.chain_hash)
             .collect();
+
+        let addresses: Vec<&Address> = if let Some(ref chains) = btc_chains {
+            let selected_account = data.get_selected_account()?;
+            let mut all_addrs = Vec::new();
+            for chain in chains.values() {
+                for entry in &chain.internal {
+                    all_addrs.push(&entry.address);
+                }
+            }
+            for chain in chains.values() {
+                for entry in &chain.external {
+                    if entry.address != selected_account.addr {
+                        all_addrs.push(&entry.address);
+                    }
+                }
+            }
+            all_addrs.push(&selected_account.addr);
+            all_addrs
+        } else {
+            let selected_account = data.get_selected_account()?;
+            vec![&selected_account.addr]
+        };
 
         provider
             .update_balances(matching_tokens, &addresses)

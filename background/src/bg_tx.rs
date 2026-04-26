@@ -1000,10 +1000,23 @@ mod tests_background_transactions {
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
         bg.sync_ftokens_balances(0).await.unwrap();
+        let ftokens = wallet.get_ftokens().unwrap();
         let data = wallet.get_wallet_data().unwrap();
         let pr = bg.get_provider(data.chain_hash).unwrap();
         let account = data.get_account(0).unwrap();
         let res = pr.btc_list_unspent(&account.addr).await.unwrap();
+        dbg!(&ftokens);
+
+        let btc_token = ftokens
+            .iter()
+            .find(|t| t.native && t.chain_hash == net_config.hash())
+            .unwrap();
+        let balance = btc_token
+            .balances
+            .get(&account.addr.to_hash())
+            .copied()
+            .unwrap_or(U256::ZERO);
+        assert!(balance > U256::ZERO, "selected account balance must be > 0");
 
         assert!(res.is_empty(), "new tapRoot walelt must be empty!");
 
