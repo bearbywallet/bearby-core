@@ -1309,10 +1309,12 @@ mod tests_background_tokens {
         })
         .await
         .unwrap();
+        let wallet = bg.get_wallet_by_index(0).unwrap();
 
         bg.sync_ftokens_balances(0).await.unwrap();
+        wallet.select_account(1).unwrap();
+        bg.sync_ftokens_balances(0).await.unwrap();
 
-        let wallet = bg.get_wallet_by_index(0).unwrap();
         let data = wallet.get_wallet_data().unwrap();
         let ftokens = wallet.get_ftokens().unwrap();
 
@@ -1325,6 +1327,9 @@ mod tests_background_tokens {
         dbg!(accs[0].addr.auto_format());
         dbg!(accs[1].addr.auto_format());
 
+        let sol_token = ftokens.first().unwrap();
+        assert!(sol_token.balances.get(&accs[0].addr.to_hash()).is_some());
+        assert!(sol_token.balances.get(&accs[1].addr.to_hash()).is_some());
         assert_eq!(
             accs[0].addr.auto_format(),
             "AqynRZwvVqUPRwRJXvm6odUb3t93fDjnWe3p6BeuUFxD"
