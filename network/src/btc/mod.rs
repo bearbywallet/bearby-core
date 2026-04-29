@@ -530,10 +530,8 @@ impl BtcOperations for NetworkProvider {
                         old_ext.into_iter().zip(old_int.into_iter()).enumerate()
                     {
                         if i <= last {
-                            if !ext_entry.history.is_empty() {
+                            if !ext_entry.history.is_empty() || !int_entry.history.is_empty() {
                                 new_ext.push(ext_entry);
-                            }
-                            if !int_entry.history.is_empty() {
                                 new_int.push(int_entry);
                             }
                         } else if i == last + 1 {
@@ -554,14 +552,8 @@ impl BtcOperations for NetworkProvider {
                     }
                 }
             } else {
-                chain.external = old_ext
-                    .into_iter()
-                    .filter(|e| !e.history.is_empty())
-                    .collect();
-                chain.internal = old_int
-                    .into_iter()
-                    .filter(|e| !e.history.is_empty())
-                    .collect();
+                chain.external = old_ext;
+                chain.internal = old_int;
             }
         }
 
