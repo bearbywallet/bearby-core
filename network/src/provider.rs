@@ -155,7 +155,6 @@ impl NetworkProvider {
             slip44::ETHEREUM | slip44::ZILLIQA | slip44::TRON => {
                 self.evm_update_balances(tokens, accounts).await
             }
-            slip44::BITCOIN => self.btc_update_balances(tokens, accounts).await,
             slip44::SOLANA => self.solana_update_balances(tokens, accounts).await,
             _ => Err(NetworkErrors::RPCError(format!(
                 "Unsupported network: {}",

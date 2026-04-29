@@ -5,6 +5,7 @@ use config::sha::SHA256_SIZE;
 use crypto::slip44::{BITCOIN, SOLANA, TRON};
 use errors::background::BackgroundError;
 use network::{
+    btc::BtcOperations,
     evm::generate_erc20_transfer_data,
     solana::tx_builder::{build_sol_transfer_message, build_spl_transfer_message},
     solana::SolanaOperations,
@@ -340,42 +341,25 @@ impl TokensManagement for Background {
 
         let provider = self.get_provider(data.chain_hash)?;
 
-        let btc_chains = if provider.config.slip_44 == BITCOIN {
-            w.get_btc_addresses(data.selected_account).ok()
-        } else {
-            None
-        };
-
         let matching_tokens: Vec<&mut FToken> = ftokens
             .iter_mut()
             .filter(|token| token.chain_hash == data.chain_hash)
             .collect();
 
-        let addresses: Vec<&Address> = if let Some(ref chains) = btc_chains {
+        if provider.config.slip_44 == BITCOIN {
             let selected_account = data.get_selected_account()?;
-            let mut all_addrs = Vec::new();
-            for chain in chains.values() {
-                for entry in &chain.internal {
-                    all_addrs.push(&entry.address);
-                }
-            }
-            for chain in chains.values() {
-                for entry in &chain.external {
-                    if entry.address != selected_account.addr {
-                        all_addrs.push(&entry.address);
-                    }
-                }
-            }
-            all_addrs.push(&selected_account.addr);
-            all_addrs
+            let mut chains = w.get_btc_addresses(data.selected_account)?;
+            provider
+                .btc_update_balances(matching_tokens, &mut chains, &selected_account.addr)
+                .await?;
+            w.save_btc_addresses(data.selected_account, &chains)?;
         } else {
             let selected_account = data.get_selected_account()?;
-            vec![&selected_account.addr]
-        };
-
-        provider
-            .update_balances(matching_tokens, &addresses)
-            .await?;
+            let addresses: Vec<&Address> = vec![&selected_account.addr];
+            provider
+                .update_balances(matching_tokens, &addresses)
+                .await?;
+        }
 
         w.save_ftokens(&ftokens)?;
 

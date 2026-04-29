@@ -14,10 +14,30 @@ type Result<T> = std::result::Result<T, PubKeyError>;
 pub const GAP_LIMIT: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Utxo {
+    pub txid: bitcoin::Txid,
+    pub vout: u32,
+    pub value: u64,
+    pub height: u32,
+}
+
+impl From<electrum_client::ListUnspentRes> for Utxo {
+    fn from(res: electrum_client::ListUnspentRes) -> Self {
+        Self {
+            txid: res.tx_hash,
+            vout: res.tx_pos as u32,
+            value: res.value,
+            height: res.height as u32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BtcAddressEntry {
     pub address: Address,
     pub path: DerivationPath,
     pub history: Vec<bitcoin::Txid>,
+    pub utxos: Vec<Utxo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +184,7 @@ pub fn generate_btc_addresses(
                     address: Address::Secp256k1Bitcoin(address.to_string().into_bytes()),
                     path,
                     history: Vec::new(),
+                    utxos: Vec::new(),
                 })
             };
 

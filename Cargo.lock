@@ -4922,6 +4922,7 @@ dependencies = [
  "config",
  "crypto",
  "ed25519-dalek",
+ "electrum-client",
  "errors",
  "hex",
  "hmac 0.13.0",

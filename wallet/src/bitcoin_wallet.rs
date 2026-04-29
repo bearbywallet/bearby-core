@@ -181,6 +181,12 @@ pub trait BitcoinWallet {
         account_index: usize,
     ) -> std::result::Result<HashMap<bitcoin::AddressType, AddressChain>, Self::Error>;
 
+    fn save_btc_addresses(
+        &self,
+        account_index: usize,
+        chains: &HashMap<bitcoin::AddressType, AddressChain>,
+    ) -> std::result::Result<(), Self::Error>;
+
     fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize) -> Vec<u8>;
 
     async fn prepare_and_sign_btc_transaction(
@@ -308,6 +314,20 @@ impl BitcoinWallet for Wallet {
         }
 
         Ok(map)
+    }
+
+    fn save_btc_addresses(
+        &self,
+        account_index: usize,
+        chains: &HashMap<bitcoin::AddressType, AddressChain>,
+    ) -> Result<()> {
+        let stored: Vec<(u8, AddressChain)> = chains
+            .iter()
+            .map(|(addr_type, chain)| (addr_type.to_byte(), chain.clone()))
+            .collect();
+        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index);
+        self.storage.set_versioned(&key, &stored)?;
+        Ok(())
     }
 
     #[inline]

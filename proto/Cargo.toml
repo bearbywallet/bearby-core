@@ -20,6 +20,7 @@ k256.workspace = true
 hmac.workspace = true
 tokio.workspace = true
 bitcoin.workspace = true
+electrum-client.workspace = true
 bincode.workspace = true
 prost.workspace = true
 prost-types.workspace = true

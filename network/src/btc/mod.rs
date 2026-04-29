@@ -10,7 +10,7 @@ use errors::tx::TransactionErrors;
 use history::status::TransactionStatus;
 use history::transaction::HistoricalTransaction;
 use proto::address::Address;
-use proto::btc_utils::{AddressChain, ByteCodec};
+use proto::btc_utils::{AddressChain, ByteCodec, Utxo};
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use std::collections::HashMap;
 use token::ft::FToken;
@@ -157,13 +157,18 @@ pub trait BtcOperations {
     async fn btc_update_balances(
         &self,
         tokens: Vec<&mut FToken>,
-        accounts: &[&Address],
+        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+        selected_account: &Address,
     ) -> Result<()>;
     async fn btc_list_unspent(
         &self,
         address: &Address,
     ) -> Result<Vec<electrum_client::ListUnspentRes>>;
     async fn batch_script_get_history(
+        &self,
+        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    ) -> Result<()>;
+    async fn batch_btc_list_unspent(
         &self,
         chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
     ) -> Result<()>;
@@ -387,45 +392,27 @@ impl BtcOperations for NetworkProvider {
     async fn btc_update_balances(
         &self,
         mut tokens: Vec<&mut FToken>,
-        accounts: &[&Address],
+        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+        selected_account: &Address,
     ) -> Result<()> {
-        if accounts.is_empty() || tokens.is_empty() {
+        if tokens.is_empty() || chains.is_empty() {
             return Ok(());
         }
 
-        let mut scripts = Vec::with_capacity(accounts.len());
-        for addr in accounts {
-            let btc_addr = addr
-                .to_bitcoin_addr()
-                .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
-            scripts.push(btc_addr.script_pubkey());
-        }
+        self.batch_btc_list_unspent(chains).await?;
 
-        let script_refs: Vec<_> = scripts.iter().map(|s| s.as_ref()).collect();
-        let balances = self.with_electrum_client(|client| {
-            client
-                .batch_script_get_balance(&script_refs)
-                .map_err(|e| NetworkErrors::RPCError(format!("Failed to get balances: {}", e)))
-        })?;
+        let total: u64 = chains
+            .values()
+            .flat_map(|chain| chain.external.iter().chain(chain.internal.iter()))
+            .flat_map(|entry| entry.utxos.iter())
+            .map(|u| u.value)
+            .sum();
 
         for token in tokens.iter_mut() {
             if token.native {
-                let total: u64 = balances
-                    .iter()
-                    .map(|b| {
-                        b.confirmed
-                            + if b.unconfirmed < 0 {
-                                0u64
-                            } else {
-                                b.unconfirmed as u64
-                            }
-                    })
-                    .sum();
-                if let Some(receive_addr) = accounts.last() {
-                    token
-                        .balances
-                        .insert(receive_addr.to_hash(), U256::from(total));
-                }
+                token
+                    .balances
+                    .insert(selected_account.to_hash(), U256::from(total));
             }
         }
 
@@ -580,6 +567,103 @@ impl BtcOperations for NetworkProvider {
 
         Ok(())
     }
+
+    async fn batch_btc_list_unspent(
+        &self,
+        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    ) -> Result<()> {
+        if chains.is_empty() {
+            return Ok(());
+        }
+
+        let mut keys: Vec<bitcoin::AddressType> = chains.keys().copied().collect();
+        keys.sort_by_key(|k| k.to_byte());
+
+        let mut scripts: Vec<bitcoin::ScriptBuf> = Vec::new();
+        let mut layout: Vec<(bitcoin::AddressType, usize)> = Vec::with_capacity(keys.len());
+
+        for key in &keys {
+            let chain = chains.get(key).ok_or_else(|| {
+                NetworkErrors::RPCError(format!("Missing chain for address type {:?}", key))
+            })?;
+            if chain.external.len() != chain.internal.len() {
+                return Err(NetworkErrors::RPCError(format!(
+                    "AddressChain length mismatch for {:?}: external={}, internal={}",
+                    key,
+                    chain.external.len(),
+                    chain.internal.len()
+                )));
+            }
+            let n = chain.external.len();
+            for (ext_entry, int_entry) in chain.external.iter().zip(chain.internal.iter()) {
+                let ext_addr = ext_entry
+                    .address
+                    .to_bitcoin_addr()
+                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
+                scripts.push(ext_addr.script_pubkey());
+                let int_addr = int_entry
+                    .address
+                    .to_bitcoin_addr()
+                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
+                scripts.push(int_addr.script_pubkey());
+            }
+            layout.push((*key, n));
+        }
+
+        if scripts.is_empty() {
+            return Ok(());
+        }
+
+        let script_refs: Vec<&bitcoin::Script> = scripts.iter().map(|s| s.as_ref()).collect();
+        let mut results = self.with_electrum_client(|client| {
+            let mut all: Vec<Vec<electrum_client::ListUnspentRes>> =
+                Vec::with_capacity(script_refs.len());
+            for chunk in script_refs.chunks(HISTORY_BATCH_CHUNK) {
+                let chunk_results = client.batch_script_list_unspent(chunk).map_err(|e| {
+                    NetworkErrors::RPCError(format!("Failed to batch script list unspent: {}", e))
+                })?;
+                all.extend(chunk_results);
+            }
+            Ok(all)
+        })?;
+
+        let mut cursor = 0usize;
+        for (addr_type, n) in layout {
+            let chain = chains.get_mut(&addr_type).ok_or_else(|| {
+                NetworkErrors::RPCError(format!("Missing chain for address type {:?}", addr_type))
+            })?;
+            for i in 0..n {
+                let ext_slot = results.get_mut(cursor).ok_or_else(|| {
+                    NetworkErrors::RPCError(format!("Missing unspent result at index {}", cursor))
+                })?;
+                let ext_unspents = std::mem::take(ext_slot);
+                cursor += 1;
+                let int_slot = results.get_mut(cursor).ok_or_else(|| {
+                    NetworkErrors::RPCError(format!("Missing unspent result at index {}", cursor))
+                })?;
+                let int_unspents = std::mem::take(int_slot);
+                cursor += 1;
+
+                let ext_entry = chain.external.get_mut(i).ok_or_else(|| {
+                    NetworkErrors::RPCError(format!(
+                        "External entry {} missing for {:?}",
+                        i, addr_type
+                    ))
+                })?;
+                ext_entry.utxos = ext_unspents.into_iter().map(Utxo::from).collect();
+
+                let int_entry = chain.internal.get_mut(i).ok_or_else(|| {
+                    NetworkErrors::RPCError(format!(
+                        "Internal entry {} missing for {:?}",
+                        i, addr_type
+                    ))
+                })?;
+                int_entry.utxos = int_unspents.into_iter().map(Utxo::from).collect();
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -598,6 +682,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_balances_btc() {
+        use crypto::bip49::{DerivationPath, DerivationType};
+        use crypto::slip44;
+        use proto::btc_utils::BtcAddressEntry;
+
         let net_conf = gen_btc_testnet_conf();
         let provider = NetworkProvider::new(net_conf);
 
@@ -605,12 +693,31 @@ mod tests {
 
         let test_addr = "bcrt1q6klf3cny45skpulz4kazm9dx9fd44usmccdp6z";
         let addr = Address::Secp256k1Bitcoin(test_addr.as_bytes().to_vec());
-        let accounts = [&addr];
+
+        let path = DerivationPath::new(
+            slip44::BITCOIN,
+            DerivationType::AddressIndex(0, 0, 0),
+            DerivationPath::BIP84_PURPOSE,
+        );
+        let entry = BtcAddressEntry {
+            address: addr.clone(),
+            path,
+            history: vec![],
+            utxos: vec![],
+        };
+        let mut chains: HashMap<bitcoin::AddressType, AddressChain> = HashMap::new();
+        chains.insert(
+            bitcoin::AddressType::P2wpkh,
+            AddressChain {
+                external: vec![entry.clone()],
+                internal: vec![entry],
+            },
+        );
 
         let tokens_refs = vec![&mut btc_token];
 
         provider
-            .btc_update_balances(tokens_refs, &accounts)
+            .btc_update_balances(tokens_refs, &mut chains, &addr)
             .await
             .unwrap();
 
