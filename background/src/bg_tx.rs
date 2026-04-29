@@ -318,6 +318,14 @@ pub trait TransactionsManagement {
         destinations: Vec<(Address, u64)>,
         fee_rate_sat_per_vbyte: Option<u64>,
     ) -> std::result::Result<TransactionReceipt, Self::Error>;
+
+    async fn rotate_btc_account(
+        &self,
+        wallet_index: usize,
+        account_index: usize,
+        seed_bytes: &Argon2Seed,
+        passphrase: Option<&str>,
+    ) -> std::result::Result<(), Self::Error>;
 }
 
 #[async_trait]
@@ -544,6 +552,31 @@ impl TransactionsManagement for Background {
                 fee_rate_sat_per_vbyte,
             )
             .await?)
+    }
+
+    async fn rotate_btc_account(
+        &self,
+        wallet_index: usize,
+        account_index: usize,
+        seed_bytes: &Argon2Seed,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
+        use secrecy::SecretString;
+        let wallet = self.get_wallet_by_index(wallet_index)?;
+        let data = wallet.get_wallet_data()?;
+        let provider = self.get_provider(data.chain_hash)?;
+
+        let mnemonic = wallet.reveal_mnemonic(seed_bytes)?;
+        let seed_secret = mnemonic
+            .to_seed(&SecretString::from(passphrase.unwrap_or("")))
+            .map_err(|e| BackgroundError::WalletError(WalletErrors::Bip329Error(
+                errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)),
+            )))?;
+
+        wallet
+            .rotate_account(&seed_secret, account_index, &provider.config)
+            .await?;
+        Ok(())
     }
 }
 

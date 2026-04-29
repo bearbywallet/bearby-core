@@ -112,15 +112,35 @@ impl TokensManagement for Background {
                 }
 
                 let amount_sat = amount.to::<u64>();
-                let provider = self.get_provider(token.chain_hash)?;
 
-                let (tx, witness_utxos) = wallet::bitcoin_wallet::build_unsigned_btc_transaction(
-                    &provider,
-                    &sender.addr,
-                    vec![(to, amount_sat)],
-                    None,
-                )
-                .await?;
+                let mut found: Option<(&wallet::Wallet, usize)> = None;
+                for w in &self.wallets {
+                    let data = w.get_wallet_data()?;
+                    let accounts = data.get_accounts()?;
+                    if let Some(idx) = accounts.iter().position(|a| a.addr == sender.addr) {
+                        found = Some((w, idx));
+                        break;
+                    }
+                }
+                let (wallet_ref, account_index) = found.ok_or_else(|| {
+                    BackgroundError::WalletError(errors::wallet::WalletErrors::BincodeError(
+                        "BTC sender not found in any wallet".to_string(),
+                    ))
+                })?;
+
+                let chains = wallet_ref.get_btc_addresses(account_index)?;
+
+                let (tx, witness_utxos, _input_meta) =
+                    wallet::bitcoin_wallet::build_unsigned_btc_transaction(
+                        &chains,
+                        vec![(to, amount_sat)],
+                        None,
+                    )?;
+
+                let change_signer = chains
+                    .get(&bitcoin::AddressType::P2tr)
+                    .and_then(|c| c.get_internal().ok().map(|e| e.address.clone()))
+                    .unwrap_or_else(|| sender.addr.clone());
 
                 let metadata = TransactionMetadata {
                     chain_hash: token.chain_hash,
@@ -128,7 +148,7 @@ impl TokensManagement for Background {
                     info: None,
                     icon: None,
                     title: None,
-                    signer: Some(sender.addr.clone()),
+                    signer: Some(change_signer),
                     token_info: Some((amount, token.decimals, token.symbol.clone())),
                     btc_witness_utxos: Some(witness_utxos),
                     broadcast: true,
