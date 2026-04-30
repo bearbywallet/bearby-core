@@ -23,7 +23,7 @@ const HISTORY_BATCH_CHUNK: usize = 25;
 
 fn calculate_tx_vsize(tx: &TransactionRequest) -> u64 {
     match tx {
-        TransactionRequest::Bitcoin((btc_tx, metadata)) => {
+        TransactionRequest::Bitcoin((btc_tx, metadata, _)) => {
             let (input_vsize, output_vsize) = if let Some(ref addr) = metadata.signer {
                 match addr.get_bitcoin_address_type() {
                     Ok(bitcoin::AddressType::P2wpkh) => (68, 31),
@@ -757,7 +757,14 @@ mod tests {
         };
         let tx_metadata = TransactionMetadata::default();
         assert!(tx_metadata.broadcast);
-        let tx_request = TransactionRequest::Bitcoin((dummy_tx, tx_metadata));
+        let tx_request = TransactionRequest::Bitcoin((
+            dummy_tx,
+            tx_metadata,
+            proto::btc_tx::BitcoinMetadata {
+                witness_utxos: vec![],
+                input_meta: vec![],
+            },
+        ));
 
         let params = provider
             .btc_estimate_params_batch(&tx_request)

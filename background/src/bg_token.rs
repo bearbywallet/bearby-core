@@ -12,6 +12,7 @@ use network::{
 };
 use proto::{
     address::Address,
+    btc_tx::BitcoinMetadata,
     solana_tx::SolanaTransaction,
     tron_tx::TronTransaction,
     tx::{ETHTransactionRequest, TransactionMetadata, TransactionRequest},
@@ -92,8 +93,6 @@ impl TokensManagement for Background {
             title: None,
             signer: Some(sender.addr.clone()),
             token_info: Some((amount, token.decimals, token.symbol.clone())),
-            btc_witness_utxos: None,
-            btc_input_meta: None,
             broadcast: true,
         };
         let addr = if token.native {
@@ -179,12 +178,15 @@ impl TokensManagement for Background {
                     title: None,
                     signer: Some(change_signer),
                     token_info: Some((amount, token.decimals, token.symbol.clone())),
-                    btc_witness_utxos: Some(witness_utxos),
-                    btc_input_meta: Some(btc_input_meta),
                     broadcast: true,
                 };
 
-                let txn = TransactionRequest::Bitcoin((tx, metadata));
+                let btc_meta = BitcoinMetadata {
+                    witness_utxos,
+                    input_meta: btc_input_meta,
+                };
+
+                let txn = TransactionRequest::Bitcoin((tx, metadata, btc_meta));
 
                 Ok(txn)
             }
@@ -811,21 +813,19 @@ mod tests_background_tokens {
             .unwrap();
 
         match &txn_req {
-            TransactionRequest::Bitcoin((tx, meta)) => {
+            TransactionRequest::Bitcoin((tx, meta, btc_meta)) => {
                 assert!(tx.input.len() > 0, "Should have at least one input");
                 assert!(tx.output.len() > 0, "Should have at least one output");
                 assert_eq!(meta.chain_hash, net_config.hash());
-                assert!(meta.btc_witness_utxos.is_some());
+                assert!(!btc_meta.witness_utxos.is_empty());
                 assert_eq!(
                     meta.token_info,
                     Some((max_balance, btc_token.decimals, btc_token.symbol.clone()))
                 );
 
                 let total_output: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
-                let total_input: u64 = meta
-                    .btc_witness_utxos
-                    .as_ref()
-                    .unwrap()
+                let total_input: u64 = btc_meta
+                    .witness_utxos
                     .iter()
                     .map(|u| u.value.to_sat())
                     .sum();
@@ -859,12 +859,10 @@ mod tests_background_tokens {
         update_tx_from_params(&mut txn_req, params.clone(), max_balance).unwrap();
 
         match &txn_req {
-            TransactionRequest::Bitcoin((tx, meta)) => {
+            TransactionRequest::Bitcoin((tx, _, btc_meta)) => {
                 let total_output_after: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
-                let total_input: u64 = meta
-                    .btc_witness_utxos
-                    .as_ref()
-                    .unwrap()
+                let total_input: u64 = btc_meta
+                    .witness_utxos
                     .iter()
                     .map(|u| u.value.to_sat())
                     .sum();

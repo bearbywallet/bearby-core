@@ -1,4 +1,7 @@
-use crate::{account::AccountV2, wallet_crypto::WalletCrypto, wallet_storage::StorageOperations, Result, Wallet, WalletAddrType};
+use crate::{
+    account::AccountV2, wallet_crypto::WalletCrypto, wallet_storage::StorageOperations, Result,
+    Wallet, WalletAddrType,
+};
 use async_trait::async_trait;
 use cipher::argon2::Argon2Seed;
 use config::sha::SHA512_SIZE;
@@ -9,7 +12,7 @@ use network::btc::BtcOperations;
 use network::provider::NetworkProvider;
 use proto::{
     address::Address,
-    btc_tx,
+    btc_tx::{self, BitcoinMetadata},
     btc_utils::{generate_btc_addresses, AddressChain, ByteCodec, GAP_LIMIT},
     tx::{TransactionMetadata, TransactionReceipt},
 };
@@ -149,7 +152,9 @@ pub fn build_unsigned_btc_transaction(
 
     let mut dest_output_vsize_sum: usize = 0;
     for (dest, _) in &destinations {
-        let at = dest.get_bitcoin_address_type().unwrap_or(bitcoin::AddressType::P2wpkh);
+        let at = dest
+            .get_bitcoin_address_type()
+            .unwrap_or(bitcoin::AddressType::P2wpkh);
         dest_output_vsize_sum = dest_output_vsize_sum.saturating_add(output_vsize_for(at));
     }
 
@@ -159,39 +164,39 @@ pub fn build_unsigned_btc_transaction(
     let fee_rate = fee_rate_sat_per_vbyte.unwrap_or(DEFAULT_FEE_RATE);
     let estimated_fee = estimated_vsize_with_change * fee_rate;
 
-    let (adjusted_destinations, total_output) =
-        if total_input < original_total_output + estimated_fee {
-            let max_threshold = estimated_fee.saturating_mul(3).max(10000);
-            let is_max_transfer = destinations.len() == 1
-                && original_total_output <= total_input
-                && original_total_output + estimated_fee > total_input
-                && (original_total_output + estimated_fee).saturating_sub(total_input)
-                    < max_threshold;
+    let (adjusted_destinations, total_output) = if total_input
+        < original_total_output + estimated_fee
+    {
+        let max_threshold = estimated_fee.saturating_mul(3).max(10000);
+        let is_max_transfer = destinations.len() == 1
+            && original_total_output <= total_input
+            && original_total_output + estimated_fee > total_input
+            && (original_total_output + estimated_fee).saturating_sub(total_input) < max_threshold;
 
-            if is_max_transfer {
-                let adjusted_amount = total_input.saturating_sub(estimated_fee);
-                let dust_limit = get_dust_limit(&destinations[0].0);
+        if is_max_transfer {
+            let adjusted_amount = total_input.saturating_sub(estimated_fee);
+            let dust_limit = get_dust_limit(&destinations[0].0);
 
-                if adjusted_amount < dust_limit {
-                    return Err(WalletErrors::BincodeError(format!(
-                        "Insufficient funds: balance too low after fee (have: {}, fee: {})",
-                        total_input, estimated_fee
-                    )));
-                }
-                let adjusted_dests = vec![(destinations[0].0.clone(), adjusted_amount)];
-                (adjusted_dests, adjusted_amount)
-            } else {
+            if adjusted_amount < dust_limit {
                 return Err(WalletErrors::BincodeError(format!(
-                    "Insufficient funds: have {}, need {} (output: {}, fee: {})",
-                    total_input,
-                    original_total_output + estimated_fee,
-                    original_total_output,
-                    estimated_fee
+                    "Insufficient funds: balance too low after fee (have: {}, fee: {})",
+                    total_input, estimated_fee
                 )));
             }
+            let adjusted_dests = vec![(destinations[0].0.clone(), adjusted_amount)];
+            (adjusted_dests, adjusted_amount)
         } else {
-            (destinations.clone(), original_total_output)
-        };
+            return Err(WalletErrors::BincodeError(format!(
+                "Insufficient funds: have {}, need {} (output: {}, fee: {})",
+                total_input,
+                original_total_output + estimated_fee,
+                original_total_output,
+                estimated_fee
+            )));
+        }
+    } else {
+        (destinations.clone(), original_total_output)
+    };
 
     let mut outputs: Vec<TxOut> = Vec::with_capacity(adjusted_destinations.len() + 1);
     for (dest_addr, amount) in adjusted_destinations {
@@ -204,7 +209,9 @@ pub fn build_unsigned_btc_transaction(
         });
     }
 
-    let change = total_input.saturating_sub(total_output).saturating_sub(estimated_fee);
+    let change = total_input
+        .saturating_sub(total_output)
+        .saturating_sub(estimated_fee);
     if change > change_dust {
         outputs.push(TxOut {
             value: Amount::from_sat(change),
@@ -225,6 +232,15 @@ pub fn build_unsigned_btc_transaction(
 #[async_trait]
 pub trait BitcoinWallet {
     type Error;
+
+    async fn sign_btc_multi_input(
+        &self,
+        tx: bitcoin::Transaction,
+        metadata: TransactionMetadata,
+        btc_meta: BitcoinMetadata,
+        seed_bytes: &Argon2Seed,
+        passphrase: Option<&str>,
+    ) -> std::result::Result<TransactionReceipt, Self::Error>;
 
     async fn generate_wallet(
         &self,
@@ -269,6 +285,88 @@ pub trait BitcoinWallet {
 impl BitcoinWallet for Wallet {
     type Error = WalletErrors;
 
+    async fn sign_btc_multi_input(
+        &self,
+        tx: bitcoin::Transaction,
+        metadata: TransactionMetadata,
+        btc_meta: BitcoinMetadata,
+        seed_bytes: &Argon2Seed,
+        passphrase: Option<&str>,
+    ) -> Result<TransactionReceipt> {
+        let btc_tx::BitcoinMetadata {
+            witness_utxos,
+            input_meta: input_meta_raw,
+        } = btc_meta;
+
+        if input_meta_raw.len() != tx.input.len() || witness_utxos.len() != tx.input.len() {
+            return Err(WalletErrors::BincodeError(format!(
+                "BTC input meta/utxos count mismatch: inputs={} meta={} utxos={}",
+                tx.input.len(),
+                input_meta_raw.len(),
+                witness_utxos.len()
+            )));
+        }
+
+        let mnemonic = self.reveal_mnemonic(seed_bytes)?;
+        let seed_secret = mnemonic
+            .to_seed(&SecretString::from(passphrase.unwrap_or("")))
+            .map_err(|e| {
+                WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!(
+                    "{:?}",
+                    e
+                )))
+            })?;
+
+        let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)
+            .map_err(|e| WalletErrors::BincodeError(format!("build_psbt: {:?}", e)))?;
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let prevouts: Vec<bitcoin::TxOut> = witness_utxos;
+        let network = bitcoin::Network::Bitcoin;
+
+        for i in 0..psbt.inputs.len() {
+            let (addr_type_byte, path) = &input_meta_raw[i];
+            let addr_type = bitcoin::AddressType::from_byte(*addr_type_byte).map_err(|_| {
+                WalletErrors::BincodeError(format!(
+                    "invalid btc address type byte: {}",
+                    addr_type_byte
+                ))
+            })?;
+            let sk = proto::bip32::derive_private_key(&seed_secret, &path.get_path())
+                .map_err(WalletErrors::Bip329Error)?;
+            let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&sk.to_bytes())
+                .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
+            let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+
+            btc_tx::sign_psbt_input(
+                &mut psbt,
+                i,
+                &secret_key,
+                &public_key,
+                network,
+                addr_type,
+                &prevouts,
+            )
+            .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
+        }
+
+        for i in 0..psbt.inputs.len() {
+            let (addr_type_byte, _) = &input_meta_raw[i];
+            let addr_type = bitcoin::AddressType::from_byte(*addr_type_byte).map_err(|_| {
+                WalletErrors::BincodeError(format!(
+                    "invalid btc address type byte: {}",
+                    addr_type_byte
+                ))
+            })?;
+            btc_tx::finalize_psbt_input(&mut psbt, i, addr_type).map_err(|e| {
+                WalletErrors::BincodeError(format!("finalize input {}: {:?}", i, e))
+            })?;
+        }
+
+        let signed_tx = psbt.extract_tx_unchecked_fee_rate();
+
+        Ok(TransactionReceipt::Bitcoin((signed_tx, metadata)))
+    }
+
     async fn generate_wallet(
         &self,
         seed: &SecretBox<[u8; SHA512_SIZE]>,
@@ -304,8 +402,7 @@ impl BitcoinWallet for Wallet {
                 Ok(()) => {
                     scan_succeeded = true;
                     let preferred = scan_view.get(&preferred_type).expect("seeded above");
-                    let done =
-                        preferred.get_external().is_ok() && preferred.get_internal().is_ok();
+                    let done = preferred.get_external().is_ok() && preferred.get_internal().is_ok();
                     last_scan_view = Some(scan_view);
                     if done {
                         break;
@@ -398,7 +495,12 @@ impl BitcoinWallet for Wallet {
     #[inline]
     fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize) -> Vec<u8> {
         let idx_bytes = account_index.to_le_bytes();
-        [key.as_slice(), BTC_ADDRESSES_DB_KEY_V1, idx_bytes.as_slice()].concat()
+        [
+            key.as_slice(),
+            BTC_ADDRESSES_DB_KEY_V1,
+            idx_bytes.as_slice(),
+        ]
+        .concat()
     }
 
     async fn prepare_and_sign_btc_transaction(
@@ -437,7 +539,12 @@ impl BitcoinWallet for Wallet {
         let mnemonic = self.reveal_mnemonic(seed_bytes)?;
         let seed_secret = mnemonic
             .to_seed(&SecretString::from(passphrase.unwrap_or("")))
-            .map_err(|e| WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e))))?;
+            .map_err(|e| {
+                WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!(
+                    "{:?}",
+                    e
+                )))
+            })?;
 
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)?;
         let secp = bitcoin::secp256k1::Secp256k1::new();
@@ -452,7 +559,9 @@ impl BitcoinWallet for Wallet {
             let (addr_type, path) = &input_meta[i];
             println!(
                 "[prepare_and_sign_btc_tx]   input[{}]: derive key for path={} addr_type={:?}",
-                i, path.get_path(), addr_type
+                i,
+                path.get_path(),
+                addr_type
             );
             let sk = proto::bip32::derive_private_key(&seed_secret, &path.get_path())
                 .map_err(WalletErrors::Bip329Error)?;
@@ -460,8 +569,16 @@ impl BitcoinWallet for Wallet {
                 .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
             let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
 
-            btc_tx::sign_psbt_input(&mut psbt, i, &secret_key, &public_key, network, *addr_type, &prevouts)
-                .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
+            btc_tx::sign_psbt_input(
+                &mut psbt,
+                i,
+                &secret_key,
+                &public_key,
+                network,
+                *addr_type,
+                &prevouts,
+            )
+            .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
         }
 
         println!(
@@ -470,8 +587,9 @@ impl BitcoinWallet for Wallet {
         );
         for i in 0..psbt.inputs.len() {
             let (addr_type, _) = &input_meta[i];
-            btc_tx::finalize_psbt_input(&mut psbt, i, *addr_type)
-                .map_err(|e| WalletErrors::BincodeError(format!("finalize input {}: {:?}", i, e)))?;
+            btc_tx::finalize_psbt_input(&mut psbt, i, *addr_type).map_err(|e| {
+                WalletErrors::BincodeError(format!("finalize input {}: {:?}", i, e))
+            })?;
         }
 
         let signed_tx = psbt.extract_tx_unchecked_fee_rate();
@@ -520,7 +638,11 @@ impl BitcoinWallet for Wallet {
             int_len_before = p2tr.internal.len();
             println!(
                 "[rotate_account] account={} next_index={} ext_len={} int_len={} network={:?}",
-                account_index, next_index, ext_len_before, int_len_before, chain.bitcoin_network()
+                account_index,
+                next_index,
+                ext_len_before,
+                int_len_before,
+                chain.bitcoin_network()
             );
             let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
 
@@ -532,14 +654,16 @@ impl BitcoinWallet for Wallet {
             if let Some(ext) = new_chain.external.pop() {
                 println!(
                     "[rotate_account] new external P2TR: {} path={}",
-                    ext.address, ext.path.get_path()
+                    ext.address,
+                    ext.path.get_path()
                 );
                 p2tr.external.push(ext);
             }
             if let Some(int) = new_chain.internal.pop() {
                 println!(
                     "[rotate_account] new internal P2TR: {} path={}",
-                    int.address, int.path.get_path()
+                    int.address,
+                    int.path.get_path()
                 );
                 p2tr.internal.push(int);
             }
@@ -590,8 +714,7 @@ mod tests_bitcoin_wallet {
         let settings = WalletSettings::default();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic =
-            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let seed = mnemonic.to_seed(&empty_passphrase()).unwrap();
         let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let indexes = [0].map(|i| (i, format!("BTC Account {i}")));
@@ -637,8 +760,7 @@ mod tests_bitcoin_wallet {
         let settings = WalletSettings::default();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic =
-            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let seed = mnemonic.to_seed(&empty_passphrase()).unwrap();
         let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let indexes = [0].map(|i| (i, format!("BTC Account {i}")));

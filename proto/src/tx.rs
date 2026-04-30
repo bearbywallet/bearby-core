@@ -1,7 +1,6 @@
 use crate::address::Address;
 use crate::btc_tx;
 use crate::keypair::KeyPair;
-use crypto::bip49::DerivationPath;
 use crate::pubkey::PubKey;
 use crate::signature::Signature;
 use crate::solana_tx::{SolanaTransaction, SolanaTransactionReceipt};
@@ -43,8 +42,6 @@ pub struct TransactionMetadata {
     pub title: Option<String>,
     pub signer: Option<Address>,
     pub token_info: Option<(U256, u8, String)>,
-    pub btc_witness_utxos: Option<Vec<bitcoin::TxOut>>,
-    pub btc_input_meta: Option<Vec<(u8, DerivationPath)>>,
     pub broadcast: bool,
 }
 
@@ -58,8 +55,6 @@ impl Default for TransactionMetadata {
             title: None,
             signer: None,
             token_info: None,
-            btc_witness_utxos: None,
-            btc_input_meta: None,
             broadcast: true,
         }
     }
@@ -80,7 +75,7 @@ pub enum TransactionReceipt {
 pub enum TransactionRequest {
     Zilliqa((ZILTransactionRequest, TransactionMetadata)),
     Ethereum((ETHTransactionRequest, TransactionMetadata)),
-    Bitcoin((BTCTransactionRequest, TransactionMetadata)),
+    Bitcoin((BTCTransactionRequest, TransactionMetadata, btc_tx::BitcoinMetadata)),
     Tron((TronTransaction, TransactionMetadata)),
     Solana((SolanaTransaction, TransactionMetadata)),
 }
@@ -296,11 +291,8 @@ impl TransactionRequest {
 
                 Ok(TransactionReceipt::Tron((receipt, metadata)))
             }
-            TransactionRequest::Bitcoin((tx, mut metadata)) => {
-                let witness_utxos = metadata
-                    .btc_witness_utxos
-                    .as_ref()
-                    .ok_or(TransactionErrors::MissingWitnessUtxos)?;
+            TransactionRequest::Bitcoin((tx, mut metadata, btc_meta)) => {
+                let witness_utxos = btc_meta.witness_utxos;
 
                 let pubkey = keypair.get_pubkey()?;
                 let sk_bytes = keypair.get_secretkey()?;
@@ -317,7 +309,7 @@ impl TransactionRequest {
                         (bitcoin::Network::Bitcoin, bitcoin::AddressType::P2wpkh)
                     };
 
-                let mut psbt = btc_tx::build_psbt(tx, witness_utxos)?;
+                let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)?;
                 btc_tx::sign_psbt(&mut psbt, &secret_key, &public_key, network, addr_type)?;
                 btc_tx::finalize_psbt(&mut psbt, addr_type)?;
 
@@ -387,13 +379,8 @@ impl TransactionRequest {
 
                 Ok(rlp_bytes)
             }
-            TransactionRequest::Bitcoin((tx, metadata)) => {
-                let witness_utxos = metadata
-                    .btc_witness_utxos
-                    .as_ref()
-                    .ok_or(TransactionErrors::MissingWitnessUtxos)?;
-
-                let psbt = btc_tx::build_psbt(tx, witness_utxos)?;
+            TransactionRequest::Bitcoin((tx, _, btc_meta)) => {
+                let psbt = btc_tx::build_psbt(tx, &btc_meta.witness_utxos)?;
                 Ok(psbt.serialize())
             }
             TransactionRequest::Tron((tx, _)) => Ok(tx.encode()),
@@ -461,7 +448,7 @@ impl TransactionRequest {
 
                 Ok(TransactionReceipt::Zilliqa((signed_tx, metadata)))
             }
-            TransactionRequest::Bitcoin((_tx, mut metadata)) => {
+            TransactionRequest::Bitcoin((_tx, mut metadata, _)) => {
                 let psbt = Psbt::deserialize(&signature_bytes)
                     .map_err(|_| TransactionErrors::PsbtExtractionFailed)?;
 
@@ -519,7 +506,7 @@ impl TransactionRequest {
                     Address::Secp256k1Keccak256(Address::ZERO)
                 }
             }
-            TransactionRequest::Bitcoin((tx, metadata)) => {
+            TransactionRequest::Bitcoin((tx, metadata, _)) => {
                 if let Some(first_output) = tx.output.first() {
                     let network = metadata
                         .signer
@@ -553,7 +540,7 @@ impl TransactionRequest {
             TransactionRequest::Ethereum((_, metadata)) => {
                 metadata.icon = Some(icon);
             }
-            TransactionRequest::Bitcoin((_, metadata)) => {
+            TransactionRequest::Bitcoin((_, metadata, _)) => {
                 metadata.icon = Some(icon);
             }
             TransactionRequest::Tron((_, metadata)) => {
@@ -778,12 +765,16 @@ mod tests_tx {
             script_pubkey: btc_addr.script_pubkey(),
         };
         let metadata = TransactionMetadata {
-            btc_witness_utxos: Some(vec![witness_utxo]),
             ..Default::default()
         };
         assert!(metadata.broadcast);
 
-        let tx_req = TransactionRequest::Bitcoin((tx, metadata));
+        let btc_meta = btc_tx::BitcoinMetadata {
+            witness_utxos: vec![witness_utxo],
+            input_meta: vec![],
+        };
+
+        let tx_req = TransactionRequest::Bitcoin((tx, metadata, btc_meta));
         let tx_res = tx_req.sign(&keypair).await.unwrap();
         let verify = tx_res.verify();
 
@@ -832,12 +823,16 @@ mod tests_tx {
             script_pubkey: btc_addr.script_pubkey(),
         };
         let metadata = TransactionMetadata {
-            btc_witness_utxos: Some(vec![witness_utxo]),
             ..Default::default()
         };
         assert!(metadata.broadcast);
 
-        let tx_req = TransactionRequest::Bitcoin((tx, metadata));
+        let btc_meta = btc_tx::BitcoinMetadata {
+            witness_utxos: vec![witness_utxo],
+            input_meta: vec![],
+        };
+
+        let tx_req = TransactionRequest::Bitcoin((tx, metadata, btc_meta));
         let tx_res = tx_req.sign(&keypair).await.unwrap();
 
         if let TransactionReceipt::Bitcoin((signed_tx, _)) = &tx_res {

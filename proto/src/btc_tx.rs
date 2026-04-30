@@ -9,9 +9,17 @@ use bitcoin::{
     bip32, PrivateKey, PublicKey as BitcoinPublicKey, ScriptBuf, Transaction as BitcoinTransaction,
     TxOut, Witness,
 };
+use crypto::bip49::DerivationPath;
 use errors::tx::TransactionErrors;
 use hex;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BitcoinMetadata {
+    pub witness_utxos: Vec<TxOut>,
+    pub input_meta: Vec<(u8, DerivationPath)>,
+}
 
 pub fn build_psbt(
     tx: BitcoinTransaction,

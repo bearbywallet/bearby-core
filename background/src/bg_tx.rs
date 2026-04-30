@@ -165,7 +165,7 @@ pub fn update_tx_from_params(
                 sol_tx.message = adjusted;
             }
         }
-        TransactionRequest::Bitcoin((ref mut btc_tx, ref metadata)) => {
+        TransactionRequest::Bitcoin((ref mut btc_tx, ref metadata, ref btc_meta)) => {
             if params.current == U256::ZERO {
                 return Ok(());
             }
@@ -175,12 +175,8 @@ pub fn update_tx_from_params(
                 .try_into()
                 .map_err(|_| TransactionErrors::ConvertTxError("Fee overflow".to_string()))?;
 
-            let total_input: u64 = metadata
-                .btc_witness_utxos
-                .as_ref()
-                .ok_or(TransactionErrors::ConvertTxError(
-                    "Missing witness UTXOs".to_string(),
-                ))?
+            let total_input: u64 = btc_meta
+                .witness_utxos
                 .iter()
                 .map(|u| u.value.to_sat())
                 .sum();
