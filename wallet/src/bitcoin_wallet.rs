@@ -239,7 +239,7 @@ pub trait BitcoinWallet {
         metadata: TransactionMetadata,
         btc_meta: BitcoinMetadata,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> std::result::Result<TransactionReceipt, Self::Error>;
 
     async fn generate_wallet(
@@ -268,7 +268,7 @@ pub trait BitcoinWallet {
         provider: &NetworkProvider,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
         destinations: Vec<(Address, u64)>,
         fee_rate_sat_per_vbyte: Option<u64>,
     ) -> std::result::Result<TransactionReceipt, Self::Error>;
@@ -291,7 +291,7 @@ impl BitcoinWallet for Wallet {
         metadata: TransactionMetadata,
         btc_meta: BitcoinMetadata,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> Result<TransactionReceipt> {
         let btc_tx::BitcoinMetadata {
             witness_utxos,
@@ -309,7 +309,7 @@ impl BitcoinWallet for Wallet {
 
         let mnemonic = self.reveal_mnemonic(seed_bytes)?;
         let seed_secret = mnemonic
-            .to_seed(&SecretString::from(passphrase.unwrap_or("")))
+            .to_seed(passphrase)
             .map_err(|e| {
                 WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!(
                     "{:?}",
@@ -508,7 +508,7 @@ impl BitcoinWallet for Wallet {
         provider: &NetworkProvider,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
         destinations: Vec<(Address, u64)>,
         fee_rate_sat_per_vbyte: Option<u64>,
     ) -> Result<TransactionReceipt> {
@@ -538,7 +538,7 @@ impl BitcoinWallet for Wallet {
 
         let mnemonic = self.reveal_mnemonic(seed_bytes)?;
         let seed_secret = mnemonic
-            .to_seed(&SecretString::from(passphrase.unwrap_or("")))
+            .to_seed(passphrase)
             .map_err(|e| {
                 WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!(
                     "{:?}",

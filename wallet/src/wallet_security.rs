@@ -178,7 +178,7 @@ mod tests_security {
             Err(WalletErrors::InvalidAccountType)
         );
         assert_eq!(
-            wallet.reveal_keypair(0, &argon_seed, None),
+            wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()),
             Ok(keypair.clone())
         );
 
@@ -192,8 +192,8 @@ mod tests_security {
 
         wallet.migrate_salt(&argon_seed, &new_argon_seed).unwrap();
 
-        assert!(wallet.reveal_keypair(0, &argon_seed, None).is_err());
-        assert_eq!(wallet.reveal_keypair(0, &new_argon_seed, None), Ok(keypair));
+        assert!(wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).is_err());
+        assert_eq!(wallet.reveal_keypair(0, &new_argon_seed, &empty_passphrase()), Ok(keypair));
     }
 
     #[tokio::test]

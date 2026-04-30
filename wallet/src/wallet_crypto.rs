@@ -8,7 +8,7 @@ use errors::wallet::WalletErrors;
 use network::{common::Provider, provider::NetworkProvider};
 use pqbip39::mnemonic::Mnemonic;
 use proto::{address::Address, keypair::KeyPair, secret_key::SecretKey, signature::Signature};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 pub trait WalletCrypto {
     type Error;
@@ -17,7 +17,7 @@ pub trait WalletCrypto {
         &self,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> std::result::Result<KeyPair, Self::Error>;
     fn reveal_mnemonic<'a>(
         &self,
@@ -28,7 +28,7 @@ pub trait WalletCrypto {
         msg: &[u8],
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> std::result::Result<Signature, Self::Error>;
 }
 
@@ -39,7 +39,7 @@ impl WalletCrypto for Wallet {
         &self,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> Result<KeyPair> {
         let keychain = KeyChain::from_seed(seed_bytes)?;
         let data = self.get_wallet_data()?;
@@ -56,7 +56,7 @@ impl WalletCrypto for Wallet {
                 Ok(keypair)
             }
             WalletTypes::SecretPhrase((_key, is_phr)) => {
-                if is_phr && passphrase.is_none() {
+                if is_phr && passphrase.expose_secret().is_empty() {
                     return Err(WalletErrors::PassphraseIsNone);
                 }
 
@@ -68,7 +68,7 @@ impl WalletCrypto for Wallet {
                     .find(|&p| p.config.hash() == data.chain_hash)
                     .ok_or(WalletErrors::ProviderNotExist(data.chain_hash))?;
                 let m = self.reveal_mnemonic(seed_bytes)?;
-                let seed_secret = m.to_seed(&SecretString::from(passphrase.unwrap_or("")))?;
+                let seed_secret = m.to_seed(passphrase)?;
                 let hd_index = account.account_type.value();
                 let (_, network) = match &account.addr {
                     Address::Secp256k1Bitcoin(_) => {
@@ -145,7 +145,7 @@ impl WalletCrypto for Wallet {
         msg: &[u8],
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> Result<Signature> {
         let keypair = self.reveal_keypair(account_index, seed_bytes, passphrase)?;
         let sig = keypair.sign_message(msg)?;
@@ -256,7 +256,7 @@ mod tests_wallet_crypto {
         let wallet = create_test_wallet_from_secret_key(Arc::clone(&storage), &argon_seed);
 
         // Reveal the keypair for account 0
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
 
         // Verify the keypair can sign and verify messages
         let msg = b"test message";
@@ -281,7 +281,7 @@ mod tests_wallet_crypto {
         let wallet = create_test_wallet_from_secret_key(Arc::clone(&storage), &argon_seed);
 
         // Try to reveal keypair for non-existent account
-        let result = wallet.reveal_keypair(999, &argon_seed, None);
+        let result = wallet.reveal_keypair(999, &argon_seed, &empty_passphrase());
 
         assert!(result.is_err());
         assert!(matches!(
@@ -308,7 +308,7 @@ mod tests_wallet_crypto {
         .await;
 
         for i in 0..3 {
-            let keypair = wallet.reveal_keypair(i, &argon_seed, None).unwrap();
+            let keypair = wallet.reveal_keypair(i, &argon_seed, &empty_passphrase()).unwrap();
 
             // Verify the address matches
             let data = wallet.get_wallet_data().unwrap();
@@ -340,7 +340,7 @@ mod tests_wallet_crypto {
         .await;
 
         for i in 0..2 {
-            let keypair = wallet.reveal_keypair(i, &argon_seed, None).unwrap();
+            let keypair = wallet.reveal_keypair(i, &argon_seed, &empty_passphrase()).unwrap();
 
             // Verify the address matches
             let data = wallet.get_wallet_data().unwrap();
@@ -371,7 +371,7 @@ mod tests_wallet_crypto {
         )
         .await;
 
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
 
         let data = wallet.get_wallet_data().unwrap();
         let account_addr = &data.get_account(0).unwrap().addr;
@@ -468,10 +468,10 @@ mod tests_wallet_crypto {
         .await;
 
         let msg = b"Hello, Zilliqa!";
-        let signature = wallet.sign_message(msg, 0, &argon_seed, None).unwrap();
+        let signature = wallet.sign_message(msg, 0, &argon_seed, &empty_passphrase()).unwrap();
 
         // Reveal the keypair and verify the signature
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
         let verified = keypair.verify_sig(msg, &signature).unwrap();
 
         assert!(verified);
@@ -495,7 +495,7 @@ mod tests_wallet_crypto {
         )
         .await;
 
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
 
         let data = wallet.get_wallet_data().unwrap();
         let account_addr = &data.get_account(0).unwrap().addr;

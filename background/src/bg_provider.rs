@@ -197,7 +197,7 @@ impl ProvidersManagement for Background {
                 new_slip44,
                 provider.config.bitcoin_network(),
                 &seed,
-                "",
+                &wallet::empty_passphrase(),
             )?;
         }
 

@@ -21,6 +21,10 @@ use wallet_storage::StorageOperations;
 pub type WalletAddrType = [u8; SHA256_SIZE];
 pub type Result<T> = std::result::Result<T, WalletErrors>;
 
+pub fn empty_passphrase() -> SecretString {
+    SecretString::new(Box::from(""))
+}
+
 pub struct WalletConfig {
     pub storage: Arc<LocalStorage>,
     pub keychain: KeyChain,

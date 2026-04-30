@@ -4,6 +4,7 @@ use cipher::argon2::Argon2Seed;
 use config::storage::HISTORY_TXNS_DB_KEY_V1;
 use errors::wallet::WalletErrors;
 use proto::tx::{TransactionReceipt, TransactionRequest};
+use secrecy::SecretString;
 
 use crate::{wallet_crypto::WalletCrypto, Wallet};
 use crate::bitcoin_wallet::BitcoinWallet;
@@ -17,7 +18,7 @@ pub trait WalletTransaction {
         req_tx: TransactionRequest,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> std::result::Result<TransactionReceipt, Self::Error>;
 
     fn clear_history(&mut self) -> std::result::Result<(), Self::Error>;
@@ -47,7 +48,7 @@ impl WalletTransaction for Wallet {
         req_tx: TransactionRequest,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> Result<TransactionReceipt> {
         let req_tx = match req_tx {
             TransactionRequest::Bitcoin((tx, metadata, btc_meta))

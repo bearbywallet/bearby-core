@@ -902,7 +902,7 @@ mod tests_background_tokens {
             .unwrap();
 
         let signed_tx = wallet
-            .sign_transaction(txn_req, from_index, &argon_seed, None)
+            .sign_transaction(txn_req, from_index, &argon_seed, &empty_passphrase())
             .await
             .unwrap();
 
@@ -1029,7 +1029,7 @@ mod tests_background_tokens {
             .unwrap();
 
         let signed_tx = wallet
-            .sign_transaction(txn_req, from_index, &argon_seed, None)
+            .sign_transaction(txn_req, from_index, &argon_seed, &empty_passphrase())
             .await
             .unwrap();
         assert!(signed_tx.verify().unwrap());
@@ -1161,7 +1161,7 @@ mod tests_background_tokens {
             .await
             .unwrap();
         let signed_tx = wallet
-            .sign_transaction(tx, from_index, &argon_seed, None)
+            .sign_transaction(tx, from_index, &argon_seed, &empty_passphrase())
             .await
             .unwrap();
 
@@ -1413,7 +1413,7 @@ mod tests_background_tokens {
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
         wallet
-            .add_next_bip39_account("sol 3".to_string(), 3, None, "", &argon_seed)
+            .add_next_bip39_account("sol 3".to_string(), 3, None, &empty_passphrase(), &argon_seed)
             .unwrap();
 
         let data = wallet.get_wallet_data().unwrap();
@@ -1425,7 +1425,7 @@ mod tests_background_tokens {
         );
 
         let signed_tx = wallet
-            .sign_transaction(txn_req, 0, &argon_seed, None)
+            .sign_transaction(txn_req, 0, &argon_seed, &empty_passphrase())
             .await
             .unwrap();
 
@@ -1469,7 +1469,7 @@ mod tests_background_tokens {
             .unwrap();
 
         let signed_tx = wallet
-            .sign_transaction(txn_req, sender_index, &argon_seed, None)
+            .sign_transaction(txn_req, sender_index, &argon_seed, &empty_passphrase())
             .await
             .unwrap();
 

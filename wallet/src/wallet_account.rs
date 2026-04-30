@@ -27,7 +27,7 @@ pub trait AccountManagement {
         name: String,
         index: usize,
         network: Option<bitcoin::Network>,
-        passphrase: &str,
+        passphrase: &SecretString,
         seed_bytes: &Argon2Seed,
     ) -> std::result::Result<(), Self::Error>;
     fn ensure_chain_accounts(
@@ -36,7 +36,7 @@ pub trait AccountManagement {
         target_slip44: u32,
         network: Option<bitcoin::Network>,
         seed_bytes: &Argon2Seed,
-        passphrase: &str,
+        passphrase: &SecretString,
     ) -> std::result::Result<(), Self::Error>;
     fn select_account(&self, account_index: usize) -> std::result::Result<(), Self::Error>;
     fn delete_account(&self, account_index: usize) -> std::result::Result<(), Self::Error>;
@@ -111,7 +111,7 @@ impl AccountManagement for Wallet {
         target_slip44: u32,
         network: Option<bitcoin::Network>,
         seed_bytes: &Argon2Seed,
-        passphrase: &str,
+        passphrase: &SecretString,
     ) -> Result<()> {
         let reference: Vec<(usize, String)> = data
             .slip44_accounts
@@ -144,7 +144,7 @@ impl AccountManagement for Wallet {
 
         match &data.wallet_type {
             WalletTypes::SecretKey => {
-                let keypair = self.reveal_keypair(0, seed_bytes, None)?;
+                let keypair = self.reveal_keypair(0, seed_bytes, passphrase)?;
                 let sk = keypair.get_secretkey()?;
                 let raw_key: [u8; 32] = sk.as_ref().try_into().map_err(|_| {
                     WalletErrors::FailToGetSKBytes(
@@ -177,7 +177,7 @@ impl AccountManagement for Wallet {
             }
             WalletTypes::SecretPhrase(_) => {
                 let m = self.reveal_mnemonic(seed_bytes)?;
-                let mnemonic_seed_secret = Arc::new(m.to_seed(&SecretString::from(passphrase))?);
+                let mnemonic_seed_secret = Arc::new(m.to_seed(passphrase)?);
 
                 let accounts = bip_map.entry(target_bip).or_default();
                 for (idx, name) in missing {
@@ -197,12 +197,12 @@ impl AccountManagement for Wallet {
         name: String,
         index: usize,
         network: Option<bitcoin::Network>,
-        passphrase: &str,
+        passphrase: &SecretString,
         seed_bytes: &Argon2Seed,
     ) -> Result<()> {
         let mut data = self.get_wallet_data()?;
         let m = self.reveal_mnemonic(seed_bytes)?;
-        let mnemonic_seed_secret = m.to_seed(&SecretString::from(passphrase))?;
+        let mnemonic_seed_secret = m.to_seed(passphrase)?;
         let bip49 = DerivationPath::with_index(data.slip44, (0, 0, index));
         let has_account = data
             .slip44_accounts

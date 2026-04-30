@@ -19,6 +19,7 @@ use wallet::{
 };
 
 use crate::Background;
+use secrecy::SecretString;
 
 pub fn update_tx_from_params(
     tx: &mut TransactionRequest,
@@ -276,7 +277,7 @@ pub trait TransactionsManagement {
         wallet_index: usize,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
         message: &str,
         title: Option<String>,
         icon: Option<String>,
@@ -299,28 +300,18 @@ pub trait TransactionsManagement {
         wallet_index: usize,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
         message: &str,
         title: Option<String>,
         icon: Option<String>,
     ) -> std::result::Result<(PubKey, Signature), Self::Error>;
-
-    async fn prepare_and_sign_btc_transaction(
-        &self,
-        wallet_index: usize,
-        account_index: usize,
-        seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
-        destinations: Vec<(Address, u64)>,
-        fee_rate_sat_per_vbyte: Option<u64>,
-    ) -> std::result::Result<TransactionReceipt, Self::Error>;
 
     async fn rotate_btc_account(
         &self,
         wallet_index: usize,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> std::result::Result<(), Self::Error>;
 }
 
@@ -381,7 +372,7 @@ impl TransactionsManagement for Background {
         wallet_index: usize,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
         typed_data_json: &str,
         title: Option<String>,
         icon: Option<String>,
@@ -414,7 +405,7 @@ impl TransactionsManagement for Background {
         wallet_index: usize,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
         message: &str,
         title: Option<String>,
         icon: Option<String>,
@@ -525,39 +516,13 @@ impl TransactionsManagement for Background {
         Ok(history)
     }
 
-    async fn prepare_and_sign_btc_transaction(
-        &self,
-        wallet_index: usize,
-        account_index: usize,
-        seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
-        destinations: Vec<(Address, u64)>,
-        fee_rate_sat_per_vbyte: Option<u64>,
-    ) -> Result<TransactionReceipt> {
-        let wallet = self.get_wallet_by_index(wallet_index)?;
-        let data = wallet.get_wallet_data()?;
-        let provider = self.get_provider(data.chain_hash)?;
-
-        Ok(wallet
-            .prepare_and_sign_btc_transaction(
-                &provider,
-                account_index,
-                seed_bytes,
-                passphrase,
-                destinations,
-                fee_rate_sat_per_vbyte,
-            )
-            .await?)
-    }
-
     async fn rotate_btc_account(
         &self,
         wallet_index: usize,
         account_index: usize,
         seed_bytes: &Argon2Seed,
-        passphrase: Option<&str>,
+        passphrase: &SecretString,
     ) -> Result<()> {
-        use secrecy::SecretString;
         println!(
             "[rotate_btc_account] wallet_index={} account_index={}",
             wallet_index, account_index
@@ -568,13 +533,11 @@ impl TransactionsManagement for Background {
         let provider = self.get_provider(data.chain_hash)?;
 
         let mnemonic = wallet.reveal_mnemonic(seed_bytes)?;
-        let seed_secret = mnemonic
-            .to_seed(&SecretString::from(passphrase.unwrap_or("")))
-            .map_err(|e| {
-                BackgroundError::WalletError(WalletErrors::Bip329Error(
-                    errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)),
-                ))
-            })?;
+        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
+            BackgroundError::WalletError(WalletErrors::Bip329Error(
+                errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)),
+            ))
+        })?;
 
         wallet
             .rotate_account(&seed_secret, account_index, &provider.config)
@@ -601,7 +564,7 @@ mod tests_background_transactions {
     };
     use token::ft::FToken;
     use tokio;
-    use wallet::{wallet_crypto::WalletCrypto, wallet_transaction::WalletTransaction};
+    use wallet::{bitcoin_wallet::BitcoinWallet, wallet_crypto::WalletCrypto, wallet_transaction::WalletTransaction};
 
     fn setup_test_background() -> (Background, String) {
         let mut rng = rand::rng();
@@ -676,7 +639,7 @@ mod tests_background_transactions {
         assert!(selected_account.addr.to_string().starts_with("0x"));
 
         let tx = wallet
-            .sign_transaction(zilpay_trasnfer_req, 0, &argon_seed, None)
+            .sign_transaction(zilpay_trasnfer_req, 0, &argon_seed, &empty_passphrase())
             .await
             .unwrap();
 
@@ -757,7 +720,7 @@ mod tests_background_transactions {
             .unlock_wallet_with_password(&SecretString::new(TEST_PASSWORD.into()), None, 0)
             .await
             .unwrap();
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
         let txn = txn.sign(&keypair).await.unwrap();
         let txns = vec![txn];
         let txns = bg.broadcast_signed_transactions(0, txns).await.unwrap();
@@ -844,7 +807,7 @@ mod tests_background_transactions {
             .unlock_wallet_with_password(&password, None, 0)
             .await
             .unwrap();
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
         let txn_0 = txn_0.sign(&keypair).await.unwrap();
         let txns_0 = vec![txn_0];
         let txns_0 = bg.broadcast_signed_transactions(0, txns_0).await.unwrap();
@@ -880,7 +843,7 @@ mod tests_background_transactions {
         super::update_tx_from_params(&mut tx_request_1, params_1, balance).unwrap();
         let txn_1 = tx_request_1;
 
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
         let txn_1 = txn_1.sign(&keypair).await.unwrap();
         let txns_1 = vec![txn_1];
         let txns_1 = bg.broadcast_signed_transactions(0, txns_1).await.unwrap();
@@ -942,14 +905,14 @@ mod tests_background_transactions {
 
         let message = "Hello, Zilliqa!";
         let (pubkey, signature) = bg
-            .sign_message(0, 0, &argon_seed, None, message, None, None)
+            .sign_message(0, 0, &argon_seed, &empty_passphrase(), message, None, None)
             .unwrap();
 
         let hashed_message = Sha256::digest(message.as_bytes());
         let key_pair = bg
             .get_wallet_by_index(0)
             .unwrap()
-            .reveal_keypair(0, &argon_seed, None)
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
             .unwrap();
 
         assert_eq!(pubkey.as_bytes(), key_pair.get_pubkey_bytes());
@@ -993,7 +956,7 @@ mod tests_background_transactions {
             .await
             .unwrap();
         let revealed_mnemonic = wallet.reveal_mnemonic(&argon_seed).unwrap();
-        let keypair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
 
         assert_eq!(
             revealed_mnemonic.to_phrase().expose_secret(),
@@ -1067,8 +1030,8 @@ mod tests_background_transactions {
         .unwrap();
         let destinations = vec![(dest_addr, 1000u64)];
 
-        let signed_tx = bg
-            .prepare_and_sign_btc_transaction(0, 0, &argon_seed, None, destinations, Some(10))
+        let signed_tx = wallet
+            .prepare_and_sign_btc_transaction(&pr, 0, &argon_seed, &empty_passphrase(), destinations, Some(10))
             .await
             .unwrap();
 
@@ -1204,7 +1167,7 @@ mod tests_background_transactions {
             .await
             .unwrap();
         let keypair = wallet
-            .reveal_keypair(sender_idx, &argon_seed, None)
+            .reveal_keypair(sender_idx, &argon_seed, &empty_passphrase())
             .unwrap();
 
         let signed = tx_request.sign(&keypair).await.unwrap();
@@ -1253,11 +1216,11 @@ mod tests_background_transactions {
 
         let message = "Hello, Tron!";
         let (pubkey, signature) = bg
-            .sign_message(0, 0, &argon_seed, None, message, None, None)
+            .sign_message(0, 0, &argon_seed, &empty_passphrase(), message, None, None)
             .unwrap();
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
-        let key_pair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let key_pair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
 
         assert_eq!(pubkey.as_bytes(), key_pair.get_pubkey_bytes());
 
@@ -1304,11 +1267,11 @@ mod tests_background_transactions {
 
         let hex_message = "0x48656c6c6f2c2054726f6e21";
         let (_pubkey, signature) = bg
-            .sign_message(0, 0, &argon_seed, None, hex_message, None, None)
+            .sign_message(0, 0, &argon_seed, &empty_passphrase(), hex_message, None, None)
             .unwrap();
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
-        let key_pair = wallet.reveal_keypair(0, &argon_seed, None).unwrap();
+        let key_pair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
 
         let decoded = hex::decode(&hex_message[2..]).unwrap();
         let prefixed_msg = format!("\x19TRON Signed Message:\n{}", decoded.len());

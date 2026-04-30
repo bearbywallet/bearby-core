@@ -293,7 +293,7 @@ impl StorageManagement for Background {
                 .as_bytes()
                 .to_vec(),
             WalletTypes::SecretKey => wallet
-                .reveal_keypair(0, &argon_seed, None)?
+                .reveal_keypair(0, &argon_seed, &wallet::empty_passphrase())?
                 .get_secretkey()?
                 .to_bytes()?
                 .to_vec(),
@@ -760,8 +760,8 @@ mod tests_background_storage {
             .await
             .unwrap();
 
-        let keypair0 = wallet0.reveal_keypair(0, &seed_bytes0, None).unwrap();
-        let keypair1 = wallet1.reveal_keypair(0, &seed_bytes1, None).unwrap();
+        let keypair0 = wallet0.reveal_keypair(0, &seed_bytes0, &empty_passphrase()).unwrap();
+        let keypair1 = wallet1.reveal_keypair(0, &seed_bytes1, &empty_passphrase()).unwrap();
 
         assert_eq!(keypair0, keypair1);
     }
