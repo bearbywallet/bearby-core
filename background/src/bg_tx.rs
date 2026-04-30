@@ -562,20 +562,28 @@ impl TransactionsManagement for Background {
         passphrase: Option<&str>,
     ) -> Result<()> {
         use secrecy::SecretString;
+        println!(
+            "[rotate_btc_account] wallet_index={} account_index={}",
+            wallet_index, account_index
+        );
         let wallet = self.get_wallet_by_index(wallet_index)?;
         let data = wallet.get_wallet_data()?;
+        println!("[rotate_btc_account] chain_hash={}", data.chain_hash);
         let provider = self.get_provider(data.chain_hash)?;
 
         let mnemonic = wallet.reveal_mnemonic(seed_bytes)?;
         let seed_secret = mnemonic
             .to_seed(&SecretString::from(passphrase.unwrap_or("")))
-            .map_err(|e| BackgroundError::WalletError(WalletErrors::Bip329Error(
-                errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)),
-            )))?;
+            .map_err(|e| {
+                BackgroundError::WalletError(WalletErrors::Bip329Error(
+                    errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)),
+                ))
+            })?;
 
         wallet
             .rotate_account(&seed_secret, account_index, &provider.config)
             .await?;
+        println!("[rotate_btc_account] OK");
         Ok(())
     }
 }

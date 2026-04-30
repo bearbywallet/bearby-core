@@ -427,13 +427,26 @@ impl BtcOperations for NetworkProvider {
             .to_bitcoin_addr()
             .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
         let script = btc_addr.script_pubkey();
+        let script_hex = alloy::hex::encode(script.as_bytes());
 
-        self.with_electrum_client(|client| {
-            let unspents = client
+        let unspents = self.with_electrum_client(|client| {
+            client
                 .script_list_unspent(script.as_ref())
-                .map_err(|e| NetworkErrors::RPCError(format!("Failed to list unspent: {}", e)))?;
-            Ok(unspents)
-        })
+                .map_err(|e| NetworkErrors::RPCError(format!("Failed to list unspent: {}", e)))
+        })?;
+        println!(
+            "[btc_list_unspent] addr={} script={} unspent_count={}",
+            btc_addr,
+            script_hex,
+            unspents.len()
+        );
+        for (i, u) in unspents.iter().enumerate() {
+            println!(
+                "[btc_list_unspent]   utxo[{}]: txid={} vout={} value={} height={}",
+                i, u.tx_hash, u.tx_pos, u.value, u.height
+            );
+        }
+        Ok(unspents)
     }
 
     async fn batch_script_get_history(

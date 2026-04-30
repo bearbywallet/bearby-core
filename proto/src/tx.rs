@@ -1,6 +1,7 @@
 use crate::address::Address;
 use crate::btc_tx;
 use crate::keypair::KeyPair;
+use crypto::bip49::DerivationPath;
 use crate::pubkey::PubKey;
 use crate::signature::Signature;
 use crate::solana_tx::{SolanaTransaction, SolanaTransactionReceipt};
@@ -43,6 +44,7 @@ pub struct TransactionMetadata {
     pub signer: Option<Address>,
     pub token_info: Option<(U256, u8, String)>,
     pub btc_witness_utxos: Option<Vec<bitcoin::TxOut>>,
+    pub btc_input_meta: Option<Vec<(u8, DerivationPath)>>,
     pub broadcast: bool,
 }
 
@@ -57,6 +59,7 @@ impl Default for TransactionMetadata {
             signer: None,
             token_info: None,
             btc_witness_utxos: None,
+            btc_input_meta: None,
             broadcast: true,
         }
     }

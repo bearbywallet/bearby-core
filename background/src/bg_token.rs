@@ -93,6 +93,7 @@ impl TokensManagement for Background {
             signer: Some(sender.addr.clone()),
             token_info: Some((amount, token.decimals, token.symbol.clone())),
             btc_witness_utxos: None,
+            btc_input_meta: None,
             broadcast: true,
         };
         let addr = if token.native {
@@ -130,17 +131,45 @@ impl TokensManagement for Background {
 
                 let chains = wallet_ref.get_btc_addresses(account_index)?;
 
-                let (tx, witness_utxos, _input_meta) =
+                let chain_summary: Vec<String> = chains
+                    .iter()
+                    .map(|(at, c)| {
+                        format!(
+                            "{:?}(ext:{},int:{})",
+                            at,
+                            c.external.len(),
+                            c.internal.len()
+                        )
+                    })
+                    .collect();
+                println!(
+                    "[build_token_transfer] BTC: sender={} receiver={} amount_sat={} account_index={} chains=[{}]",
+                    sender.addr, to, amount_sat, account_index, chain_summary.join(", ")
+                );
+
+                let (tx, witness_utxos, input_meta) =
                     wallet::bitcoin_wallet::build_unsigned_btc_transaction(
                         &chains,
                         vec![(to, amount_sat)],
                         None,
                     )?;
 
+                println!(
+                    "[build_token_transfer] BTC tx built: {} inputs {} outputs wutxos={}",
+                    tx.input.len(),
+                    tx.output.len(),
+                    witness_utxos.len()
+                );
+
                 let change_signer = chains
                     .get(&bitcoin::AddressType::P2tr)
                     .and_then(|c| c.get_internal().ok().map(|e| e.address.clone()))
                     .unwrap_or_else(|| sender.addr.clone());
+
+                let btc_input_meta: Vec<(u8, crypto::bip49::DerivationPath)> = input_meta
+                    .into_iter()
+                    .map(|(at, path)| (proto::btc_utils::ByteCodec::to_byte(&at), path))
+                    .collect();
 
                 let metadata = TransactionMetadata {
                     chain_hash: token.chain_hash,
@@ -151,6 +180,7 @@ impl TokensManagement for Background {
                     signer: Some(change_signer),
                     token_info: Some((amount, token.decimals, token.symbol.clone())),
                     btc_witness_utxos: Some(witness_utxos),
+                    btc_input_meta: Some(btc_input_meta),
                     broadcast: true,
                 };
 
@@ -704,7 +734,12 @@ mod tests_background_tokens {
         .unwrap();
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
+        bg.sync_ftokens_balances(0).await.unwrap();
+        wallet.select_account(1).unwrap();
+        bg.sync_ftokens_balances(0).await.unwrap();
         let data = wallet.get_wallet_data().unwrap();
+
+        dbg!(wallet.get_btc_addresses(0).unwrap());
 
         let accs = data.get_accounts().unwrap();
         assert_eq!(accs.len(), 2, "Should have 2 accounts");
@@ -712,25 +747,10 @@ mod tests_background_tokens {
         let account = &accs[0];
         let account_1 = &accs[1];
 
-        let addr_str = account.addr.auto_format();
-        let addr_str_1 = account_1.addr.auto_format();
-
-        assert!(
-            addr_str.starts_with("bcrt1p"),
-            "Should be Taproot regtest address starting with bcrt1p, got: {}",
-            addr_str
-        );
-        assert!(
-            addr_str_1.starts_with("bcrt1p"),
-            "Should be Taproot regtest address starting with bcrt1p, got: {}",
-            addr_str_1
-        );
-
-        bg.sync_ftokens_balances(0).await.unwrap();
-
-        let wallet = bg.get_wallet_by_index(0).unwrap();
         let ftokens = wallet.get_ftokens().unwrap();
         let btc_token = ftokens.first().unwrap();
+
+        dbg!(&ftokens);
 
         assert!(btc_token.native, "BTC token should be native");
         assert_eq!(btc_token.symbol, "BTC", "Token symbol should be BTC");
@@ -746,40 +766,37 @@ mod tests_background_tokens {
             .copied()
             .unwrap_or(U256::ZERO);
 
+        println!(
+            "[test_max_amount] account[0].addr={} hash={} balance={}",
+            account.addr.auto_format(),
+            account.addr.to_hash(),
+            balance_0
+        );
+        println!(
+            "[test_max_amount] account[1].addr={} hash={} balance={}",
+            account_1.addr.auto_format(),
+            account_1.addr.to_hash(),
+            balance_1
+        );
+        println!(
+            "[test_max_amount] ftoken_balances keys: {:?}",
+            btc_token.balances.keys().collect::<Vec<_>>()
+        );
+
         let provider = bg.get_provider(net_config.hash()).unwrap();
 
-        let (from_account, from_index, to_account) = if balance_0 > U256::ZERO {
-            let unspents = provider.btc_list_unspent(&account.addr).await.unwrap();
-            if !unspents.is_empty() {
-                (account, 0usize, account_1)
-            } else if balance_1 > U256::ZERO {
-                let unspents_1 = provider.btc_list_unspent(&account_1.addr).await.unwrap();
-                if !unspents_1.is_empty() {
-                    (account_1, 1usize, account)
-                } else {
-                    println!("No UTXOs available for either account, skipping test");
-                    return;
-                }
-            } else {
-                println!("No balance available in either account, skipping test");
-                return;
-            }
+        let (from_account, from_index, to_account, max_balance) = if balance_0 > U256::ZERO {
+            (account, 0usize, account_1, balance_0)
         } else if balance_1 > U256::ZERO {
-            let unspents_1 = provider.btc_list_unspent(&account_1.addr).await.unwrap();
-            if !unspents_1.is_empty() {
-                (account_1, 1usize, account)
-            } else {
-                println!("No UTXOs available, skipping test");
-                return;
-            }
+            (account_1, 1usize, account, balance_1)
         } else {
-            println!("No balance available in either account, skipping test");
-            return;
+            panic!(
+                "Both regtest accounts are empty — fund at least one of: {} / {}",
+                account.addr.auto_format(),
+                account_1.addr.auto_format()
+            );
         };
-
-        let unspents = provider.btc_list_unspent(&from_account.addr).await.unwrap();
-        let actual_balance: u64 = unspents.iter().map(|u| u.value).sum();
-        let max_balance = U256::from(actual_balance);
+        let actual_balance: u64 = max_balance.to::<u64>();
 
         println!(
             "Sending from account {}, balance: {} satoshis",

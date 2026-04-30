@@ -233,11 +233,16 @@ impl WalletInit for Wallet {
             let network = chain.bitcoin_network();
             let mut accounts = Vec::with_capacity(params.indexes.len());
 
-            for (idx, name) in params.indexes.iter() {
+            for (pos_idx, (idx, name)) in params.indexes.iter().enumerate() {
                 let account = if slip44 == crypto::slip44::BITCOIN {
-                    wallet
+                    let account = wallet
                         .generate_wallet(&mnemonic_seed_secret, *idx, name.clone(), chain)
-                        .await?
+                        .await?;
+                    if pos_idx != *idx {
+                        let chains = wallet.get_btc_addresses(*idx)?;
+                        wallet.save_btc_addresses(pos_idx, &chains)?;
+                    }
+                    account
                 } else {
                     let path = crypto::bip49::DerivationPath::with_index(slip44, (0, 0, *idx));
                     AccountV2::from_hd(&mnemonic_seed_secret, name.clone(), &path, network)?
