@@ -308,14 +308,9 @@ impl BitcoinWallet for Wallet {
         }
 
         let mnemonic = self.reveal_mnemonic(seed_bytes)?;
-        let seed_secret = mnemonic
-            .to_seed(passphrase)
-            .map_err(|e| {
-                WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!(
-                    "{:?}",
-                    e
-                )))
-            })?;
+        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
+            WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)))
+        })?;
 
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)
             .map_err(|e| WalletErrors::BincodeError(format!("build_psbt: {:?}", e)))?;
@@ -439,7 +434,7 @@ impl BitcoinWallet for Wallet {
                         .expect("seeded above")
                         .external
                         .first()
-                        .expect("non-empty after generation")
+                        .expect("non-empty after generation") // TODO: Very bad panic func
                         .clone()
                 }
             }
@@ -449,7 +444,7 @@ impl BitcoinWallet for Wallet {
                 .expect("seeded above")
                 .external
                 .first()
-                .expect("non-empty after generation")
+                .expect("non-empty after generation") // TODO: Very bad panic func
                 .clone()
         };
 
@@ -537,14 +532,9 @@ impl BitcoinWallet for Wallet {
         );
 
         let mnemonic = self.reveal_mnemonic(seed_bytes)?;
-        let seed_secret = mnemonic
-            .to_seed(passphrase)
-            .map_err(|e| {
-                WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!(
-                    "{:?}",
-                    e
-                )))
-            })?;
+        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
+            WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)))
+        })?;
 
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)?;
         let secp = bitcoin::secp256k1::Secp256k1::new();
@@ -672,6 +662,19 @@ impl BitcoinWallet for Wallet {
         }
 
         self.save_btc_addresses(account_index, &chains)?;
+
+        let new_addr = chains
+            .get(&bitcoin::AddressType::P2tr)
+            .and_then(|c| c.external.last())
+            .map(|e| e.address.clone())
+            .ok_or_else(|| {
+                WalletErrors::BincodeError("P2TR external address missing".to_string())
+            })?;
+
+        let mut data = self.get_wallet_data()?;
+        data.get_mut_account(account_index)?.addr = new_addr;
+        self.save_wallet_data(data)?;
+
         println!(
             "[rotate_account] saved, ext_len={}->{} int_len={}->{}",
             ext_len_before, ext_len_after, int_len_before, int_len_after

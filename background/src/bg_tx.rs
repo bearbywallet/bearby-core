@@ -564,7 +564,10 @@ mod tests_background_transactions {
     };
     use token::ft::FToken;
     use tokio;
-    use wallet::{bitcoin_wallet::BitcoinWallet, wallet_crypto::WalletCrypto, wallet_transaction::WalletTransaction};
+    use wallet::{
+        bitcoin_wallet::BitcoinWallet, wallet_crypto::WalletCrypto,
+        wallet_transaction::WalletTransaction,
+    };
 
     fn setup_test_background() -> (Background, String) {
         let mut rng = rand::rng();
@@ -720,7 +723,9 @@ mod tests_background_transactions {
             .unlock_wallet_with_password(&SecretString::new(TEST_PASSWORD.into()), None, 0)
             .await
             .unwrap();
-        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let keypair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
         let txn = txn.sign(&keypair).await.unwrap();
         let txns = vec![txn];
         let txns = bg.broadcast_signed_transactions(0, txns).await.unwrap();
@@ -807,7 +812,9 @@ mod tests_background_transactions {
             .unlock_wallet_with_password(&password, None, 0)
             .await
             .unwrap();
-        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let keypair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
         let txn_0 = txn_0.sign(&keypair).await.unwrap();
         let txns_0 = vec![txn_0];
         let txns_0 = bg.broadcast_signed_transactions(0, txns_0).await.unwrap();
@@ -843,7 +850,9 @@ mod tests_background_transactions {
         super::update_tx_from_params(&mut tx_request_1, params_1, balance).unwrap();
         let txn_1 = tx_request_1;
 
-        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let keypair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
         let txn_1 = txn_1.sign(&keypair).await.unwrap();
         let txns_1 = vec![txn_1];
         let txns_1 = bg.broadcast_signed_transactions(0, txns_1).await.unwrap();
@@ -956,7 +965,9 @@ mod tests_background_transactions {
             .await
             .unwrap();
         let revealed_mnemonic = wallet.reveal_mnemonic(&argon_seed).unwrap();
-        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let keypair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
 
         assert_eq!(
             revealed_mnemonic.to_phrase().expose_secret(),
@@ -1005,7 +1016,7 @@ mod tests_background_transactions {
         let pr = bg.get_provider(data.chain_hash).unwrap();
         let account = data.get_account(0).unwrap();
         let res = pr.btc_list_unspent(&account.addr).await.unwrap();
-        dbg!(&ftokens);
+        dbg!(&ftokens, &account);
 
         let btc_token = ftokens
             .iter()
@@ -1031,7 +1042,14 @@ mod tests_background_transactions {
         let destinations = vec![(dest_addr, 1000u64)];
 
         let signed_tx = wallet
-            .prepare_and_sign_btc_transaction(&pr, 0, &argon_seed, &empty_passphrase(), destinations, Some(10))
+            .prepare_and_sign_btc_transaction(
+                &pr,
+                0,
+                &argon_seed,
+                &empty_passphrase(),
+                destinations,
+                Some(10),
+            )
             .await
             .unwrap();
 
@@ -1045,6 +1063,17 @@ mod tests_background_transactions {
 
         let txns = vec![signed_tx];
         bg.broadcast_signed_transactions(0, txns).await.unwrap();
+        let data = wallet.get_wallet_data().unwrap();
+        let new_account = data.get_accounts().unwrap().first().unwrap();
+
+        assert_eq!(new_account.addr, account.addr);
+        bg.rotate_btc_account(0, 0, &argon_seed, &empty_passphrase())
+            .await
+            .unwrap();
+        let data = wallet.get_wallet_data().unwrap();
+        let new_account = data.get_accounts().unwrap().first().unwrap();
+
+        assert_ne!(&new_account.addr, &account.addr);
     }
 
     #[tokio::test]
@@ -1220,7 +1249,9 @@ mod tests_background_transactions {
             .unwrap();
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
-        let key_pair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let key_pair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
 
         assert_eq!(pubkey.as_bytes(), key_pair.get_pubkey_bytes());
 
@@ -1267,11 +1298,21 @@ mod tests_background_transactions {
 
         let hex_message = "0x48656c6c6f2c2054726f6e21";
         let (_pubkey, signature) = bg
-            .sign_message(0, 0, &argon_seed, &empty_passphrase(), hex_message, None, None)
+            .sign_message(
+                0,
+                0,
+                &argon_seed,
+                &empty_passphrase(),
+                hex_message,
+                None,
+                None,
+            )
             .unwrap();
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
-        let key_pair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let key_pair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
 
         let decoded = hex::decode(&hex_message[2..]).unwrap();
         let prefixed_msg = format!("\x19TRON Signed Message:\n{}", decoded.len());

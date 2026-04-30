@@ -921,6 +921,18 @@ mod tests_background_tokens {
         let wallet_check = bg.get_wallet_by_index(0).unwrap();
         let history_check = wallet_check.get_history().unwrap();
         assert!(history_check.len() > 0, "Transaction should be in history");
+
+        let data = wallet_check.get_wallet_data().unwrap();
+        let rotated_account = data.get_accounts().unwrap().get(from_index).unwrap();
+        assert_eq!(rotated_account.addr, from_account.addr);
+
+        bg.rotate_btc_account(0, from_index, &argon_seed, &empty_passphrase())
+            .await
+            .unwrap();
+
+        let data = wallet_check.get_wallet_data().unwrap();
+        let rotated_account = data.get_accounts().unwrap().get(from_index).unwrap();
+        assert_ne!(&rotated_account.addr, &from_account.addr);
     }
 
     #[tokio::test]
