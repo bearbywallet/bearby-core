@@ -1425,7 +1425,13 @@ mod tests_background_tokens {
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
         wallet
-            .add_next_bip39_account("sol 3".to_string(), 3, None, &empty_passphrase(), &argon_seed)
+            .add_next_bip39_account(
+                "sol 3".to_string(),
+                3,
+                None,
+                &empty_passphrase(),
+                &argon_seed,
+            )
             .unwrap();
 
         let data = wallet.get_wallet_data().unwrap();

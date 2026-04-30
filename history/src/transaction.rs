@@ -21,7 +21,7 @@ pub struct HistoricalTransaction {
     pub metadata: TransactionMetadata,
     pub evm: Option<String>,
     pub scilla: Option<String>,
-    pub btc: Option<String>,
+    pub btc: Option<bitcoin::Transaction>,
     pub tron: Option<String>,
     pub solana: Option<String>,
     pub signed_message: Option<String>,
@@ -47,12 +47,12 @@ impl HistoricalTransaction {
         self.scilla = serde_json::to_string(&value).ok();
     }
 
-    pub fn get_btc(&self) -> Option<Value> {
-        self.btc.as_ref().and_then(|s| serde_json::from_str(s).ok())
+    pub fn get_btc(&self) -> Option<&bitcoin::Transaction> {
+        self.btc.as_ref()
     }
 
-    pub fn set_btc(&mut self, value: Value) {
-        self.btc = serde_json::to_string(&value).ok();
+    pub fn set_btc(&mut self, value: bitcoin::Transaction) {
+        self.btc = Some(value);
     }
 
     pub fn get_tron(&self) -> Option<Value> {
@@ -269,30 +269,17 @@ impl HistoricalTransaction {
                     timestamp,
                 })
             }
-            TransactionReceipt::Bitcoin((tx, metadata)) => {
-                let txid = tx.compute_txid();
-
-                let btc = json!({
-                    "transactionHash": metadata.hash.clone().unwrap_or_else(|| txid.to_string()),
-                    "txid": txid.to_string(),
-                    "version": tx.version.0,
-                    "lockTime": tx.lock_time.to_consensus_u32(),
-                    "inputsCount": tx.input.len(),
-                    "outputsCount": tx.output.len(),
-                });
-
-                Ok(Self {
-                    status: TransactionStatus::Pending,
-                    metadata,
-                    evm: None,
-                    scilla: None,
-                    btc: serde_json::to_string(&btc).ok(),
-                    tron: None,
-                    solana: None,
-                    signed_message: None,
-                    timestamp,
-                })
-            }
+            TransactionReceipt::Bitcoin((tx, metadata)) => Ok(Self {
+                status: TransactionStatus::Pending,
+                metadata,
+                evm: None,
+                scilla: None,
+                btc: Some(tx),
+                tron: None,
+                solana: None,
+                signed_message: None,
+                timestamp,
+            }),
             TransactionReceipt::Tron((tron_tx, metadata)) => {
                 let tron = tron_tx.to_tron_web_json()?;
 

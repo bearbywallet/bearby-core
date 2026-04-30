@@ -3191,6 +3191,7 @@ name = "history"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "bitcoin",
  "errors",
  "proto",
  "serde",

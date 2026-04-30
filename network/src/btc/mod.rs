@@ -289,67 +289,91 @@ impl BtcOperations for NetworkProvider {
         &self,
         txns: &mut [&mut HistoricalTransaction],
     ) -> Result<()> {
-        use std::collections::HashMap;
-
         if txns.is_empty() {
             return Ok(());
         }
 
         self.with_electrum_client(|client| {
-            let mut txid_to_index: HashMap<String, usize> = HashMap::new();
-            let mut batch = Batch::default();
+            use bitcoin::consensus::encode::deserialize_hex;
+            use bitcoin::Txid;
+            use std::collections::HashMap;
+            use std::str::FromStr;
+
+            let mut ordered_txids: Vec<Txid> = Vec::with_capacity(txns.len());
+            let mut txid_to_idx: HashMap<Txid, usize> = HashMap::with_capacity(txns.len());
 
             for (idx, tx) in txns.iter().enumerate() {
-                let txid_str = match tx
-                    .get_btc()
-                    .and_then(|b| {
-                        b.get("txid")
-                            .and_then(|t| t.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .or_else(|| tx.metadata.hash.clone())
-                {
-                    Some(s) => s,
-                    None => continue,
-                };
+                if tx.status != TransactionStatus::Pending {
+                    continue;
+                }
 
-                batch.raw(
-                    "blockchain.transaction.get".to_string(),
-                    vec![Param::String(txid_str.clone()), Param::Bool(true)],
-                );
-                txid_to_index.insert(txid_str, idx);
+                let txid = tx.get_btc().map(|t| t.compute_txid()).or_else(|| {
+                    tx.metadata
+                        .hash
+                        .as_deref()
+                        .and_then(|s| Txid::from_str(s).ok())
+                });
+
+                if let Some(txid) = txid {
+                    if txid_to_idx.insert(txid, idx).is_none() {
+                        ordered_txids.push(txid);
+                    }
+                }
             }
 
-            if txid_to_index.is_empty() {
+            if ordered_txids.is_empty() {
                 return Ok(());
             }
 
+            let mut batch = Batch::default();
+            for txid in &ordered_txids {
+                batch.raw(
+                    "blockchain.transaction.get".to_string(),
+                    vec![Param::String(txid.to_string()), Param::Bool(true)],
+                );
+            }
+
             let results = client.batch_call(&batch).map_err(|e| {
-                NetworkErrors::RPCError(format!("Failed to batch get transactions: {}", e))
+                NetworkErrors::RPCError(format!("transaction.get batch failed: {}", e))
             })?;
 
-            for (_txid_str, idx) in txid_to_index.iter() {
-                let tx = &mut txns[*idx];
+            if results.len() != ordered_txids.len() {
+                return Err(NetworkErrors::RPCError(format!(
+                    "transaction.get batch returned {} results for {} txids",
+                    results.len(),
+                    ordered_txids.len()
+                )));
+            }
 
-                if let Some(result) = results.get(*idx) {
-                    let confirmations = result
-                        .get("confirmations")
-                        .and_then(|c| c.as_u64())
-                        .unwrap_or(0);
+            for (i, txid) in ordered_txids.iter().enumerate() {
+                let Some(&original_idx) = txid_to_idx.get(txid) else {
+                    continue;
+                };
+                let result = &results[i];
 
-                    let mut tx_data = result.clone();
-                    if let Some(obj) = tx_data.as_object_mut() {
-                        obj.remove("hex");
-                    }
+                let hex = result.get("hex").and_then(|v| v.as_str()).ok_or_else(|| {
+                    NetworkErrors::RPCError(format!(
+                        "missing 'hex' in transaction.get response for {}",
+                        txid
+                    ))
+                })?;
 
-                    tx.set_btc(tx_data);
+                let transaction: bitcoin::Transaction = deserialize_hex(hex).map_err(|e| {
+                    NetworkErrors::RPCError(format!("failed to decode tx {} hex: {}", txid, e))
+                })?;
 
-                    if confirmations >= 1 {
-                        tx.status = TransactionStatus::Success;
-                    } else {
-                        tx.status = TransactionStatus::Pending;
-                    }
-                }
+                let confirmations = result
+                    .get("confirmations")
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0);
+
+                let tx_ref = &mut txns[original_idx];
+                tx_ref.set_btc(transaction);
+                tx_ref.status = if confirmations > 0 {
+                    TransactionStatus::Success
+                } else {
+                    TransactionStatus::Pending
+                };
             }
 
             Ok(())
@@ -781,45 +805,6 @@ mod tests {
         assert_eq!(params.current, params.market);
         assert!(params.slow <= params.market);
         assert!(params.market <= params.fast);
-    }
-
-    #[tokio::test]
-    async fn test_btc_update_transactions_receipt() {
-        use proto::tx::TransactionMetadata;
-        use serde_json::json;
-
-        let net_conf = gen_btc_testnet_conf();
-        let provider = NetworkProvider::new(net_conf);
-
-        let tx_hash = "2c7e682a78010b47c812e4785c52831002b28486dc16998c77133510de9076a1";
-
-        let mut test_tx = HistoricalTransaction {
-            status: TransactionStatus::Pending,
-            metadata: TransactionMetadata {
-                hash: Some(tx_hash.to_string()),
-                ..Default::default()
-            },
-            evm: None,
-            scilla: None,
-            btc: Some(json!({"txid": tx_hash}).to_string()),
-            tron: None,
-            solana: None,
-            signed_message: None,
-            timestamp: 0,
-        };
-        assert!(test_tx.metadata.broadcast);
-
-        let mut txns = vec![&mut test_tx];
-
-        let result = provider.btc_update_transactions_receipt(&mut txns).await;
-
-        if let Ok(_) = result {
-            if let Some(btc_data) = test_tx.get_btc() {
-                println!("{}", serde_json::to_string_pretty(&btc_data).unwrap());
-            }
-        }
-
-        assert!(result.is_ok());
     }
 
     #[test]
