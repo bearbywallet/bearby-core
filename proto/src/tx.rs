@@ -65,7 +65,7 @@ impl Default for TransactionMetadata {
 pub enum TransactionReceipt {
     Zilliqa((ZILTransactionReceipt, TransactionMetadata)),
     Ethereum((TxEnvelope, TransactionMetadata)),
-    Bitcoin((BitcoinTransaction, TransactionMetadata)),
+    Bitcoin((BitcoinTransaction, TransactionMetadata, btc_tx::BitcoinMetadata)),
     Tron((TronTransactionReceipt, TransactionMetadata)),
     Solana((SolanaTransactionReceipt, TransactionMetadata)),
 }
@@ -75,7 +75,13 @@ pub enum TransactionReceipt {
 pub enum TransactionRequest {
     Zilliqa((ZILTransactionRequest, TransactionMetadata)),
     Ethereum((ETHTransactionRequest, TransactionMetadata)),
-    Bitcoin((BTCTransactionRequest, TransactionMetadata, btc_tx::BitcoinMetadata)),
+    Bitcoin(
+        (
+            BTCTransactionRequest,
+            TransactionMetadata,
+            btc_tx::BitcoinMetadata,
+        ),
+    ),
     Tron((TronTransaction, TransactionMetadata)),
     Solana((SolanaTransaction, TransactionMetadata)),
 }
@@ -105,7 +111,7 @@ impl TransactionReceipt {
                 }
             }
 
-            Self::Bitcoin((tx, _metadata)) => {
+            Self::Bitcoin((tx, _metadata, _btc_meta)) => {
                 if tx.input.is_empty() || tx.output.is_empty() {
                     return Ok(false);
                 }
@@ -203,7 +209,7 @@ impl TransactionReceipt {
         match self {
             Self::Zilliqa((_tx, metadata)) => metadata.hash.as_deref(),
             Self::Ethereum((_tx, meta)) => meta.hash.as_deref(),
-            Self::Bitcoin((_tx, metadata)) => metadata.hash.as_deref(),
+            Self::Bitcoin((_tx, metadata, _)) => metadata.hash.as_deref(),
             Self::Tron((_tx, metadata)) => metadata.hash.as_deref(),
             Self::Solana((_tx, metadata)) => metadata.hash.as_deref(),
         }
@@ -214,7 +220,7 @@ impl TransactionReceipt {
         match self {
             Self::Zilliqa((_tx, ref mut metadata)) => metadata,
             Self::Ethereum((_tx, ref mut metadata)) => metadata,
-            Self::Bitcoin((_tx, ref mut metadata)) => metadata,
+            Self::Bitcoin((_tx, ref mut metadata, _)) => metadata,
             Self::Tron((_tx, ref mut metadata)) => metadata,
             Self::Solana((_tx, ref mut metadata)) => metadata,
         }
@@ -225,7 +231,7 @@ impl TransactionReceipt {
         match self {
             Self::Zilliqa((_tx, ref metadata)) => metadata,
             Self::Ethereum((_tx, ref metadata)) => metadata,
-            Self::Bitcoin((_tx, ref metadata)) => metadata,
+            Self::Bitcoin((_tx, ref metadata, _)) => metadata,
             Self::Tron((_tx, ref metadata)) => metadata,
             Self::Solana((_tx, ref metadata)) => metadata,
         }
@@ -292,8 +298,6 @@ impl TransactionRequest {
                 Ok(TransactionReceipt::Tron((receipt, metadata)))
             }
             TransactionRequest::Bitcoin((tx, mut metadata, btc_meta)) => {
-                let witness_utxos = btc_meta.witness_utxos;
-
                 let pubkey = keypair.get_pubkey()?;
                 let sk_bytes = keypair.get_secretkey()?;
 
@@ -309,7 +313,7 @@ impl TransactionRequest {
                         (bitcoin::Network::Bitcoin, bitcoin::AddressType::P2wpkh)
                     };
 
-                let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)?;
+                let mut psbt = btc_tx::build_psbt(tx, &btc_meta.witness_utxos)?;
                 btc_tx::sign_psbt(&mut psbt, &secret_key, &public_key, network, addr_type)?;
                 btc_tx::finalize_psbt(&mut psbt, addr_type)?;
 
@@ -317,7 +321,7 @@ impl TransactionRequest {
 
                 metadata.signer = Some(keypair.get_addr()?);
 
-                Ok(TransactionReceipt::Bitcoin((signed_tx, metadata)))
+                Ok(TransactionReceipt::Bitcoin((signed_tx, metadata, btc_meta)))
             }
             TransactionRequest::Solana((tx, mut metadata)) => {
                 let receipt = tx
@@ -448,14 +452,14 @@ impl TransactionRequest {
 
                 Ok(TransactionReceipt::Zilliqa((signed_tx, metadata)))
             }
-            TransactionRequest::Bitcoin((_tx, mut metadata, _)) => {
+            TransactionRequest::Bitcoin((_tx, mut metadata, btc_meta)) => {
                 let psbt = Psbt::deserialize(&signature_bytes)
                     .map_err(|_| TransactionErrors::PsbtExtractionFailed)?;
 
                 let signed_tx = psbt.extract_tx_unchecked_fee_rate();
                 metadata.hash = Some(signed_tx.compute_txid().to_string());
 
-                Ok(TransactionReceipt::Bitcoin((signed_tx, metadata)))
+                Ok(TransactionReceipt::Bitcoin((signed_tx, metadata, btc_meta)))
             }
             TransactionRequest::Tron((tx, mut metadata)) => {
                 use sha2::{Digest, Sha256};
@@ -835,7 +839,7 @@ mod tests_tx {
         let tx_req = TransactionRequest::Bitcoin((tx, metadata, btc_meta));
         let tx_res = tx_req.sign(&keypair).await.unwrap();
 
-        if let TransactionReceipt::Bitcoin((signed_tx, _)) = &tx_res {
+        if let TransactionReceipt::Bitcoin((signed_tx, _, _)) = &tx_res {
             assert!(!signed_tx.input[0].script_sig.is_empty());
             assert!(signed_tx.input[0].witness.is_empty());
         } else {

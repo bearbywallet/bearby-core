@@ -315,7 +315,7 @@ impl BitcoinWallet for Wallet {
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)
             .map_err(|e| WalletErrors::BincodeError(format!("build_psbt: {:?}", e)))?;
         let secp = bitcoin::secp256k1::Secp256k1::new();
-        let prevouts: Vec<bitcoin::TxOut> = witness_utxos;
+        let prevouts = &witness_utxos;
         let network = bitcoin::Network::Bitcoin;
 
         for i in 0..psbt.inputs.len() {
@@ -339,7 +339,7 @@ impl BitcoinWallet for Wallet {
                 &public_key,
                 network,
                 addr_type,
-                &prevouts,
+                prevouts,
             )
             .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
         }
@@ -358,8 +358,12 @@ impl BitcoinWallet for Wallet {
         }
 
         let signed_tx = psbt.extract_tx_unchecked_fee_rate();
+        let btc_meta = btc_tx::BitcoinMetadata {
+            witness_utxos,
+            input_meta: input_meta_raw,
+        };
 
-        Ok(TransactionReceipt::Bitcoin((signed_tx, metadata)))
+        Ok(TransactionReceipt::Bitcoin((signed_tx, metadata, btc_meta)))
     }
 
     async fn generate_wallet(
@@ -605,7 +609,16 @@ impl BitcoinWallet for Wallet {
             ..Default::default()
         };
 
-        Ok(TransactionReceipt::Bitcoin((signed_tx, metadata)))
+        let input_meta_raw: Vec<(u8, DerivationPath)> = input_meta
+            .into_iter()
+            .map(|(at, path)| (at.to_byte(), path))
+            .collect();
+        let btc_meta = btc_tx::BitcoinMetadata {
+            witness_utxos,
+            input_meta: input_meta_raw,
+        };
+
+        Ok(TransactionReceipt::Bitcoin((signed_tx, metadata, btc_meta)))
     }
 
     async fn rotate_account(

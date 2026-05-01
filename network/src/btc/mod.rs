@@ -307,7 +307,7 @@ impl BtcOperations for NetworkProvider {
                     continue;
                 }
 
-                let txid = tx.get_btc().map(|t| t.compute_txid()).or_else(|| {
+                let txid = tx.get_btc().map(|(t, _)| t.compute_txid()).or_else(|| {
                     tx.metadata
                         .hash
                         .as_deref()
@@ -336,6 +336,8 @@ impl BtcOperations for NetworkProvider {
             let results = client.batch_call(&batch).map_err(|e| {
                 NetworkErrors::RPCError(format!("transaction.get batch failed: {}", e))
             })?;
+
+            dbg!(&results);
 
             if results.len() != ordered_txids.len() {
                 return Err(NetworkErrors::RPCError(format!(
@@ -368,7 +370,7 @@ impl BtcOperations for NetworkProvider {
                     .unwrap_or(0);
 
                 let tx_ref = &mut txns[original_idx];
-                tx_ref.set_btc(transaction);
+                tx_ref.update_btc_tx(transaction);
                 tx_ref.status = if confirmations > 0 {
                     TransactionStatus::Success
                 } else {
@@ -393,7 +395,7 @@ impl BtcOperations for NetworkProvider {
         }
 
         for tx_receipt in txns.iter_mut() {
-            if let TransactionReceipt::Bitcoin((tx, metadata)) = tx_receipt {
+            if let TransactionReceipt::Bitcoin((tx, metadata, _btc_meta)) = tx_receipt {
                 let txid = self.with_electrum_client(|client| {
                     let txid = client.transaction_broadcast(tx).map_err(|e| {
                         NetworkErrors::RPCError(format!("Failed to broadcast transaction: {}", e))

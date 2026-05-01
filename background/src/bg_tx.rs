@@ -1055,7 +1055,7 @@ mod tests_background_transactions {
 
         assert!(signed_tx.verify().unwrap());
 
-        if let TransactionReceipt::Bitcoin((signed_btc_tx, _)) = &signed_tx {
+        if let TransactionReceipt::Bitcoin((signed_btc_tx, _, _)) = &signed_tx {
             assert!(signed_btc_tx.output.len() >= 1);
         } else {
             panic!("Not a BTC tx");

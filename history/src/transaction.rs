@@ -8,6 +8,7 @@ use alloy::{
 use errors::tx::TransactionErrors;
 use proto::{
     address::Address,
+    btc_tx::BitcoinMetadata,
     pubkey::PubKey,
     tx::{TransactionMetadata, TransactionReceipt},
 };
@@ -21,7 +22,7 @@ pub struct HistoricalTransaction {
     pub metadata: TransactionMetadata,
     pub evm: Option<String>,
     pub scilla: Option<String>,
-    pub btc: Option<bitcoin::Transaction>,
+    pub btc: Option<(bitcoin::Transaction, BitcoinMetadata)>,
     pub tron: Option<String>,
     pub solana: Option<String>,
     pub signed_message: Option<String>,
@@ -47,12 +48,18 @@ impl HistoricalTransaction {
         self.scilla = serde_json::to_string(&value).ok();
     }
 
-    pub fn get_btc(&self) -> Option<&bitcoin::Transaction> {
+    pub fn get_btc(&self) -> Option<&(bitcoin::Transaction, BitcoinMetadata)> {
         self.btc.as_ref()
     }
 
-    pub fn set_btc(&mut self, value: bitcoin::Transaction) {
+    pub fn set_btc(&mut self, value: (bitcoin::Transaction, BitcoinMetadata)) {
         self.btc = Some(value);
+    }
+
+    pub fn update_btc_tx(&mut self, tx: bitcoin::Transaction) {
+        if let Some((_, meta)) = self.btc.take() {
+            self.btc = Some((tx, meta));
+        }
     }
 
     pub fn get_tron(&self) -> Option<Value> {
@@ -269,12 +276,12 @@ impl HistoricalTransaction {
                     timestamp,
                 })
             }
-            TransactionReceipt::Bitcoin((tx, metadata)) => Ok(Self {
+            TransactionReceipt::Bitcoin((tx, metadata, btc_meta)) => Ok(Self {
                 status: TransactionStatus::Pending,
                 metadata,
                 evm: None,
                 scilla: None,
-                btc: Some(tx),
+                btc: Some((tx, btc_meta)),
                 tron: None,
                 solana: None,
                 signed_message: None,
