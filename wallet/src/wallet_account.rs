@@ -227,9 +227,10 @@ impl AccountManagement for Wallet {
             };
 
             data.slip44_accounts
-                .get_mut(&data.slip44)
-                .and_then(|bip_map| bip_map.get_mut(&bip))
-                .ok_or(WalletErrors::InvalidBIPPath(slip44, bip))?
+                .entry(slip44)
+                .or_default()
+                .entry(bip)
+                .or_default()
                 .push(hd_account);
         }
 
