@@ -634,7 +634,8 @@ mod tests_background {
 
         for i in 1..20 {
             wallet
-                .add_next_bip39_account(format!("Zilliqa account {}", i), i, None, &empty_passphrase(), &argon_seed)
+                .add_next_bip39_account(format!("Zilliqa account {}", i), i, None, &empty_passphrase(), &argon_seed, &[])
+                .await
                 .unwrap();
 
             bg.swap_zilliqa_chain(0, i).unwrap();

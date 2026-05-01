@@ -1431,7 +1431,9 @@ mod tests_background_tokens {
                 None,
                 &empty_passphrase(),
                 &argon_seed,
+                &[],
             )
+            .await
             .unwrap();
 
         let data = wallet.get_wallet_data().unwrap();

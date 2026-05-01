@@ -1,8 +1,9 @@
 use crate::{
-    account::AccountV2, account_type::AccountType, wallet_crypto::WalletCrypto,
-    wallet_data::WalletDataV2, wallet_storage::StorageOperations, wallet_types::WalletTypes,
-    Result, Wallet,
+    account::AccountV2, account_type::AccountType, bitcoin_wallet::BitcoinWallet,
+    wallet_crypto::WalletCrypto, wallet_data::WalletDataV2, wallet_storage::StorageOperations,
+    wallet_types::WalletTypes, Result, Wallet,
 };
+use async_trait::async_trait;
 use cipher::argon2::Argon2Seed;
 use crypto::bip49::DerivationPath;
 use crypto::slip44;
@@ -13,6 +14,7 @@ use secrecy::SecretString;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+#[async_trait]
 pub trait AccountManagement {
     type Error;
 
@@ -22,13 +24,14 @@ pub trait AccountManagement {
         chain: &ChainConfig,
         bip: u32,
     ) -> std::result::Result<(), Self::Error>;
-    fn add_next_bip39_account(
+    async fn add_next_bip39_account(
         &self,
         name: String,
         index: usize,
         network: Option<bitcoin::Network>,
         passphrase: &SecretString,
         seed_bytes: &Argon2Seed,
+        chains: &[ChainConfig],
     ) -> std::result::Result<(), Self::Error>;
     fn ensure_chain_accounts(
         &self,
@@ -42,6 +45,7 @@ pub trait AccountManagement {
     fn delete_account(&self, account_index: usize) -> std::result::Result<(), Self::Error>;
 }
 
+#[async_trait]
 impl AccountManagement for Wallet {
     type Error = WalletErrors;
 
@@ -192,17 +196,18 @@ impl AccountManagement for Wallet {
         Ok(())
     }
 
-    fn add_next_bip39_account(
+    async fn add_next_bip39_account(
         &self,
         name: String,
         index: usize,
         network: Option<bitcoin::Network>,
         passphrase: &SecretString,
         seed_bytes: &Argon2Seed,
+        chains: &[ChainConfig],
     ) -> Result<()> {
         let mut data = self.get_wallet_data()?;
         let m = self.reveal_mnemonic(seed_bytes)?;
-        let mnemonic_seed_secret = m.to_seed(passphrase)?;
+        let mnemonic_seed_secret = Arc::new(m.to_seed(passphrase)?);
         let bip49 = DerivationPath::with_index(data.slip44, (0, 0, index));
         let has_account = data
             .slip44_accounts
@@ -219,7 +224,16 @@ impl AccountManagement for Wallet {
             return Err(WalletErrors::ExistsAccount(bip49.get_account_index()));
         }
 
-        let hd_account = AccountV2::from_hd(&mnemonic_seed_secret, name, &bip49, network)?;
+        let hd_account = if data.slip44 == slip44::BITCOIN {
+            let chain = chains
+                .iter()
+                .find(|c| c.slip_44 == slip44::BITCOIN)
+                .ok_or(WalletErrors::InvalidAccountType)?;
+            self.generate_wallet(&mnemonic_seed_secret, index, name.clone(), chain)
+                .await?
+        } else {
+            AccountV2::from_hd(&mnemonic_seed_secret, name, &bip49, network)?
+        };
 
         data.slip44_accounts
             .get_mut(&data.slip44)
@@ -264,11 +278,13 @@ mod tests {
     use errors::wallet::WalletErrors;
     use pqbip39::mnemonic::Mnemonic;
     use rand::RngExt;
-    use rpc::network_config::ChainConfig;
+
     use secrecy::SecretString;
     use std::sync::Arc;
     use storage::LocalStorage;
-    use test_data::{empty_passphrase, ANVIL_MNEMONIC, TEST_PASSWORD};
+    use test_data::{
+        empty_passphrase, gen_anvil_net_conf, gen_btc_regtest_conf, ANVIL_MNEMONIC, TEST_PASSWORD,
+    };
 
     fn setup_test_storage() -> (Arc<LocalStorage>, String) {
         let mut rng = rand::rng();
@@ -287,16 +303,15 @@ mod tests {
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
         let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
 
-        // Create wallet with 3 accounts
         let indexes = [0, 1, 2].map(|i| (i, format!("account {i}")));
-
         let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let wallet_config = WalletConfig {
             keychain,
             storage: Arc::clone(&storage),
             settings: Default::default(),
         };
-        let chain_config = ChainConfig::default();
+        let chain_config_anvil = gen_anvil_net_conf();
+        let chain_config_btc = gen_btc_regtest_conf();
 
         let wallet = Wallet::from_bip39_words(
             Bip39Params {
@@ -306,8 +321,8 @@ mod tests {
                 indexes: &indexes,
                 wallet_name: "Select Account Test Wallet".to_string(),
                 biometric_type: AuthMethod::None,
-                chain_config: &chain_config,
-                chains: &[chain_config.clone()],
+                chain_config: &chain_config_anvil,
+                chains: &[chain_config_anvil.clone(), chain_config_btc],
             },
             wallet_config,
             vec![],
@@ -356,5 +371,17 @@ mod tests {
         let data = loaded_wallet.get_wallet_data().unwrap();
 
         assert_eq!(data.selected_account, 1);
+
+        wallet
+            .add_next_bip39_account(
+                "account 3".to_string(),
+                3,
+                None,
+                &empty_passphrase(),
+                &argon_seed,
+                &[chain_config_anvil.clone()],
+            )
+            .await
+            .unwrap();
     }
 }
