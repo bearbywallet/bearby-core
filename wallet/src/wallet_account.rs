@@ -28,7 +28,6 @@ pub trait AccountManagement {
         &self,
         name: String,
         index: usize,
-        network: Option<bitcoin::Network>,
         passphrase: &SecretString,
         seed_bytes: &Argon2Seed,
         chains: &[ChainConfig],
@@ -200,7 +199,6 @@ impl AccountManagement for Wallet {
         &self,
         name: String,
         index: usize,
-        network: Option<bitcoin::Network>,
         passphrase: &SecretString,
         seed_bytes: &Argon2Seed,
         chains: &[ChainConfig],
@@ -208,38 +206,33 @@ impl AccountManagement for Wallet {
         let mut data = self.get_wallet_data()?;
         let m = self.reveal_mnemonic(seed_bytes)?;
         let mnemonic_seed_secret = Arc::new(m.to_seed(passphrase)?);
-        let bip49 = DerivationPath::with_index(data.slip44, (0, 0, index));
-        let has_account = data
-            .slip44_accounts
-            .get(&data.slip44)
-            .and_then(|bip_map| bip_map.get(&data.bip))
-            .map(|accounts| {
-                accounts
-                    .iter()
-                    .any(|account| account.account_type.value() == bip49.get_account_index())
-            })
-            .unwrap_or(false);
 
-        if has_account {
-            return Err(WalletErrors::ExistsAccount(bip49.get_account_index()));
+        let mut seen_slip44: HashSet<u32> = HashSet::new();
+        for chain in chains.iter().filter(|c| seen_slip44.insert(c.slip_44)) {
+            let slip44 = chain.slip_44;
+            let bip = crypto::bip49::DerivationPath::default_bip(slip44);
+            let network = chain.bitcoin_network();
+
+            let hd_account = if slip44 == crypto::slip44::BITCOIN {
+                let account = self
+                    .generate_wallet(&mnemonic_seed_secret, index, name.clone(), chain)
+                    .await?;
+                let chains = self.get_btc_addresses(index)?;
+                self.save_btc_addresses(index, &chains)?;
+
+                account
+            } else {
+                let path = crypto::bip49::DerivationPath::with_index(slip44, (0, 0, index));
+                AccountV2::from_hd(&mnemonic_seed_secret, name.clone(), &path, network)?
+            };
+
+            data.slip44_accounts
+                .get_mut(&data.slip44)
+                .and_then(|bip_map| bip_map.get_mut(&data.bip))
+                .ok_or(WalletErrors::InvalidBIPPath(slip44, bip))?
+                .push(hd_account);
         }
 
-        let hd_account = if data.slip44 == slip44::BITCOIN {
-            let chain = chains
-                .iter()
-                .find(|c| c.slip_44 == slip44::BITCOIN)
-                .ok_or(WalletErrors::InvalidAccountType)?;
-            self.generate_wallet(&mnemonic_seed_secret, index, name.clone(), chain)
-                .await?
-        } else {
-            AccountV2::from_hd(&mnemonic_seed_secret, name, &bip49, network)?
-        };
-
-        data.slip44_accounts
-            .get_mut(&data.slip44)
-            .and_then(|bip_map| bip_map.get_mut(&data.bip))
-            .ok_or(WalletErrors::InvalidBIPPath(data.slip44, data.bip))?
-            .push(hd_account);
         self.save_wallet_data(data)?;
 
         Ok(())
@@ -376,7 +369,6 @@ mod tests {
             .add_next_bip39_account(
                 "account 3".to_string(),
                 3,
-                None,
                 &empty_passphrase(),
                 &argon_seed,
                 &[chain_config_anvil.clone()],

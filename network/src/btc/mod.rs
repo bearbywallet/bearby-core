@@ -337,8 +337,6 @@ impl BtcOperations for NetworkProvider {
                 NetworkErrors::RPCError(format!("transaction.get batch failed: {}", e))
             })?;
 
-            dbg!(&results);
-
             if results.len() != ordered_txids.len() {
                 return Err(NetworkErrors::RPCError(format!(
                     "transaction.get batch returned {} results for {} txids",
@@ -364,10 +362,7 @@ impl BtcOperations for NetworkProvider {
                     NetworkErrors::RPCError(format!("failed to decode tx {} hex: {}", txid, e))
                 })?;
 
-                let confirmations = result
-                    .get("confirmations")
-                    .and_then(|c| c.as_u64())
-                    .unwrap_or(0);
+                let confirmations = result.get("weight").and_then(|c| c.as_u64()).unwrap_or(0);
 
                 let tx_ref = &mut txns[original_idx];
                 tx_ref.update_btc_tx(transaction);

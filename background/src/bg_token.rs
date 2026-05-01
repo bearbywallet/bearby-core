@@ -1428,7 +1428,6 @@ mod tests_background_tokens {
             .add_next_bip39_account(
                 "sol 3".to_string(),
                 3,
-                None,
                 &empty_passphrase(),
                 &argon_seed,
                 &[],
