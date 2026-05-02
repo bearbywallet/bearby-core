@@ -373,7 +373,7 @@ impl BtcOperations for NetworkProvider {
                 };
             }
 
-            Ok(())
+        Ok(())
         })
     }
 
@@ -485,7 +485,9 @@ impl BtcOperations for NetworkProvider {
         let mut layout: Vec<(bitcoin::AddressType, usize)> = Vec::with_capacity(keys.len());
 
         for key in &keys {
-            let chain = chains.get(key).expect("key from map");
+            let chain = chains.get(key).ok_or_else(|| {
+                NetworkErrors::RPCError(format!("Missing chain for address type {:?}", key))
+            })?;
             if chain.external.len() != chain.internal.len() {
                 return Err(NetworkErrors::RPCError(format!(
                     "AddressChain length mismatch for {:?}: external={}, internal={}",
@@ -529,67 +531,27 @@ impl BtcOperations for NetworkProvider {
 
         let mut cursor = 0usize;
         for (addr_type, n) in layout {
-            let chain = chains.get_mut(&addr_type).expect("layout key");
-            let mut last_used: Option<usize> = None;
-
+            let chain = chains.get_mut(&addr_type).ok_or_else(|| {
+                NetworkErrors::RPCError(format!("Missing chain for address type {:?}", addr_type))
+            })?;
             for i in 0..n {
                 let ext_history = std::mem::take(&mut results[cursor]);
                 cursor += 1;
                 let int_history = std::mem::take(&mut results[cursor]);
                 cursor += 1;
 
-                let ext_txids: Vec<bitcoin::Txid> =
-                    ext_history.into_iter().map(|h| h.tx_hash).collect();
-                let int_txids: Vec<bitcoin::Txid> =
-                    int_history.into_iter().map(|h| h.tx_hash).collect();
-
-                let both_empty = ext_txids.is_empty() && int_txids.is_empty();
-                chain.external[i].history = ext_txids;
-                chain.internal[i].history = int_txids;
-
-                if !both_empty {
-                    last_used = Some(i);
-                }
-            }
-
-            let old_ext = std::mem::take(&mut chain.external);
-            let old_int = std::mem::take(&mut chain.internal);
-
-            if addr_type == bitcoin::AddressType::P2tr {
-                if let Some(last) = last_used {
-                    let mut new_ext = Vec::with_capacity(last + 2);
-                    let mut new_int = Vec::with_capacity(last + 2);
-
-                    for (i, (ext_entry, int_entry)) in
-                        old_ext.into_iter().zip(old_int.into_iter()).enumerate()
-                    {
-                        if i <= last {
-                            if !ext_entry.history.is_empty() || !int_entry.history.is_empty() {
-                                new_ext.push(ext_entry);
-                                new_int.push(int_entry);
-                            }
-                        } else if i == last + 1 {
-                            new_ext.push(ext_entry);
-                            new_int.push(int_entry);
-                            break;
-                        }
-                    }
-
-                    chain.external = new_ext;
-                    chain.internal = new_int;
-                } else {
-                    let mut old_ext_iter = old_ext.into_iter();
-                    let mut old_int_iter = old_int.into_iter();
-                    if let (Some(ext), Some(int)) = (old_ext_iter.next(), old_int_iter.next()) {
-                        chain.external = vec![ext];
-                        chain.internal = vec![int];
-                    }
-                }
-            } else {
-                chain.external = old_ext;
-                chain.internal = old_int;
+                chain.external[i].history = ext_history.into_iter().map(|h| h.tx_hash).collect();
+                chain.internal[i].history = int_history.into_iter().map(|h| h.tx_hash).collect();
             }
         }
+
+        chains.retain(|addr_type, chain| {
+            if *addr_type == bitcoin::AddressType::P2tr {
+                return true;
+            }
+            chain.external.iter().any(|e| !e.history.is_empty())
+                || chain.internal.iter().any(|e| !e.history.is_empty())
+        });
 
         Ok(())
     }
@@ -960,44 +922,18 @@ mod tests {
             .unwrap();
 
         for (addr_type, chain) in &chains {
-            assert!(
-                chain.external.len() <= original_lengths[addr_type],
-                "{:?} external chain unexpectedly grew",
+            assert_eq!(
+                chain.external.len(),
+                original_lengths[addr_type],
+                "{:?} external chain length changed",
                 addr_type
             );
-            assert!(
-                chain.internal.len() <= original_lengths[addr_type],
-                "{:?} internal chain unexpectedly grew",
+            assert_eq!(
+                chain.internal.len(),
+                original_lengths[addr_type],
+                "{:?} internal chain length changed",
                 addr_type
             );
-            for (i, entry) in chain.external.iter().enumerate() {
-                if *addr_type == bitcoin::AddressType::P2tr
-                    && entry.history.is_empty()
-                    && i + 1 == chain.external.len()
-                {
-                    continue;
-                }
-                assert!(
-                    !entry.history.is_empty(),
-                    "{:?} kept external index {} should have history",
-                    addr_type,
-                    i,
-                );
-            }
-            for (i, entry) in chain.internal.iter().enumerate() {
-                if *addr_type == bitcoin::AddressType::P2tr
-                    && entry.history.is_empty()
-                    && i + 1 == chain.internal.len()
-                {
-                    continue;
-                }
-                assert!(
-                    !entry.history.is_empty(),
-                    "{:?} kept internal index {} should have history",
-                    addr_type,
-                    i,
-                );
-            }
         }
     }
 }
