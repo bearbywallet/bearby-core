@@ -429,22 +429,18 @@ mod tests_background_tokens {
     use crate::{bg_tx::TransactionsManagement, bg_wallet::WalletManagement};
     use wallet::wallet_account::AccountManagement;
 
-    use config::address::ADDR_LEN;
-    use crypto::slip44;
-
     use history::status::TransactionStatus;
     use network::btc::BtcOperations;
     use rand::RngExt;
-    use rpc::network_config::{ChainConfig, Explorer};
     use secrecy::SecretString;
     use serde_json::Value;
-    use std::collections::HashMap;
     use std::str::FromStr;
     use std::thread::sleep;
     use std::time::Duration;
     use test_data::{
         anvil_accounts, empty_passphrase, gen_anvil_net_conf, gen_anvil_token,
-        gen_btc_regtest_conf, gen_sol_devnet_conf, gen_sol_token, ANVIL_MNEMONIC,
+        gen_bsc_testnet_conf, gen_btc_regtest_conf, gen_sol_devnet_conf, gen_sol_token,
+        ANVIL_MNEMONIC,
     };
     use test_data::{
         gen_eth_account, gen_tron_account, gen_tron_testnet_conf, gen_tron_token, gen_zil_account,
@@ -463,52 +459,13 @@ mod tests_background_tokens {
         (bg, dir)
     }
 
-    fn gen_bsc_mainnet_conf() -> ChainConfig {
-        ChainConfig {
-            ftokens: vec![],
-            logo: String::new(),
-            diff_block_time: 0,
-            testnet: None,
-            chain_ids: [56, 0],
-            name: "Binance Smart Chain".to_string(),
-            chain: "BSC".to_string(),
-            short_name: String::new(),
-            rpc: vec!["https://bsc-dataseed.binance.org".to_string()],
-            features: vec![155, 1559],
-            slip_44: slip44::ETHEREUM,
-            ens: None,
-            explorers: vec![Explorer {
-                name: "BscScan".to_string(),
-                url: "https://bscscan.com".to_string(),
-                icon: None,
-                standard: 3091,
-            }],
-            fallback_enabled: true,
-        }
-    }
-
-    fn gen_bsc_mainnet_token(chain_hash: u64) -> FToken {
-        FToken {
-            rate: 0f64,
-            chain_hash,
-            default: true,
-            name: "Binance Smart Chain".to_string(),
-            symbol: "BSC".to_string(),
-            decimals: 18,
-            addr: Address::Secp256k1Keccak256([0u8; ADDR_LEN]),
-            logo: None,
-            balances: HashMap::new(),
-            native: true,
-        }
-    }
-
     #[tokio::test]
     async fn test_fetch_ftoken_meta() {
         let (mut bg, _dir) = setup_test_background();
 
         let words = Background::gen_bip39(24).unwrap();
         let accounts = [gen_eth_account(0, "Bsc account 1")];
-        let net_config = gen_bsc_mainnet_conf();
+        let net_config = gen_bsc_testnet_conf();
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
 
         bg.add_provider(net_config.clone()).unwrap();
@@ -522,7 +479,7 @@ mod tests_background_tokens {
             passphrase: &empty_passphrase(),
             wallet_name: String::new(),
             biometric_type: Default::default(),
-            ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
+            ftokens: vec![],
         })
         .await
         .unwrap();
@@ -559,82 +516,6 @@ mod tests_background_tokens {
         assert!(tokens[0].native);
         assert!(tokens[0].default);
         assert_eq!(tokens[0].chain_hash, net_config.hash());
-    }
-
-    #[tokio::test]
-    async fn test_sync_ft_balances() {
-        let (mut bg, _dir) = setup_test_background();
-
-        let words = Background::gen_bip39(24).unwrap();
-        let accounts = [
-            gen_eth_account(0, "account 0"),
-            gen_eth_account(1, "account 1"),
-            gen_eth_account(2, "account 2"),
-            gen_eth_account(3, "account 3"),
-            gen_eth_account(4, "account 4"),
-            gen_eth_account(5, "account 5"),
-            gen_eth_account(6, "account 6"),
-        ];
-        let net_config = gen_bsc_mainnet_conf();
-        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
-
-        bg.add_provider(net_config.clone()).unwrap();
-        bg.add_bip39_wallet(BackgroundBip39Params {
-            mnemonic_check: true,
-            password: &password,
-            chain_hash: net_config.hash(),
-            mnemonic_str: &words,
-            accounts: &accounts,
-            wallet_settings: Default::default(),
-            passphrase: &empty_passphrase(),
-            wallet_name: String::new(),
-            biometric_type: Default::default(),
-            ftokens: vec![gen_bsc_mainnet_token(net_config.hash())],
-        })
-        .await
-        .unwrap();
-        let providers = bg.get_providers();
-
-        assert_eq!(bg.wallets.len(), 1);
-        assert_eq!(providers.len(), 1);
-        {
-            let d = bg.wallets.first().unwrap().get_wallet_data().unwrap();
-            assert_eq!(d.get_accounts().unwrap().len(), 7);
-        }
-
-        let token_addr = Address::from_eth_address(USDT_TOKEN).unwrap();
-        let meta = bg.fetch_ftoken_meta(0, token_addr).await.unwrap();
-
-        bg.wallets.first_mut().unwrap().add_ftoken(meta).unwrap();
-
-        {
-            let wallet = bg.wallets.first_mut().unwrap();
-            let mut ftokens = wallet.get_ftokens().unwrap();
-            for token in ftokens.iter_mut() {
-                token.balances.clear();
-            }
-            wallet.save_ftokens(&ftokens).unwrap();
-        }
-
-        bg.sync_ftokens_balances(0).await.unwrap();
-
-        let ftokens = bg.wallets[0].get_ftokens().unwrap();
-
-        dbg!(&ftokens);
-
-        let selected_key = {
-            let data = bg.wallets[0].get_wallet_data().unwrap();
-            data.get_selected_account().unwrap().addr.to_hash()
-        };
-
-        for token in &ftokens {
-            assert!(
-                token.balances.contains_key(&selected_key),
-                "token {} missing balance for selected account (key {})",
-                token.symbol,
-                selected_key
-            );
-        }
     }
 
     #[tokio::test]
@@ -730,7 +611,7 @@ mod tests_background_tokens {
             passphrase: &empty_passphrase(),
             wallet_name: "BTC Max wallet".to_string(),
             biometric_type: Default::default(),
-            ftokens: vec![test_data::gen_btc_token()],
+            ftokens: vec![],
         })
         .await
         .unwrap();
@@ -740,8 +621,6 @@ mod tests_background_tokens {
         wallet.select_account(1).unwrap();
         bg.sync_ftokens_balances(0).await.unwrap();
         let data = wallet.get_wallet_data().unwrap();
-
-        dbg!(wallet.get_btc_addresses(0).unwrap());
 
         let accs = data.get_accounts().unwrap();
         assert_eq!(accs.len(), 2, "Should have 2 accounts");

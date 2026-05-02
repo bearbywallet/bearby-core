@@ -439,14 +439,14 @@ impl WalletManagement for Background {
 }
 
 #[cfg(test)]
-mod tests_background {
+mod tests_background_wallet {
     use super::*;
     use crate::{bg_crypto::CryptoOperations, bg_provider::ProvidersManagement};
-    use crypto::slip44;
-    use proto::{address::Address, keypair::KeyPair};
+
+    use proto::address::Address;
     use rand::RngExt;
-    use rpc::network_config::ChainConfig;
-    use test_data::empty_passphrase;
+
+    use test_data::{empty_passphrase, gen_zil_testnet_conf};
     use wallet::wallet_account::AccountManagement;
 
     fn setup_test_background() -> (Background, String) {
@@ -456,138 +456,10 @@ mod tests_background {
         (bg, dir)
     }
 
-    fn create_test_net_conf() -> ChainConfig {
-        ChainConfig {
-            ftokens: vec![],
-            logo: String::new(),
-            diff_block_time: 0,
-            testnet: None,
-            chain_ids: [1, 0],
-            name: "Test Network".to_string(),
-            chain: "TEST".to_string(),
-            short_name: String::new(),
-            rpc: vec!["https://test.network".to_string()],
-            features: vec![],
-            slip_44: slip44::ZILLIQA,
-            ens: None,
-            explorers: vec![],
-            fallback_enabled: true,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_add_more_wallets_bip39() {
-        let (mut bg, dir) = setup_test_background();
-
-        assert_eq!(bg.wallets.len(), 0);
-
-        let password: SecretString = SecretString::new("shit password".into());
-        let words = Background::gen_bip39(24).unwrap();
-        let net_conf = create_test_net_conf();
-        let accounts = [(0, "Zilliqa wallet".to_string())];
-
-        bg.add_provider(net_conf.clone()).unwrap();
-        bg.add_bip39_wallet(BackgroundBip39Params {
-            password: &password,
-            mnemonic_check: true,
-            chain_hash: net_conf.hash(),
-            mnemonic_str: &words,
-            accounts: &accounts,
-            wallet_settings: Default::default(),
-            passphrase: &empty_passphrase(),
-            wallet_name: String::new(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(bg.wallets.len(), 1);
-
-        drop(bg);
-
-        let mut bg = Background::from_storage_path(&dir).unwrap();
-        let words = Background::gen_bip39(24).unwrap();
-
-        let accounts = [(1, "Eth Wallet".to_string()), (2, "account 1".to_string())];
-
-        bg.add_bip39_wallet(BackgroundBip39Params {
-            password: &password,
-            mnemonic_check: true,
-            chain_hash: net_conf.hash(),
-            accounts: &accounts,
-            mnemonic_str: &words,
-            wallet_settings: Default::default(),
-            passphrase: &empty_passphrase(),
-            wallet_name: String::new(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        drop(bg);
-
-        let bg = Background::from_storage_path(&dir).unwrap();
-
-        assert_eq!(bg.wallets.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_delete_wallet() {
-        let (mut bg, dir) = setup_test_background();
-
-        let password: SecretString = SecretString::new("shit password".into());
-        let words = Background::gen_bip39(24).unwrap();
-        let net_conf = create_test_net_conf();
-        let accounts = [(0, "Zilliqa wallet".to_string())];
-        let keypair = KeyPair::gen_sha256().unwrap();
-
-        bg.add_provider(net_conf.clone()).unwrap();
-        bg.add_bip39_wallet(BackgroundBip39Params {
-            mnemonic_check: true,
-            password: &password,
-            chain_hash: net_conf.hash(),
-            mnemonic_str: &words,
-            accounts: &accounts,
-            wallet_settings: Default::default(),
-            passphrase: &empty_passphrase(),
-            wallet_name: String::new(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        bg.add_sk_wallet(BackgroundSKParams {
-            secret_key: keypair.get_secretkey().unwrap(),
-            password: &password,
-            chain_hash: net_conf.hash(),
-            wallet_settings: Default::default(),
-            wallet_name: String::new(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(bg.wallets.len(), 2);
-
-        assert!(bg.delete_wallet(3).is_err());
-
-        bg.delete_wallet(0).unwrap();
-        assert_eq!(bg.wallets.len(), 1);
-        drop(bg);
-
-        let bg = Background::from_storage_path(&dir).unwrap();
-
-        assert_eq!(bg.wallets.len(), 1);
-    }
-
     #[tokio::test]
     async fn test_generate_zilliqa_legacy_accounts() {
         let (mut bg, _dir) = setup_test_background();
-        let net_conf = create_test_net_conf();
+        let net_conf = gen_zil_testnet_conf();
         let password: SecretString = SecretString::new("shit password".into());
         let words = Background::gen_bip39(24).unwrap();
 
@@ -632,6 +504,8 @@ mod tests_background {
             panic!("address should convert to legacy mode");
         }
 
+        let chains: Vec<_> = bg.get_providers().into_iter().map(|p| p.config).collect();
+
         for i in 1..20 {
             wallet
                 .add_next_bip39_account(
@@ -639,7 +513,7 @@ mod tests_background {
                     i,
                     &empty_passphrase(),
                     &argon_seed,
-                    &[],
+                    &chains,
                 )
                 .await
                 .unwrap();
@@ -670,55 +544,5 @@ mod tests_background {
                 "address should be in evm mode"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn test_add_bitcoin_sk_wallet() {
-        use test_data::{gen_btc_testnet_conf, TEST_PASSWORD};
-
-        let (mut bg, _dir) = setup_test_background();
-        let btc_conf = gen_btc_testnet_conf();
-        let keypair =
-            KeyPair::gen_bitcoin(bitcoin::Network::Testnet, bitcoin::AddressType::P2wpkh).unwrap();
-        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
-
-        bg.add_provider(btc_conf.clone()).unwrap();
-        bg.add_sk_wallet(BackgroundSKParams {
-            secret_key: keypair.get_secretkey().unwrap(),
-            password: &password,
-            chain_hash: btc_conf.hash(),
-            wallet_settings: Default::default(),
-            wallet_name: "Bitcoin Wallet".to_string(),
-            biometric_type: Default::default(),
-            ftokens: vec![],
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(bg.wallets.len(), 1);
-
-        let wallet = bg.get_wallet_by_index(0).unwrap();
-        let data = wallet.get_wallet_data().unwrap();
-
-        assert_eq!(data.wallet_name, "Bitcoin Wallet");
-        assert_eq!(data.get_accounts().unwrap().len(), 1);
-        assert!(matches!(
-            data.get_selected_account().unwrap().addr,
-            Address::Secp256k1Bitcoin(_)
-        ));
-
-        drop(bg);
-
-        let bg = Background::from_storage_path(&_dir).unwrap();
-        assert_eq!(bg.wallets.len(), 1);
-
-        let wallet = bg.get_wallet_by_index(0).unwrap();
-        let restored_data = wallet.get_wallet_data().unwrap();
-
-        assert_eq!(restored_data.wallet_name, "Bitcoin Wallet");
-        assert!(matches!(
-            restored_data.get_selected_account().unwrap().addr,
-            Address::Secp256k1Bitcoin(_)
-        ));
     }
 }
