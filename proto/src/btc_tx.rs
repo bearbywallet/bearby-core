@@ -39,7 +39,6 @@ pub fn sign_psbt_input(
     index: usize,
     secret_key: &bitcoin::secp256k1::SecretKey,
     public_key: &bitcoin::secp256k1::PublicKey,
-    _network: bitcoin::Network,
     addr_type: bitcoin::AddressType,
     prevouts: &[TxOut],
 ) -> Result<(), TransactionErrors> {

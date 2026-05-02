@@ -65,7 +65,13 @@ impl Default for TransactionMetadata {
 pub enum TransactionReceipt {
     Zilliqa((ZILTransactionReceipt, TransactionMetadata)),
     Ethereum((TxEnvelope, TransactionMetadata)),
-    Bitcoin((BitcoinTransaction, TransactionMetadata, btc_tx::BitcoinMetadata)),
+    Bitcoin(
+        (
+            BitcoinTransaction,
+            TransactionMetadata,
+            btc_tx::BitcoinMetadata,
+        ),
+    ),
     Tron((TronTransactionReceipt, TransactionMetadata)),
     Solana((SolanaTransactionReceipt, TransactionMetadata)),
 }

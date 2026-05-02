@@ -338,7 +338,6 @@ impl BitcoinWallet for Wallet {
             .map_err(|e| WalletErrors::BincodeError(format!("build_psbt: {:?}", e)))?;
         let secp = bitcoin::secp256k1::Secp256k1::new();
         let prevouts = &witness_utxos;
-        let network = bitcoin::Network::Bitcoin;
 
         for i in 0..psbt.inputs.len() {
             let (addr_type_byte, path) = &input_meta_raw[i];
@@ -359,7 +358,6 @@ impl BitcoinWallet for Wallet {
                 i,
                 &secret_key,
                 &public_key,
-                network,
                 addr_type,
                 prevouts,
             )
@@ -605,7 +603,6 @@ impl BitcoinWallet for Wallet {
                 i,
                 &secret_key,
                 &public_key,
-                network,
                 *addr_type,
                 &prevouts,
             )

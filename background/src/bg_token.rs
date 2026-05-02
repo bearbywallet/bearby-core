@@ -160,11 +160,6 @@ impl TokensManagement for Background {
                     witness_utxos.len()
                 );
 
-                let change_signer = chains
-                    .get(&bitcoin::AddressType::P2tr)
-                    .and_then(|c| c.get_internal().ok().map(|e| e.address.clone()))
-                    .unwrap_or_else(|| sender.addr.clone());
-
                 let btc_input_meta: Vec<(u8, crypto::bip49::DerivationPath)> = input_meta
                     .into_iter()
                     .map(|(at, path)| (proto::btc_utils::ByteCodec::to_byte(&at), path))
@@ -176,7 +171,7 @@ impl TokensManagement for Background {
                     info: None,
                     icon: None,
                     title: None,
-                    signer: Some(change_signer),
+                    signer: Some(sender.addr.clone()),
                     token_info: Some((amount, token.decimals, token.symbol.clone())),
                     broadcast: true,
                 };
