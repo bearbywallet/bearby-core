@@ -229,14 +229,19 @@ impl WalletInit for Wallet {
             .filter(|c| seen_slip44.insert(c.slip_44))
         {
             let slip44 = chain.slip_44;
+            let effective_chain = if slip44 == params.chain_config.slip_44 {
+                params.chain_config
+            } else {
+                chain
+            };
             let bip = crypto::bip49::DerivationPath::default_bip(slip44);
-            let network = chain.bitcoin_network();
+            let network = effective_chain.bitcoin_network();
             let mut accounts = Vec::with_capacity(params.indexes.len());
 
             for (pos_idx, (idx, name)) in params.indexes.iter().enumerate() {
                 let account = if slip44 == crypto::slip44::BITCOIN {
                     let account = wallet
-                        .generate_wallet(&mnemonic_seed_secret, *idx, name.clone(), chain)
+                        .generate_wallet(&mnemonic_seed_secret, *idx, name.clone(), effective_chain)
                         .await?;
                     if pos_idx != *idx {
                         let chains = wallet.get_btc_addresses(*idx)?;

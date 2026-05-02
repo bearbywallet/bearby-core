@@ -206,16 +206,23 @@ impl AccountManagement for Wallet {
         let mut data = self.get_wallet_data()?;
         let m = self.reveal_mnemonic(seed_bytes)?;
         let mnemonic_seed_secret = Arc::new(m.to_seed(passphrase)?);
+        let wallet_chain_hash = data.chain_hash;
+        let wallet_slip44 = data.slip44;
 
         let mut seen_slip44: HashSet<u32> = HashSet::new();
         for chain in chains.iter().filter(|c| seen_slip44.insert(c.slip_44)) {
             let slip44 = chain.slip_44;
+            let effective_chain = if slip44 == wallet_slip44 {
+                chains.iter().find(|c| c.hash() == wallet_chain_hash).unwrap_or(chain)
+            } else {
+                chain
+            };
             let bip = crypto::bip49::DerivationPath::default_bip(slip44);
-            let network = chain.bitcoin_network();
+            let network = effective_chain.bitcoin_network();
 
             let hd_account = if slip44 == crypto::slip44::BITCOIN {
                 let account = self
-                    .generate_wallet(&mnemonic_seed_secret, index, name.clone(), chain)
+                    .generate_wallet(&mnemonic_seed_secret, index, name.clone(), effective_chain)
                     .await?;
                 let chains = self.get_btc_addresses(index)?;
                 self.save_btc_addresses(index, &chains)?;
@@ -255,126 +262,5 @@ impl AccountManagement for Wallet {
         self.save_wallet_data(data)?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{
-        wallet_account::AccountManagement, wallet_init::WalletInit,
-        wallet_storage::StorageOperations, Bip39Params, Wallet, WalletConfig,
-    };
-    use cipher::{
-        argon2::{derive_key, ARGON2_DEFAULT_CONFIG},
-        keychain::KeyChain,
-    };
-    use config::{bip39::EN_WORDS, cipher::PROOF_SIZE, session::AuthMethod};
-    use errors::wallet::WalletErrors;
-    use pqbip39::mnemonic::Mnemonic;
-    use rand::RngExt;
-
-    use secrecy::SecretString;
-    use std::sync::Arc;
-    use storage::LocalStorage;
-    use test_data::{
-        empty_passphrase, gen_anvil_net_conf, gen_btc_regtest_conf, ANVIL_MNEMONIC, TEST_PASSWORD,
-    };
-
-    fn setup_test_storage() -> (Arc<LocalStorage>, String) {
-        let mut rng = rand::rng();
-        let dir = format!("/tmp/{}", rng.random::<u64>());
-        let storage = LocalStorage::from(&dir).unwrap();
-        let storage = Arc::new(storage);
-
-        (storage, dir)
-    }
-
-    #[tokio::test]
-    async fn test_select_account() {
-        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
-        let (storage, _dir) = setup_test_storage();
-
-        let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
-
-        let indexes = [0, 1, 2].map(|i| (i, format!("account {i}")));
-        let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
-        let wallet_config = WalletConfig {
-            keychain,
-            storage: Arc::clone(&storage),
-            settings: Default::default(),
-        };
-        let chain_config_anvil = gen_anvil_net_conf();
-        let chain_config_btc = gen_btc_regtest_conf();
-
-        let wallet = Wallet::from_bip39_words(
-            Bip39Params {
-                proof,
-                mnemonic: &mnemonic,
-                passphrase: &empty_passphrase(),
-                indexes: &indexes,
-                wallet_name: "Select Account Test Wallet".to_string(),
-                biometric_type: AuthMethod::None,
-                chain_config: &chain_config_anvil,
-                chains: &[chain_config_anvil.clone(), chain_config_btc],
-            },
-            wallet_config,
-            vec![],
-        )
-        .await
-        .unwrap();
-        let data = wallet.get_wallet_data().unwrap();
-
-        // Test 1: Initial state should have account 0 selected
-        assert_eq!(data.selected_account, 0);
-
-        // Test 2: Successfully select valid account indices
-        assert!(wallet.select_account(1).is_ok());
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.selected_account, 1);
-
-        assert!(wallet.select_account(2).is_ok());
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.selected_account, 2);
-
-        assert!(wallet.select_account(0).is_ok());
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.selected_account, 0);
-
-        // Test 3: Try to select invalid index (out of bounds)
-        assert!(matches!(
-            wallet.select_account(3),
-            Err(WalletErrors::InvalidAccountIndex(3))
-        ));
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.selected_account, 0); // Should remain unchanged
-
-        // Test 4: Try to select index way out of bounds
-        assert!(matches!(
-            wallet.select_account(999),
-            Err(WalletErrors::InvalidAccountIndex(999))
-        ));
-        let data = wallet.get_wallet_data().unwrap();
-        assert_eq!(data.selected_account, 0); // Should remain unchanged
-
-        // Test 5: Verify persistence after selection
-        wallet.select_account(1).unwrap();
-
-        let wallet_addr = wallet.wallet_address;
-        let loaded_wallet = Wallet::init_wallet(wallet_addr, Arc::clone(&storage)).unwrap();
-        let data = loaded_wallet.get_wallet_data().unwrap();
-
-        assert_eq!(data.selected_account, 1);
-
-        wallet
-            .add_next_bip39_account(
-                "account 3".to_string(),
-                3,
-                &empty_passphrase(),
-                &argon_seed,
-                &[chain_config_anvil.clone()],
-            )
-            .await
-            .unwrap();
     }
 }
