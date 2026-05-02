@@ -47,6 +47,29 @@ fn output_vsize_for(addr_type: bitcoin::AddressType) -> usize {
     }
 }
 
+fn append_new_p2tr_address(
+    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    seed: &SecretBox<[u8; SHA512_SIZE]>,
+    account_index: usize,
+    network: bitcoin::Network,
+) -> Result<()> {
+    let p2tr = chains
+        .get_mut(&bitcoin::AddressType::P2tr)
+        .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?;
+    let next_index = p2tr.external.len() as u32;
+    let mut batch = generate_btc_addresses(seed, account_index, network, next_index, 1)?;
+    let mut new_chain = batch
+        .remove(&bitcoin::AddressType::P2tr)
+        .ok_or_else(|| WalletErrors::BincodeError("P2TR not generated".to_string()))?;
+    if let Some(ext) = new_chain.external.pop() {
+        p2tr.external.push(ext);
+    }
+    if let Some(int) = new_chain.internal.pop() {
+        p2tr.internal.push(int);
+    }
+    Ok(())
+}
+
 pub fn build_unsigned_btc_transaction(
     chains: &HashMap<bitcoin::AddressType, AddressChain>,
     destinations: Vec<(Address, u64)>,
@@ -139,8 +162,7 @@ pub fn build_unsigned_btc_transaction(
     let change_entry = chains
         .get(&bitcoin::AddressType::P2tr)
         .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?
-        .get_internal()
-        .map_err(|e| WalletErrors::BincodeError(format!("No unused internal P2TR: {:?}", e)))?;
+        .get_internal()?;
     let change_address = change_entry.address.clone();
     let change_script = change_address
         .to_bitcoin_addr()
@@ -400,7 +422,9 @@ impl BitcoinWallet for Wallet {
             match provider.batch_script_get_history(&mut scan_view).await {
                 Ok(()) => {
                     scan_succeeded = true;
-                    let preferred = scan_view.get(&preferred_type).expect("seeded above");
+                    let preferred = scan_view
+                        .get(&preferred_type)
+                        .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing after batch generation".to_string()))?;
                     let done = preferred.get_external().is_ok() && preferred.get_internal().is_ok();
                     last_scan_view = Some(scan_view);
                     if done {
@@ -422,9 +446,23 @@ impl BitcoinWallet for Wallet {
         let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index);
         self.storage.set_versioned(&key, &stored)?;
 
+        let p2tr_fallback = || {
+            master
+                .get(&preferred_type)
+                .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing after generation".to_string()))?
+                .external
+                .first()
+                .cloned()
+                .ok_or_else(|| WalletErrors::BincodeError("P2TR external chain is empty after generation".to_string()))
+        };
+
         let entry = if scan_succeeded {
-            let view = last_scan_view.as_ref().expect("set on Ok branch");
-            let preferred = view.get(&preferred_type).expect("seeded above");
+            let view = last_scan_view
+                .as_ref()
+                .ok_or_else(|| WalletErrors::BincodeError("scan_view missing after successful scan".to_string()))?;
+            let preferred = view
+                .get(&preferred_type)
+                .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing in scan view".to_string()))?;
             match preferred.get_external() {
                 Ok(e) => e.clone(),
                 Err(_) => {
@@ -433,23 +471,11 @@ impl BitcoinWallet for Wallet {
                         MAX_GAP_EXTENSIONS * GAP_LIMIT,
                         account_index
                     );
-                    master
-                        .get(&preferred_type)
-                        .expect("seeded above")
-                        .external
-                        .first()
-                        .expect("non-empty after generation") // TODO: Very bad panic func
-                        .clone()
+                    p2tr_fallback()?
                 }
             }
         } else {
-            master
-                .get(&preferred_type)
-                .expect("seeded above")
-                .external
-                .first()
-                .expect("non-empty after generation") // TODO: Very bad panic func
-                .clone()
+            p2tr_fallback()?
         };
 
         let account = AccountV2::from_hd(seed, name, &entry.path, Some(network))?;
@@ -512,7 +538,12 @@ impl BitcoinWallet for Wallet {
         fee_rate_sat_per_vbyte: Option<u64>,
     ) -> Result<TransactionReceipt> {
         let data = self.get_wallet_data()?;
-        let chains = self.get_btc_addresses(account_index)?;
+        let mut chains = self.get_btc_addresses(account_index)?;
+        let network = provider
+            .config
+            .bitcoin_network()
+            .unwrap_or(bitcoin::Network::Bitcoin);
+
         println!(
             "[prepare_and_sign_btc_tx] account={} chains={} destinations={} fee_rate={:?}",
             account_index,
@@ -520,10 +551,21 @@ impl BitcoinWallet for Wallet {
             destinations.len(),
             fee_rate_sat_per_vbyte
         );
-        let network = provider
-            .config
-            .bitcoin_network()
-            .unwrap_or(bitcoin::Network::Bitcoin);
+
+        let mnemonic = self.reveal_mnemonic(seed_bytes)?;
+        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
+            WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)))
+        })?;
+
+        let needs_new_change = chains
+            .get(&bitcoin::AddressType::P2tr)
+            .map(|c| c.get_internal().is_err())
+            .unwrap_or(true);
+
+        if needs_new_change {
+            append_new_p2tr_address(&mut chains, &seed_secret, account_index, network)?;
+            self.save_btc_addresses(account_index, &chains)?;
+        }
 
         let (tx, witness_utxos, input_meta) =
             build_unsigned_btc_transaction(&chains, destinations, fee_rate_sat_per_vbyte)?;
@@ -534,11 +576,6 @@ impl BitcoinWallet for Wallet {
             tx.output.len(),
             network
         );
-
-        let mnemonic = self.reveal_mnemonic(seed_bytes)?;
-        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
-            WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)))
-        })?;
 
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)?;
         let secp = bitcoin::secp256k1::Secp256k1::new();
@@ -628,52 +665,21 @@ impl BitcoinWallet for Wallet {
         chain: &ChainConfig,
     ) -> Result<()> {
         let mut chains = self.get_btc_addresses(account_index)?;
-        let ext_len_before;
-        let int_len_before;
-        let ext_len_after;
-        let int_len_after;
-        {
-            let p2tr = chains
-                .get_mut(&bitcoin::AddressType::P2tr)
-                .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?;
-            let next_index = p2tr.external.len() as u32;
-            ext_len_before = p2tr.external.len();
-            int_len_before = p2tr.internal.len();
-            println!(
-                "[rotate_account] account={} next_index={} ext_len={} int_len={} network={:?}",
-                account_index,
-                next_index,
-                ext_len_before,
-                int_len_before,
-                chain.bitcoin_network()
-            );
-            let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
+        let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
+        let ext_len_before = chains
+            .get(&bitcoin::AddressType::P2tr)
+            .map(|c| c.external.len())
+            .unwrap_or(0);
+        let int_len_before = chains
+            .get(&bitcoin::AddressType::P2tr)
+            .map(|c| c.internal.len())
+            .unwrap_or(0);
+        println!(
+            "[rotate_account] account={} ext_len={} int_len={} network={:?}",
+            account_index, ext_len_before, int_len_before, chain.bitcoin_network()
+        );
 
-            let mut batch = generate_btc_addresses(seed, account_index, network, next_index, 1)?;
-            let mut new_chain = batch
-                .remove(&bitcoin::AddressType::P2tr)
-                .ok_or_else(|| WalletErrors::BincodeError("P2TR not generated".to_string()))?;
-
-            if let Some(ext) = new_chain.external.pop() {
-                println!(
-                    "[rotate_account] new external P2TR: {} path={}",
-                    ext.address,
-                    ext.path.get_path()
-                );
-                p2tr.external.push(ext);
-            }
-            if let Some(int) = new_chain.internal.pop() {
-                println!(
-                    "[rotate_account] new internal P2TR: {} path={}",
-                    int.address,
-                    int.path.get_path()
-                );
-                p2tr.internal.push(int);
-            }
-            ext_len_after = p2tr.external.len();
-            int_len_after = p2tr.internal.len();
-        }
-
+        append_new_p2tr_address(&mut chains, seed, account_index, network)?;
         self.save_btc_addresses(account_index, &chains)?;
 
         let new_addr = chains
@@ -688,6 +694,14 @@ impl BitcoinWallet for Wallet {
         data.get_mut_account(account_index)?.addr = new_addr;
         self.save_wallet_data(data)?;
 
+        let ext_len_after = chains
+            .get(&bitcoin::AddressType::P2tr)
+            .map(|c| c.external.len())
+            .unwrap_or(0);
+        let int_len_after = chains
+            .get(&bitcoin::AddressType::P2tr)
+            .map(|c| c.internal.len())
+            .unwrap_or(0);
         println!(
             "[rotate_account] saved, ext_len={}->{} int_len={}->{}",
             ext_len_before, ext_len_after, int_len_before, int_len_after

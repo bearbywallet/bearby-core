@@ -3,7 +3,7 @@ use crate::{
     address::AddressError,
     cipher::CipherErrors,
     keychain::KeyChainErrors,
-    keypair::{KeyPairError, SecretKeyError},
+    keypair::{KeyPairError, PubKeyError, SecretKeyError},
     storage::LocalStorageError,
     tx::TransactionErrors,
 };
@@ -191,5 +191,11 @@ impl From<AddressError> for WalletErrors {
 impl From<crate::bip32::Bip329Errors> for WalletErrors {
     fn from(error: crate::bip32::Bip329Errors) -> Self {
         WalletErrors::Bip329Error(error)
+    }
+}
+
+impl From<PubKeyError> for WalletErrors {
+    fn from(error: PubKeyError) -> Self {
+        WalletErrors::AddressError(error.into())
     }
 }
