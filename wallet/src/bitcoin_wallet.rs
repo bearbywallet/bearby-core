@@ -8,6 +8,7 @@ use config::sha::SHA512_SIZE;
 use config::storage::BTC_ADDRESSES_DB_KEY_V1;
 use crypto::bip49::DerivationPath;
 use errors::wallet::WalletErrors;
+use history::transaction::HistoricalTransaction;
 use network::btc::BtcOperations;
 use network::provider::NetworkProvider;
 use proto::{
@@ -19,7 +20,7 @@ use proto::{
 use rpc::network_config::ChainConfig;
 use secrecy::SecretBox;
 use secrecy::SecretString;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const MAX_GAP_EXTENSIONS: u32 = 10;
 
@@ -302,6 +303,12 @@ pub trait BitcoinWallet {
         seed: &SecretBox<[u8; SHA512_SIZE]>,
         account_index: usize,
         chain: &ChainConfig,
+    ) -> std::result::Result<(), Self::Error>;
+
+    fn mark_btc_addresses_used(
+        &self,
+        account_index: usize,
+        historical: &HistoricalTransaction,
     ) -> std::result::Result<(), Self::Error>;
 }
 
@@ -711,5 +718,256 @@ impl BitcoinWallet for Wallet {
             ext_len_before, ext_len_after, int_len_before, int_len_after
         );
         Ok(())
+    }
+
+    fn mark_btc_addresses_used(
+        &self,
+        account_index: usize,
+        historical: &HistoricalTransaction,
+    ) -> Result<()> {
+        let Some((signed_tx, _)) = historical.get_btc() else {
+            return Ok(());
+        };
+        let chain_hash = historical.metadata.chain_hash;
+        let broadcast_txid = signed_tx.compute_txid();
+        let mut chains = self.get_btc_addresses(account_index, chain_hash)?;
+
+        let spent: HashSet<(bitcoin::Txid, u32)> = signed_tx
+            .input
+            .iter()
+            .map(|i| (i.previous_output.txid, i.previous_output.vout))
+            .collect();
+
+        for chain in chains.values_mut() {
+            for entry in chain.external.iter_mut().chain(chain.internal.iter_mut()) {
+                let consumed = entry.utxos.iter().any(|u| spent.contains(&(u.txid, u.vout)));
+                if consumed {
+                    if !entry.history.contains(&broadcast_txid) {
+                        entry.history.push(broadcast_txid);
+                    }
+                    entry.utxos.retain(|u| !spent.contains(&(u.txid, u.vout)));
+                }
+            }
+        }
+
+        if let Some(p2tr) = chains.get_mut(&bitcoin::AddressType::P2tr) {
+            for output in &signed_tx.output {
+                for entry in p2tr.internal.iter_mut() {
+                    let entry_script = entry
+                        .address
+                        .to_bitcoin_addr()
+                        .map_err(|e| WalletErrors::BincodeError(e.to_string()))?
+                        .script_pubkey();
+                    if entry_script == output.script_pubkey
+                        && !entry.history.contains(&broadcast_txid)
+                    {
+                        entry.history.push(broadcast_txid);
+                    }
+                }
+            }
+        }
+
+        self.save_btc_addresses(account_index, &chains, chain_hash)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests_btc_wallet {
+    use std::sync::Arc;
+
+    use bitcoin::{absolute::LockTime, transaction::Version, Amount, OutPoint, Sequence, Witness};
+    use cipher::{
+        argon2::{derive_key, ARGON2_DEFAULT_CONFIG},
+        keychain::KeyChain,
+    };
+    use config::{bip39::EN_WORDS, cipher::PROOF_SIZE, session::AuthMethod};
+    use history::{status::TransactionStatus, transaction::HistoricalTransaction};
+    use pqbip39::mnemonic::Mnemonic;
+    use proto::{
+        btc_tx::BitcoinMetadata,
+        btc_utils::Utxo,
+        tx::TransactionMetadata,
+    };
+    use rand::RngExt;
+    use rpc::network_config::ChainConfig;
+    use secrecy::SecretString;
+    use storage::LocalStorage;
+    use test_data::{empty_passphrase, ANVIL_MNEMONIC, TEST_PASSWORD};
+
+    use crate::{
+        bitcoin_wallet::BitcoinWallet, wallet_init::WalletInit, Bip39Params, Wallet, WalletConfig,
+    };
+
+    fn setup_test_storage() -> (Arc<LocalStorage>, String) {
+        let mut rng = rand::rng();
+        let dir = format!("/tmp/{}", rng.random::<u64>());
+        let storage = LocalStorage::from(&dir).unwrap();
+        (Arc::new(storage), dir)
+    }
+
+    #[tokio::test]
+    async fn test_mark_btc_addresses_used_marks_inputs_and_change() {
+        let (storage, _dir) = setup_test_storage();
+        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        let keychain = KeyChain::from_seed(&argon_seed).unwrap();
+        let mnemonic =
+            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        let wallet_config = WalletConfig {
+            keychain,
+            storage: Arc::clone(&storage),
+            settings: Default::default(),
+        };
+        let chain_config = ChainConfig::default();
+        let wallet = Wallet::from_bip39_words(
+            Bip39Params {
+                chain_config: &chain_config,
+                proof,
+                mnemonic: &mnemonic,
+                passphrase: &empty_passphrase(),
+                indexes: &[(0, "Bitcoin Account 0".to_string())],
+                wallet_name: "Bitcoin Wallet".to_string(),
+                biometric_type: AuthMethod::Biometric,
+                chains: &[chain_config.clone()],
+            },
+            wallet_config,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let chain_hash = chain_config.hash();
+        let mut chains = wallet.get_btc_addresses(0, chain_hash).unwrap();
+        let p2tr = chains.get_mut(&bitcoin::AddressType::P2tr).unwrap();
+        assert!(p2tr.external.len() >= 2);
+        assert!(p2tr.internal.len() >= 2);
+
+        let planted_txid = "76464c2b9e2af4d63ef38a77964b3b77e629dddefc5cb9eb1a3645b1608b790f"
+            .parse::<bitcoin::Txid>()
+            .unwrap();
+        let planted = Utxo {
+            txid: planted_txid,
+            vout: 0,
+            value: 100_000,
+            height: 800_000,
+        };
+        p2tr.external[0].utxos.push(planted.clone());
+        let input_script = p2tr.external[0]
+            .address
+            .to_bitcoin_addr()
+            .unwrap()
+            .script_pubkey();
+        let change_script = p2tr.internal[0]
+            .address
+            .to_bitcoin_addr()
+            .unwrap()
+            .script_pubkey();
+        let other_ext_script = p2tr.external[1]
+            .address
+            .to_bitcoin_addr()
+            .unwrap()
+            .script_pubkey();
+        let other_int_script = p2tr.internal[1]
+            .address
+            .to_bitcoin_addr()
+            .unwrap()
+            .script_pubkey();
+        wallet.save_btc_addresses(0, &chains, chain_hash).unwrap();
+
+        let signed_tx = bitcoin::Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                previous_output: OutPoint {
+                    txid: planted.txid,
+                    vout: planted.vout,
+                },
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![bitcoin::TxOut {
+                value: Amount::from_sat(90_000),
+                script_pubkey: change_script.clone(),
+            }],
+        };
+        let broadcast_txid = signed_tx.compute_txid();
+
+        let historical = HistoricalTransaction {
+            status: TransactionStatus::Pending,
+            metadata: TransactionMetadata {
+                chain_hash,
+                ..Default::default()
+            },
+            btc: Some((
+                signed_tx,
+                BitcoinMetadata {
+                    witness_utxos: vec![bitcoin::TxOut {
+                        value: Amount::from_sat(planted.value),
+                        script_pubkey: input_script,
+                    }],
+                    input_meta: vec![],
+                },
+            )),
+            ..Default::default()
+        };
+
+        wallet.mark_btc_addresses_used(0, &historical).unwrap();
+
+        let chains = wallet.get_btc_addresses(0, chain_hash).unwrap();
+        let p2tr = chains.get(&bitcoin::AddressType::P2tr).unwrap();
+
+        assert_eq!(p2tr.external[0].history, vec![broadcast_txid]);
+        assert!(p2tr.external[0].utxos.is_empty());
+        assert_eq!(p2tr.internal[0].history, vec![broadcast_txid]);
+
+        assert!(p2tr.external[1].history.is_empty());
+        assert!(p2tr.internal[1].history.is_empty());
+        let _ = (other_ext_script, other_int_script);
+    }
+
+    #[tokio::test]
+    async fn test_mark_btc_addresses_used_skips_non_btc_history() {
+        let (storage, _dir) = setup_test_storage();
+        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        let keychain = KeyChain::from_seed(&argon_seed).unwrap();
+        let mnemonic =
+            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        let wallet_config = WalletConfig {
+            keychain,
+            storage: Arc::clone(&storage),
+            settings: Default::default(),
+        };
+        let chain_config = ChainConfig::default();
+        let wallet = Wallet::from_bip39_words(
+            Bip39Params {
+                chain_config: &chain_config,
+                proof,
+                mnemonic: &mnemonic,
+                passphrase: &empty_passphrase(),
+                indexes: &[(0, "Bitcoin Account 0".to_string())],
+                wallet_name: "Bitcoin Wallet".to_string(),
+                biometric_type: AuthMethod::Biometric,
+                chains: &[chain_config.clone()],
+            },
+            wallet_config,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let historical = HistoricalTransaction {
+            status: TransactionStatus::Pending,
+            metadata: TransactionMetadata {
+                chain_hash: chain_config.hash(),
+                ..Default::default()
+            },
+            btc: None,
+            ..Default::default()
+        };
+
+        wallet.mark_btc_addresses_used(0, &historical).unwrap();
     }
 }

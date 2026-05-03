@@ -511,6 +511,12 @@ impl TransactionsManagement for Background {
             .map(HistoricalTransaction::try_from)
             .collect::<std::result::Result<Vec<HistoricalTransaction>, TransactionErrors>>()?;
 
+        for item in &history {
+            if item.btc.is_some() {
+                wallet.mark_btc_addresses_used(data.selected_account, item)?;
+            }
+        }
+
         wallet.add_history(&history)?;
 
         Ok(history)
