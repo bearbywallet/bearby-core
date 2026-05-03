@@ -123,6 +123,13 @@ impl DerivationPath {
         }
     }
 
+    pub fn get_address_index(&self) -> Option<usize> {
+        match self.derivation {
+            DerivationType::AddressIndex(_, _, index) => Some(index),
+            _ => None,
+        }
+    }
+
     pub fn get_address_type(&self) -> bitcoin::AddressType {
         match self.bip {
             Self::BIP44_PURPOSE => bitcoin::AddressType::P2pkh,

@@ -50,14 +50,16 @@ impl AddressChain {
     pub fn get_external(&self) -> Result<&BtcAddressEntry> {
         self.external
             .iter()
-            .rfind(|e| e.history.is_empty())
+            .filter(|e| e.history.is_empty())
+            .min_by_key(|e| e.path.get_address_index())
             .ok_or(PubKeyError::NoUnusedAddress)
     }
 
     pub fn get_internal(&self) -> Result<&BtcAddressEntry> {
         self.internal
             .iter()
-            .rfind(|e| e.history.is_empty())
+            .filter(|e| e.history.is_empty())
+            .min_by_key(|e| e.path.get_address_index())
             .ok_or(PubKeyError::NoUnusedAddress)
     }
 }
@@ -343,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_external_returns_last_unused() {
+    fn test_get_external_returns_first_unused() {
         let seed = test_seed();
         let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
@@ -351,12 +353,12 @@ mod tests {
         chain.external[0].history = vec![dummy_txid()];
 
         let result = chain.get_external().unwrap();
-        assert_eq!(result.path.get_account_index(), 0);
+        assert_eq!(result.path.get_address_index(), Some(1));
         assert!(result.history.is_empty());
     }
 
     #[test]
-    fn test_get_internal_returns_last_unused() {
+    fn test_get_internal_returns_first_unused() {
         let seed = test_seed();
         let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
@@ -365,8 +367,18 @@ mod tests {
         chain.internal[1].history = vec![dummy_txid()];
 
         let result = chain.get_internal().unwrap();
-        assert_eq!(result.path.get_account_index(), 0);
+        assert_eq!(result.path.get_address_index(), Some(2));
         assert!(result.history.is_empty());
+    }
+
+    #[test]
+    fn test_get_external_picks_lowest_index_among_multiple_unused() {
+        let seed = test_seed();
+        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 5).unwrap();
+        let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
+
+        let result = chain.get_external().unwrap();
+        assert_eq!(result.path.get_address_index(), Some(0));
     }
 
     #[test]
