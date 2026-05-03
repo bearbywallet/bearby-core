@@ -12,6 +12,8 @@ use history::transaction::HistoricalTransaction;
 use proto::address::Address;
 use proto::btc_utils::{AddressChain, ByteCodec, Utxo};
 use proto::tx::{TransactionReceipt, TransactionRequest};
+use rand::seq::SliceRandom;
+use rpc::common::NetworkConfigTrait;
 use std::collections::HashMap;
 use token::ft::FToken;
 
@@ -118,7 +120,10 @@ impl NetworkProvider {
         let mut last_error = None;
         let mut errors = String::with_capacity(200);
 
-        for url in &self.config.rpc {
+        let mut urls: Vec<&String> = self.config.nodes().iter().collect();
+        urls.shuffle(&mut rand::rng());
+
+        for url in urls {
             let config = ConfigBuilder::new().timeout(Some(5)).build();
 
             match ElectrumClient::from_config(url, config) {
