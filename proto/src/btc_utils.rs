@@ -11,7 +11,7 @@ use crate::address::Address;
 
 type Result<T> = std::result::Result<T, PubKeyError>;
 
-pub const GAP_LIMIT: u32 = 20;
+pub const GAP_LIMIT: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Utxo {

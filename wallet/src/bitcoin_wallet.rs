@@ -21,7 +21,7 @@ use secrecy::SecretBox;
 use secrecy::SecretString;
 use std::collections::HashMap;
 
-const MAX_GAP_EXTENSIONS: u32 = 3;
+const MAX_GAP_EXTENSIONS: u32 = 10;
 
 pub fn get_dust_limit(addr: &Address) -> u64 {
     match addr.get_bitcoin_address_type() {
@@ -353,15 +353,8 @@ impl BitcoinWallet for Wallet {
                 .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
             let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
 
-            btc_tx::sign_psbt_input(
-                &mut psbt,
-                i,
-                &secret_key,
-                &public_key,
-                addr_type,
-                prevouts,
-            )
-            .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
+            btc_tx::sign_psbt_input(&mut psbt, i, &secret_key, &public_key, addr_type, prevouts)
+                .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
         }
 
         for i in 0..psbt.inputs.len() {
@@ -420,10 +413,9 @@ impl BitcoinWallet for Wallet {
             match provider.batch_script_get_history(&mut scan_view).await {
                 Ok(()) => {
                     scan_succeeded = true;
-                    let preferred = scan_view
-                        .get(&preferred_type)
-                        .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing after batch generation".to_string()))?;
-                    let done = preferred.get_external().is_ok() && preferred.get_internal().is_ok();
+                    let done = scan_view.values().all(|chain| {
+                        chain.get_external().is_ok() && chain.get_internal().is_ok()
+                    });
                     last_scan_view = Some(scan_view);
                     if done {
                         break;
@@ -447,20 +439,26 @@ impl BitcoinWallet for Wallet {
         let p2tr_fallback = || {
             master
                 .get(&preferred_type)
-                .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing after generation".to_string()))?
+                .ok_or_else(|| {
+                    WalletErrors::BincodeError("P2TR chain missing after generation".to_string())
+                })?
                 .external
                 .first()
                 .cloned()
-                .ok_or_else(|| WalletErrors::BincodeError("P2TR external chain is empty after generation".to_string()))
+                .ok_or_else(|| {
+                    WalletErrors::BincodeError(
+                        "P2TR external chain is empty after generation".to_string(),
+                    )
+                })
         };
 
         let entry = if scan_succeeded {
-            let view = last_scan_view
-                .as_ref()
-                .ok_or_else(|| WalletErrors::BincodeError("scan_view missing after successful scan".to_string()))?;
-            let preferred = view
-                .get(&preferred_type)
-                .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing in scan view".to_string()))?;
+            let view = last_scan_view.as_ref().ok_or_else(|| {
+                WalletErrors::BincodeError("scan_view missing after successful scan".to_string())
+            })?;
+            let preferred = view.get(&preferred_type).ok_or_else(|| {
+                WalletErrors::BincodeError("P2TR chain missing in scan view".to_string())
+            })?;
             match preferred.get_external() {
                 Ok(e) => e.clone(),
                 Err(_) => {
@@ -673,7 +671,10 @@ impl BitcoinWallet for Wallet {
             .unwrap_or(0);
         println!(
             "[rotate_account] account={} ext_len={} int_len={} network={:?}",
-            account_index, ext_len_before, int_len_before, chain.bitcoin_network()
+            account_index,
+            ext_len_before,
+            int_len_before,
+            chain.bitcoin_network()
         );
 
         append_new_p2tr_address(&mut chains, seed, account_index, network)?;
