@@ -275,15 +275,17 @@ pub trait BitcoinWallet {
     fn get_btc_addresses(
         &self,
         account_index: usize,
+        chain_hash: u64,
     ) -> std::result::Result<HashMap<bitcoin::AddressType, AddressChain>, Self::Error>;
 
     fn save_btc_addresses(
         &self,
         account_index: usize,
         chains: &HashMap<bitcoin::AddressType, AddressChain>,
+        chain_hash: u64,
     ) -> std::result::Result<(), Self::Error>;
 
-    fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize) -> Vec<u8>;
+    fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize, chain_hash: u64) -> Vec<u8>;
 
     async fn prepare_and_sign_btc_transaction(
         &self,
@@ -433,7 +435,7 @@ impl BitcoinWallet for Wallet {
             .iter()
             .map(|(addr_type, chain)| (addr_type.to_byte(), chain.clone()))
             .collect();
-        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index);
+        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index, chain.hash());
         self.storage.set_versioned(&key, &stored)?;
 
         let p2tr_fallback = || {
@@ -481,8 +483,9 @@ impl BitcoinWallet for Wallet {
     fn get_btc_addresses(
         &self,
         account_index: usize,
+        chain_hash: u64,
     ) -> Result<HashMap<bitcoin::AddressType, AddressChain>> {
-        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index);
+        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index, chain_hash);
         let stored: Vec<(u8, AddressChain)> = self.storage.get_versioned(&key)?;
 
         let mut map = HashMap::with_capacity(stored.len());
@@ -503,22 +506,25 @@ impl BitcoinWallet for Wallet {
         &self,
         account_index: usize,
         chains: &HashMap<bitcoin::AddressType, AddressChain>,
+        chain_hash: u64,
     ) -> Result<()> {
         let stored: Vec<(u8, AddressChain)> = chains
             .iter()
             .map(|(addr_type, chain)| (addr_type.to_byte(), chain.clone()))
             .collect();
-        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index);
+        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index, chain_hash);
         self.storage.set_versioned(&key, &stored)?;
         Ok(())
     }
 
     #[inline]
-    fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize) -> Vec<u8> {
+    fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize, chain_hash: u64) -> Vec<u8> {
         let idx_bytes = account_index.to_le_bytes();
+        let hash_bytes = chain_hash.to_le_bytes();
         [
             key.as_slice(),
             BTC_ADDRESSES_DB_KEY_V1,
+            hash_bytes.as_slice(),
             idx_bytes.as_slice(),
         ]
         .concat()
@@ -534,7 +540,7 @@ impl BitcoinWallet for Wallet {
         fee_rate_sat_per_vbyte: Option<u64>,
     ) -> Result<TransactionReceipt> {
         let data = self.get_wallet_data()?;
-        let mut chains = self.get_btc_addresses(account_index)?;
+        let mut chains = self.get_btc_addresses(account_index, data.chain_hash)?;
         let network = provider
             .config
             .bitcoin_network()
@@ -560,7 +566,7 @@ impl BitcoinWallet for Wallet {
 
         if needs_new_change {
             append_new_p2tr_address(&mut chains, &seed_secret, account_index, network)?;
-            self.save_btc_addresses(account_index, &chains)?;
+            self.save_btc_addresses(account_index, &chains, data.chain_hash)?;
         }
 
         let (tx, witness_utxos, input_meta) =
@@ -659,7 +665,7 @@ impl BitcoinWallet for Wallet {
         account_index: usize,
         chain: &ChainConfig,
     ) -> Result<()> {
-        let mut chains = self.get_btc_addresses(account_index)?;
+        let mut chains = self.get_btc_addresses(account_index, chain.hash())?;
         let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
         let ext_len_before = chains
             .get(&bitcoin::AddressType::P2tr)
@@ -678,7 +684,7 @@ impl BitcoinWallet for Wallet {
         );
 
         append_new_p2tr_address(&mut chains, seed, account_index, network)?;
-        self.save_btc_addresses(account_index, &chains)?;
+        self.save_btc_addresses(account_index, &chains, chain.hash())?;
 
         let new_addr = chains
             .get(&bitcoin::AddressType::P2tr)

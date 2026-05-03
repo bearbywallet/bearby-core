@@ -128,7 +128,8 @@ impl TokensManagement for Background {
                     ))
                 })?;
 
-                let chains = wallet_ref.get_btc_addresses(account_index)?;
+                let wallet_data = wallet_ref.get_wallet_data()?;
+                let chains = wallet_ref.get_btc_addresses(account_index, wallet_data.chain_hash)?;
 
                 let chain_summary: Vec<String> = chains
                     .iter()
@@ -395,11 +396,11 @@ impl TokensManagement for Background {
 
         if provider.config.slip_44 == BITCOIN {
             let selected_account = data.get_selected_account()?;
-            let mut chains = w.get_btc_addresses(data.selected_account)?;
+            let mut chains = w.get_btc_addresses(data.selected_account, data.chain_hash)?;
             provider
                 .btc_update_balances(matching_tokens, &mut chains, &selected_account.addr)
                 .await?;
-            w.save_btc_addresses(data.selected_account, &chains)?;
+            w.save_btc_addresses(data.selected_account, &chains, data.chain_hash)?;
         } else {
             let selected_account = data.get_selected_account()?;
             let addresses: Vec<&Address> = vec![&selected_account.addr];

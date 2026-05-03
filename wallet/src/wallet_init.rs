@@ -244,8 +244,8 @@ impl WalletInit for Wallet {
                         .generate_wallet(&mnemonic_seed_secret, *idx, name.clone(), effective_chain)
                         .await?;
                     if pos_idx != *idx {
-                        let chains = wallet.get_btc_addresses(*idx)?;
-                        wallet.save_btc_addresses(pos_idx, &chains)?;
+                        let chains = wallet.get_btc_addresses(*idx, chain_hash)?;
+                        wallet.save_btc_addresses(pos_idx, &chains, chain_hash)?;
                     }
                     account
                 } else {

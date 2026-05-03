@@ -9,7 +9,8 @@ use rpc::network_config::ChainConfig;
 use secrecy::SecretString;
 use std::sync::Arc;
 use wallet::{
-    wallet_account::AccountManagement, wallet_storage::StorageOperations, wallet_types::WalletTypes,
+    bitcoin_wallet::BitcoinWallet, wallet_account::AccountManagement,
+    wallet_crypto::WalletCrypto, wallet_storage::StorageOperations, wallet_types::WalletTypes,
 };
 
 #[async_trait]
@@ -215,6 +216,42 @@ impl ProvidersManagement for Background {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            let btc_accounts = data
+                .slip44_accounts
+                .get(&new_slip44)
+                .and_then(|bip_map| bip_map.get(&new_bip))
+                .map(|accounts| {
+                    accounts
+                        .iter()
+                        .enumerate()
+                        .filter(|(idx, _)| wallet.get_btc_addresses(*idx, chain_hash).is_err())
+                        .map(|(idx, a)| (idx, a.name.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            if !btc_accounts.is_empty() {
+                if let WalletTypes::SecretPhrase(_) = data.wallet_type {
+                    let seed = if data.biometric_type != AuthMethod::None {
+                        self.unlock_wallet_with_session(wallet_index).await?
+                    } else if let Some(pass) = password {
+                        self.unlock_wallet_with_password(pass, None, wallet_index)
+                            .await?
+                    } else {
+                        return Err(BackgroundError::AuthenticationRequired);
+                    };
+
+                    let mnemonic = wallet.reveal_mnemonic(&seed)?;
+                    let seed_secret = mnemonic.to_seed(&wallet::empty_passphrase())?;
+
+                    for (idx, name) in btc_accounts {
+                        wallet
+                            .generate_wallet(&seed_secret, idx, name, &provider.config)
+                            .await?;
                     }
                 }
             }

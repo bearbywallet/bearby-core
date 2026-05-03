@@ -159,7 +159,7 @@ impl NetworkConfigTrait for ChainConfig {
     }
 
     fn nodes(&self) -> &[String] {
-        if self.fallback_enabled {
+        if self.fallback_enabled || self.rpc.is_empty() {
             &self.rpc
         } else {
             &self.rpc[..1]

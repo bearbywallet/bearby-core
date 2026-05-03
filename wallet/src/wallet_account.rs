@@ -224,8 +224,8 @@ impl AccountManagement for Wallet {
                 let account = self
                     .generate_wallet(&mnemonic_seed_secret, index, name.clone(), effective_chain)
                     .await?;
-                let chains = self.get_btc_addresses(index)?;
-                self.save_btc_addresses(index, &chains)?;
+                let chains = self.get_btc_addresses(index, wallet_chain_hash)?;
+                self.save_btc_addresses(index, &chains, wallet_chain_hash)?;
 
                 account
             } else {
