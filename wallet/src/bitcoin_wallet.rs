@@ -4,6 +4,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use cipher::argon2::Argon2Seed;
+use cipher::keychain::KeyChain;
 use config::sha::SHA512_SIZE;
 use config::storage::BTC_ADDRESSES_DB_KEY_V1;
 use crypto::bip49::DerivationPath;
@@ -19,6 +20,7 @@ use proto::{
         create_btc_address, generate_btc_addresses, AddressChain, BtcAddressEntry, ByteCodec,
         GAP_LIMIT,
     },
+    secret_key::SecretKey,
     tx::{TransactionMetadata, TransactionReceipt},
 };
 use rpc::network_config::ChainConfig;
@@ -856,47 +858,85 @@ impl BitcoinWallet for Wallet {
 
         let mut data = self.get_wallet_data()?;
 
-        let WalletTypes::SecretPhrase((_, has_passphrase)) = &data.wallet_type else {
-            return Ok(());
-        };
-        if *has_passphrase {
-            return Ok(());
-        }
+        match &data.wallet_type {
+            WalletTypes::SecretPhrase((_, has_passphrase)) => {
+                if *has_passphrase {
+                    return Ok(());
+                }
 
-        let legacy_name = match data.slip44_accounts.get(&slip44::BITCOIN) {
-            Some(btc_map) if !btc_map.is_empty() => btc_map
-                .values()
-                .filter_map(|accs| accs.first())
-                .map(|a| a.name.clone())
-                .next()
-                .unwrap_or_else(|| "Bitcoin Account 0".to_string()),
-            _ => return Ok(()),
-        };
+                let legacy_name = match data.slip44_accounts.get(&slip44::BITCOIN) {
+                    Some(btc_map) if !btc_map.is_empty() => btc_map
+                        .values()
+                        .filter_map(|accs| accs.first())
+                        .map(|a| a.name.clone())
+                        .next()
+                        .unwrap_or_else(|| "Bitcoin Account 0".to_string()),
+                    _ => return Ok(()),
+                };
 
-        if self.get_btc_addresses(0, chain.hash()).is_ok() {
-            return Ok(());
-        }
+                if self.get_btc_addresses(0, chain.hash()).is_ok() {
+                    return Ok(());
+                }
 
-        let mnemonic = self.reveal_mnemonic(seed_bytes)?;
-        let seed = mnemonic.to_seed(&crate::empty_passphrase())?;
+                let mnemonic = self.reveal_mnemonic(seed_bytes)?;
+                let seed = mnemonic.to_seed(&crate::empty_passphrase())?;
 
-        let account = self.generate_wallet(&seed, 0, legacy_name, chain).await?;
+                let account = self.generate_wallet(&seed, 0, legacy_name, chain).await?;
 
-        let mut new_btc: HashMap<u32, Vec<AccountV2>> = HashMap::new();
-        new_btc.insert(DerivationPath::BIP86_PURPOSE, vec![account]);
-        data.slip44_accounts.insert(slip44::BITCOIN, new_btc);
+                let mut new_btc: HashMap<u32, Vec<AccountV2>> = HashMap::new();
+                new_btc.insert(DerivationPath::BIP86_PURPOSE, vec![account]);
+                data.slip44_accounts.insert(slip44::BITCOIN, new_btc);
 
-        if data.slip44 == slip44::BITCOIN {
-            data.bip = DerivationPath::BIP86_PURPOSE;
-            if data.selected_account > 0 {
-                data.selected_account = 0;
+                if data.slip44 == slip44::BITCOIN {
+                    data.bip = DerivationPath::BIP86_PURPOSE;
+                    if data.selected_account > 0 {
+                        data.selected_account = 0;
+                    }
+                }
+
+                self.save_wallet_data(data)?;
+                self.storage.flush()?;
+
+                Ok(())
             }
+            WalletTypes::SecretKey => {
+                if self.get_btc_addresses(0, chain.hash()).is_ok() {
+                    return Ok(());
+                }
+
+                let storage_key = {
+                    let account = data.get_account(0)?;
+                    usize::to_le_bytes(account.account_type.value())
+                };
+                let cipher_sk = self.storage.get(&storage_key)?;
+                let keychain = KeyChain::from_seed(seed_bytes)?;
+                let sk_bytes_vec = keychain.decrypt(cipher_sk, &data.settings.cipher_orders)?;
+                let sk = SecretKey::from_bytes(sk_bytes_vec.into())?;
+
+                let (sk_bytes, network) = match sk {
+                    SecretKey::Secp256k1Bitcoin((bytes, network, _)) => (bytes, network),
+                    _ => return Ok(()),
+                };
+
+                let (mut chains, p2tr_addr) = derive_sk_btc_address_chains(&sk_bytes, network)?;
+
+                let provider = NetworkProvider::new(chain.clone());
+                if let Err(e) = provider.batch_script_get_history(&mut chains).await {
+                    println!(
+                        "[migrate_btc_storage_if_needed] sk btc history scan failed (offline?): {:?}",
+                        e
+                    );
+                }
+
+                self.save_btc_addresses(0, &chains, chain.hash())?;
+                data.get_mut_account(0)?.addr = p2tr_addr;
+                self.save_wallet_data(data)?;
+                self.storage.flush()?;
+
+                Ok(())
+            }
+            _ => Ok(()),
         }
-
-        self.save_wallet_data(data)?;
-        self.storage.flush()?;
-
-        Ok(())
     }
 }
 
