@@ -158,7 +158,7 @@ pub fn gen_eth_mainnet_conf() -> ChainConfig {
         name: "Ethereum".to_string(),
         chain: "ETH".to_string(),
         short_name: String::new(),
-        rpc: vec!["https://rpc.mevblocker.io".to_string()],
+        rpc: vec!["https://eth.bearby.ru".to_string()],
         features: vec![155, 1559, 4844],
         slip_44: slip44::ETHEREUM,
         ens: None,
