@@ -221,13 +221,9 @@ impl AccountManagement for Wallet {
             let network = effective_chain.bitcoin_network();
 
             let hd_account = if slip44 == crypto::slip44::BITCOIN {
-                let account = self
+                self
                     .generate_wallet(&mnemonic_seed_secret, index, name.clone(), effective_chain)
-                    .await?;
-                let chains = self.get_btc_addresses(index, wallet_chain_hash)?;
-                self.save_btc_addresses(index, &chains, wallet_chain_hash)?;
-
-                account
+                    .await?
             } else {
                 let path = crypto::bip49::DerivationPath::with_index(slip44, (0, 0, index));
                 AccountV2::from_hd(&mnemonic_seed_secret, name.clone(), &path, network)?
