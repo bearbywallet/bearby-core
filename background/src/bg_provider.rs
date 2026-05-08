@@ -100,27 +100,39 @@ impl ProvidersManagement for Background {
 
     fn add_batch_providers(&self, configs: Vec<ChainConfig>) -> Result<Vec<u64>> {
         let mut providers = self.get_providers();
-        let mut existing: std::collections::HashSet<u64> =
-            providers.iter().map(|p| p.config.hash()).collect();
-        let mut added = Vec::new();
+        let mut existing: std::collections::HashMap<u64, usize> = providers
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.config.hash(), i))
+            .collect();
+        let mut changed = false;
+        let mut added_or_updated = Vec::new();
 
         for mut config in configs {
             let hash = config.hash();
-            if !existing.insert(hash) {
-                continue;
-            }
             config.ftokens.iter_mut().for_each(|t| {
                 t.chain_hash = hash;
             });
-            providers.push(NetworkProvider::new(config));
-            added.push(hash);
+
+            if let Some(&index) = existing.get(&hash) {
+                if providers[index].config != config {
+                    providers[index] = NetworkProvider::new(config);
+                    changed = true;
+                    added_or_updated.push(hash);
+                }
+            } else {
+                existing.insert(hash, providers.len());
+                providers.push(NetworkProvider::new(config));
+                changed = true;
+                added_or_updated.push(hash);
+            }
         }
 
-        if !added.is_empty() {
+        if changed {
             self.update_providers(providers)?;
         }
 
-        Ok(added)
+        Ok(added_or_updated)
     }
 
     fn remvoe_provider(&self, chain_hash: u64) -> Result<()> {
@@ -475,6 +487,50 @@ mod tests_providers {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let bg2 = Background::from_storage_path(&dir).unwrap();
         assert_eq!(bg2.get_providers().len(), 4);
+    }
+
+    #[test]
+    fn test_add_batch_providers_updates_existing() {
+        let (bg, _dir) = setup_test_background();
+
+        let mut c1 = create_test_network_config("Net 1", 100);
+        c1.rpc = vec!["http://old-rpc.example.com".to_string()];
+
+        bg.add_batch_providers(vec![c1.clone()]).unwrap();
+        let providers = bg.get_providers();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].config.rpc, vec!["http://old-rpc.example.com"]);
+
+        let mut c1_updated = create_test_network_config("Net 1 Updated", 100);
+        c1_updated.rpc = vec![
+            "http://new-rpc-1.example.com".to_string(),
+            "http://new-rpc-2.example.com".to_string(),
+        ];
+
+        let updated = bg.add_batch_providers(vec![c1_updated.clone()]).unwrap();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0], c1.hash());
+
+        let providers = bg.get_providers();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].config.name, "Net 1 Updated");
+        assert_eq!(providers[0].config.rpc, vec![
+            "http://new-rpc-1.example.com",
+            "http://new-rpc-2.example.com"
+        ]);
+    }
+
+    #[test]
+    fn test_add_batch_providers_no_write_when_unchanged() {
+        let (bg, _dir) = setup_test_background();
+
+        let c1 = create_test_network_config("Net 1", 100);
+        bg.add_batch_providers(vec![c1.clone()]).unwrap();
+        assert_eq!(bg.get_providers().len(), 1);
+
+        let updated = bg.add_batch_providers(vec![c1.clone()]).unwrap();
+        assert!(updated.is_empty());
+        assert_eq!(bg.get_providers().len(), 1);
     }
 
     #[tokio::test]
