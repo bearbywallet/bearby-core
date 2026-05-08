@@ -423,6 +423,7 @@ mod tests_background_tokens {
         bg_crypto::CryptoOperations, bg_storage::StorageManagement, BackgroundBip39Params,
     };
     use crate::{bg_tx::TransactionsManagement, bg_wallet::WalletManagement};
+    use rpc::network_config::ChainConfig;
     use wallet::wallet_account::AccountManagement;
 
     use history::status::TransactionStatus;
@@ -1293,11 +1294,16 @@ mod tests_background_tokens {
             _ => panic!("Expected Solana transaction request"),
         }
 
+        let data = wallet.get_wallet_data().unwrap();
+        let accs = data.get_accounts().unwrap();
+        dbg!(&accs);
+
         let argon_seed = bg
             .unlock_wallet_with_password(&SecretString::new(TEST_PASSWORD.into()), None, 0)
             .await
             .unwrap();
 
+        let chains: Vec<ChainConfig> = bg.get_providers().into_iter().map(|p| p.config).collect();
         let wallet = bg.get_wallet_by_index(0).unwrap();
         wallet
             .add_next_bip39_account(
@@ -1305,13 +1311,14 @@ mod tests_background_tokens {
                 3,
                 &empty_passphrase(),
                 &argon_seed,
-                &[],
+                &chains,
             )
             .await
             .unwrap();
 
         let data = wallet.get_wallet_data().unwrap();
         let accs = data.get_accounts().unwrap();
+        dbg!(&accs);
         assert_eq!(accs.len(), 3);
         assert_eq!(
             accs[2].addr.auto_format(),
