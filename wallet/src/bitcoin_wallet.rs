@@ -1,12 +1,13 @@
 use crate::{
-    account::AccountV2, wallet_crypto::WalletCrypto, wallet_storage::StorageOperations, Result,
-    Wallet, WalletAddrType,
+    account::AccountV2, wallet_crypto::WalletCrypto, wallet_storage::StorageOperations,
+    wallet_types::WalletTypes, Result, Wallet, WalletAddrType,
 };
 use async_trait::async_trait;
 use cipher::argon2::Argon2Seed;
 use config::sha::SHA512_SIZE;
 use config::storage::BTC_ADDRESSES_DB_KEY_V1;
 use crypto::bip49::DerivationPath;
+use crypto::slip44;
 use errors::wallet::WalletErrors;
 use history::transaction::HistoricalTransaction;
 use network::btc::BtcOperations;
@@ -286,7 +287,11 @@ pub trait BitcoinWallet {
         chain_hash: u64,
     ) -> std::result::Result<(), Self::Error>;
 
-    fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize, chain_hash: u64) -> Vec<u8>;
+    fn get_btc_addresses_db_key(
+        key: &WalletAddrType,
+        account_index: usize,
+        chain_hash: u64,
+    ) -> Vec<u8>;
 
     async fn prepare_and_sign_btc_transaction(
         &self,
@@ -309,6 +314,12 @@ pub trait BitcoinWallet {
         &self,
         account_index: usize,
         historical: &HistoricalTransaction,
+    ) -> std::result::Result<(), Self::Error>;
+
+    async fn migrate_btc_storage_if_needed(
+        &self,
+        seed_bytes: &Argon2Seed,
+        chain: &ChainConfig,
     ) -> std::result::Result<(), Self::Error>;
 }
 
@@ -422,9 +433,9 @@ impl BitcoinWallet for Wallet {
             match provider.batch_script_get_history(&mut scan_view).await {
                 Ok(()) => {
                     scan_succeeded = true;
-                    let done = scan_view.values().all(|chain| {
-                        chain.get_external().is_ok() && chain.get_internal().is_ok()
-                    });
+                    let done = scan_view
+                        .values()
+                        .all(|chain| chain.get_external().is_ok() && chain.get_internal().is_ok());
                     last_scan_view = Some(scan_view);
                     if done {
                         break;
@@ -525,7 +536,11 @@ impl BitcoinWallet for Wallet {
     }
 
     #[inline]
-    fn get_btc_addresses_db_key(key: &WalletAddrType, account_index: usize, chain_hash: u64) -> Vec<u8> {
+    fn get_btc_addresses_db_key(
+        key: &WalletAddrType,
+        account_index: usize,
+        chain_hash: u64,
+    ) -> Vec<u8> {
         let idx_bytes = account_index.to_le_bytes();
         let hash_bytes = chain_hash.to_le_bytes();
         [
@@ -740,7 +755,10 @@ impl BitcoinWallet for Wallet {
 
         for chain in chains.values_mut() {
             for entry in chain.external.iter_mut().chain(chain.internal.iter_mut()) {
-                let consumed = entry.utxos.iter().any(|u| spent.contains(&(u.txid, u.vout)));
+                let consumed = entry
+                    .utxos
+                    .iter()
+                    .any(|u| spent.contains(&(u.txid, u.vout)));
                 if consumed {
                     if !entry.history.contains(&broadcast_txid) {
                         entry.history.push(broadcast_txid);
@@ -770,6 +788,62 @@ impl BitcoinWallet for Wallet {
         self.save_btc_addresses(account_index, &chains, chain_hash)?;
         Ok(())
     }
+
+    async fn migrate_btc_storage_if_needed(
+        &self,
+        seed_bytes: &Argon2Seed,
+        chain: &ChainConfig,
+    ) -> Result<()> {
+        if chain.slip_44 != slip44::BITCOIN {
+            return Ok(());
+        }
+
+        let mut data = self.get_wallet_data()?;
+
+        let WalletTypes::SecretPhrase((_, has_passphrase)) = &data.wallet_type else {
+            return Ok(());
+        };
+        if *has_passphrase {
+            return Ok(());
+        }
+
+        let legacy_name = match data.slip44_accounts.get(&slip44::BITCOIN) {
+            Some(btc_map) if !btc_map.is_empty() => btc_map
+                .values()
+                .filter_map(|accs| accs.first())
+                .map(|a| a.name.clone())
+                .next()
+                .unwrap_or_else(|| "Bitcoin Account 0".to_string()),
+            _ => return Ok(()),
+        };
+
+        if self.get_btc_addresses(0, chain.hash()).is_ok() {
+            return Ok(());
+        }
+
+        let mnemonic = self.reveal_mnemonic(seed_bytes)?;
+        let seed = mnemonic.to_seed(&crate::empty_passphrase())?;
+
+        let account = self
+            .generate_wallet(&seed, 0, legacy_name, chain)
+            .await?;
+
+        let mut new_btc: HashMap<u32, Vec<AccountV2>> = HashMap::new();
+        new_btc.insert(DerivationPath::BIP86_PURPOSE, vec![account]);
+        data.slip44_accounts.insert(slip44::BITCOIN, new_btc);
+
+        if data.slip44 == slip44::BITCOIN {
+            data.bip = DerivationPath::BIP86_PURPOSE;
+            if data.selected_account > 0 {
+                data.selected_account = 0;
+            }
+        }
+
+        self.save_wallet_data(data)?;
+        self.storage.flush()?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -784,11 +858,7 @@ mod tests_btc_wallet {
     use config::{bip39::EN_WORDS, cipher::PROOF_SIZE, session::AuthMethod};
     use history::{status::TransactionStatus, transaction::HistoricalTransaction};
     use pqbip39::mnemonic::Mnemonic;
-    use proto::{
-        btc_tx::BitcoinMetadata,
-        btc_utils::Utxo,
-        tx::TransactionMetadata,
-    };
+    use proto::{btc_tx::BitcoinMetadata, btc_utils::Utxo, tx::TransactionMetadata};
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
     use secrecy::SecretString;
@@ -811,8 +881,7 @@ mod tests_btc_wallet {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic =
-            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let wallet_config = WalletConfig {
             keychain,
@@ -932,8 +1001,7 @@ mod tests_btc_wallet {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let keychain = KeyChain::from_seed(&argon_seed).unwrap();
-        let mnemonic =
-            Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
         let wallet_config = WalletConfig {
             keychain,

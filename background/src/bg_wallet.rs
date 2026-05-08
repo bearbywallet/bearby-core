@@ -20,8 +20,9 @@ use session::management::{SessionManagement, SessionManager};
 use settings::wallet_settings::WalletSettings;
 use std::sync::Arc;
 use wallet::{
-    wallet_init::WalletInit, wallet_security::WalletSecurity, wallet_storage::StorageOperations,
-    Bip39Params, LedgerParams, SecretKeyParams, Wallet, WalletConfig,
+    bitcoin_wallet::BitcoinWallet, wallet_init::WalletInit, wallet_security::WalletSecurity,
+    wallet_storage::StorageOperations, Bip39Params, LedgerParams, SecretKeyParams, Wallet,
+    WalletConfig,
 };
 
 use crate::{BackgroundBip39Params, BackgroundSKParams};
@@ -172,6 +173,12 @@ impl WalletManagement for Background {
             argon_seed
         };
 
+        if let Ok(provider) = self.get_provider(data.chain_hash) {
+            wallet
+                .migrate_btc_storage_if_needed(&argon_seed, &provider.config)
+                .await?;
+        }
+
         Ok(argon_seed)
     }
 
@@ -196,6 +203,12 @@ impl WalletManagement for Background {
                     errors::session::SessionErrors::InvalidDecryptSession,
                 )
             })?;
+
+        if let Ok(provider) = self.get_provider(data.chain_hash) {
+            wallet
+                .migrate_btc_storage_if_needed(&seed_bytes, &provider.config)
+                .await?;
+        }
 
         Ok(seed_bytes)
     }
