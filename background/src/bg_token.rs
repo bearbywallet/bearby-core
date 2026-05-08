@@ -435,7 +435,7 @@ mod tests_background_tokens {
     use std::time::Duration;
     use test_data::{
         anvil_accounts, empty_passphrase, gen_anvil_net_conf, gen_anvil_token,
-        gen_bsc_testnet_conf, gen_btc_regtest_conf, gen_sol_devnet_conf, gen_sol_token,
+        gen_btc_regtest_conf, gen_eth_mainnet_conf, gen_sol_devnet_conf, gen_sol_token,
         ANVIL_MNEMONIC,
     };
     use test_data::{
@@ -446,7 +446,7 @@ mod tests_background_tokens {
     use wallet::wallet_token::TokenManagement;
     use wallet::wallet_transaction::WalletTransaction;
 
-    const USDT_TOKEN: &str = "0x55d398326f99059fF775485246999027B3197955";
+    const USDT_TOKEN: &str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 
     fn setup_test_background() -> (Background, String) {
         let mut rng = rand::rng();
@@ -461,7 +461,7 @@ mod tests_background_tokens {
 
         let words = Background::gen_bip39(24).unwrap();
         let accounts = [gen_eth_account(0, "Bsc account 1")];
-        let net_config = gen_bsc_testnet_conf();
+        let net_config = gen_eth_mainnet_conf();
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
 
         bg.add_provider(net_config.clone()).unwrap();
@@ -493,7 +493,7 @@ mod tests_background_tokens {
 
         assert_eq!(&meta.name, "Tether USD");
         assert_eq!(&meta.symbol, "USDT");
-        assert_eq!(meta.decimals, 18u8);
+        assert_eq!(meta.decimals, 6u8);
         assert_eq!(meta.chain_hash, net_config.hash());
         assert!(!meta.default);
         assert!(!meta.native);

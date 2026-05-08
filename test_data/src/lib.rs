@@ -150,7 +150,7 @@ pub fn gen_bsc_testnet_conf() -> ChainConfig {
 
 pub fn gen_eth_mainnet_conf() -> ChainConfig {
     ChainConfig {
-        ftokens: vec![],
+        ftokens: vec![gen_eth_mainnet_token()],
         logo: String::new(),
         diff_block_time: 0,
         testnet: None,
@@ -164,6 +164,21 @@ pub fn gen_eth_mainnet_conf() -> ChainConfig {
         ens: None,
         explorers: vec![],
         fallback_enabled: true,
+    }
+}
+
+pub fn gen_eth_mainnet_token() -> FToken {
+    FToken {
+        rate: 0f64,
+        name: "Ethereum".to_string(),
+        symbol: "ETH".to_string(),
+        decimals: 18,
+        addr: Address::Secp256k1Keccak256([0u8; ADDR_LEN]),
+        logo: None,
+        balances: HashMap::new(),
+        default: true,
+        native: true,
+        chain_hash: 0,
     }
 }
 
