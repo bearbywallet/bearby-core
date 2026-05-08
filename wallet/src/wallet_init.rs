@@ -143,6 +143,13 @@ impl WalletInit for Wallet {
         ftokens: Vec<FToken>,
     ) -> Result<Self> {
         let sk_as_bytes = params.sk.to_bytes()?;
+        let sk_btc_meta: Option<([u8; config::key::SECRET_KEY_SIZE], bitcoin::Network)> =
+            match &params.sk {
+                proto::secret_key::SecretKey::Secp256k1Bitcoin((bytes, network, _)) => {
+                    Some((*bytes, *network))
+                }
+                _ => None,
+            };
 
         let cipher_sk = config
             .keychain
@@ -157,12 +164,30 @@ impl WalletInit for Wallet {
         let target_bip = crypto::bip49::DerivationPath::default_bip(params.chain_config.slip_44);
 
         // SecretKey may stores only one account.
-        let account = AccountV2::from_secret_key(
+        let mut account = AccountV2::from_secret_key(
             params.sk,
             params.wallet_name.to_owned(),
             cipher_entropy_key,
             params.chain_config.slip_44,
         )?;
+
+        // For Bitcoin SK wallets, derive all four address formats from the
+        // single private key so sync_balance / mark_btc_addresses_used / etc.
+        // see populated chains. The default `account.addr` is the P2tr form.
+        let btc_chains_to_save = if params.chain_config.slip_44 == crypto::slip44::BITCOIN {
+            sk_btc_meta
+                .map(|(sk_bytes, network)| {
+                    crate::bitcoin_wallet::derive_sk_btc_address_chains(&sk_bytes, network)
+                })
+                .transpose()?
+                .map(|(chains, p2tr_addr)| {
+                    account.addr = p2tr_addr;
+                    chains
+                })
+        } else {
+            None
+        };
+
         let slip44_accounts = HashMap::from([(
             params.chain_config.slip_44,
             HashMap::from([(target_bip, vec![account])]),
@@ -189,6 +214,10 @@ impl WalletInit for Wallet {
 
         wallet.save_wallet_data(data)?;
         wallet.save_ftokens(&ftokens)?;
+
+        if let Some(chains) = btc_chains_to_save {
+            wallet.save_btc_addresses(0, &chains, params.chain_config.hash())?;
+        }
 
         Ok(wallet)
     }
@@ -463,4 +492,5 @@ mod tests_init_wallet {
 
         assert_eq!(w_data, data);
     }
+
 }

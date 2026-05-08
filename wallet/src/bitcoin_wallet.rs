@@ -15,7 +15,10 @@ use network::provider::NetworkProvider;
 use proto::{
     address::Address,
     btc_tx::{self, BitcoinMetadata},
-    btc_utils::{generate_btc_addresses, AddressChain, ByteCodec, GAP_LIMIT},
+    btc_utils::{
+        create_btc_address, generate_btc_addresses, AddressChain, BtcAddressEntry, ByteCodec,
+        GAP_LIMIT,
+    },
     tx::{TransactionMetadata, TransactionReceipt},
 };
 use rpc::network_config::ChainConfig;
@@ -47,6 +50,59 @@ fn output_vsize_for(addr_type: bitcoin::AddressType) -> usize {
         bitcoin::AddressType::P2tr => 43,
         _ => 34,
     }
+}
+
+pub fn derive_sk_btc_address_chains(
+    sk_bytes: &[u8; config::key::SECRET_KEY_SIZE],
+    network: bitcoin::Network,
+) -> Result<(HashMap<bitcoin::AddressType, AddressChain>, Address)> {
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let secret_key = bitcoin::secp256k1::SecretKey::from_slice(sk_bytes)
+        .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
+    let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+    let pk_bytes = pk.serialize();
+
+    const FORMATS: [(bitcoin::AddressType, u32); 4] = [
+        (bitcoin::AddressType::P2pkh, DerivationPath::BIP44_PURPOSE),
+        (bitcoin::AddressType::P2sh, DerivationPath::BIP49_PURPOSE),
+        (bitcoin::AddressType::P2wpkh, DerivationPath::BIP84_PURPOSE),
+        (bitcoin::AddressType::P2tr, DerivationPath::BIP86_PURPOSE),
+    ];
+
+    let mut chains: HashMap<bitcoin::AddressType, AddressChain> =
+        HashMap::with_capacity(FORMATS.len());
+    let mut p2tr_address: Option<Address> = None;
+
+    for (addr_type, bip) in FORMATS {
+        let btc_addr = create_btc_address(&pk_bytes, network, addr_type)
+            .map_err(|e| WalletErrors::BincodeError(format!("{:?}", e)))?;
+        let address = Address::Secp256k1Bitcoin(btc_addr.to_string().into_bytes());
+        let path = DerivationPath::new(
+            slip44::BITCOIN,
+            crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
+            bip,
+        );
+        if addr_type == bitcoin::AddressType::P2tr {
+            p2tr_address = Some(address.clone());
+        }
+        chains.insert(
+            addr_type,
+            AddressChain {
+                external: vec![BtcAddressEntry {
+                    address,
+                    path,
+                    history: Vec::new(),
+                    utxos: Vec::new(),
+                }],
+                internal: Vec::new(),
+            },
+        );
+    }
+
+    let p2tr_address = p2tr_address.ok_or_else(|| {
+        WalletErrors::BincodeError("P2tr address missing after SK chain derivation".to_string())
+    })?;
+    Ok((chains, p2tr_address))
 }
 
 fn append_new_p2tr_address(
@@ -824,9 +880,7 @@ impl BitcoinWallet for Wallet {
         let mnemonic = self.reveal_mnemonic(seed_bytes)?;
         let seed = mnemonic.to_seed(&crate::empty_passphrase())?;
 
-        let account = self
-            .generate_wallet(&seed, 0, legacy_name, chain)
-            .await?;
+        let account = self.generate_wallet(&seed, 0, legacy_name, chain).await?;
 
         let mut new_btc: HashMap<u32, Vec<AccountV2>> = HashMap::new();
         new_btc.insert(DerivationPath::BIP86_PURPOSE, vec![account]);

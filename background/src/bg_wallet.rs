@@ -406,6 +406,20 @@ impl WalletManagement for Background {
         )?;
         let data = wallet.get_wallet_data()?;
 
+        if provider.config.slip_44 == crypto::slip44::BITCOIN {
+            if let Ok(mut chains) = wallet.get_btc_addresses(0, params.chain_hash) {
+                use network::btc::BtcOperations;
+                if let Err(e) = provider.batch_script_get_history(&mut chains).await {
+                    println!(
+                        "[add_sk_wallet] btc history scan failed (offline?): {:?}",
+                        e
+                    );
+                } else {
+                    let _ = wallet.save_btc_addresses(0, &chains, params.chain_hash);
+                }
+            }
+        }
+
         if data.biometric_type != AuthMethod::None {
             let session = SessionManager::new(
                 Arc::clone(&self.storage),
@@ -454,12 +468,17 @@ impl WalletManagement for Background {
 #[cfg(test)]
 mod tests_background_wallet {
     use super::*;
-    use crate::{bg_crypto::CryptoOperations, bg_provider::ProvidersManagement};
+    use crate::{
+        bg_crypto::CryptoOperations, bg_provider::ProvidersManagement, bg_token::TokensManagement,
+    };
 
     use proto::address::Address;
     use rand::RngExt;
 
-    use test_data::{empty_passphrase, gen_zil_testnet_conf};
+    use test_data::{
+        anvil_accounts::PRIVATE_KEY_0, empty_passphrase, gen_btc_regtest_conf,
+        gen_zil_testnet_conf, TEST_PASSWORD,
+    };
     use wallet::wallet_account::AccountManagement;
 
     fn setup_test_background() -> (Background, String) {
@@ -557,5 +576,74 @@ mod tests_background_wallet {
                 "address should be in evm mode"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_add_sk_btc_wallet_syncs_chains_and_balance() {
+        use proto::secret_key::SecretKey;
+        use wallet::bitcoin_wallet::BitcoinWallet;
+        use wallet::wallet_storage::StorageOperations;
+
+        let (mut bg, _dir) = setup_test_background();
+        let net_conf = gen_btc_regtest_conf();
+        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
+        bg.add_provider(net_conf.clone()).unwrap();
+
+        let sk_hex = PRIVATE_KEY_0.trim_start_matches("0x");
+        let sk_bytes: [u8; 32] = hex::decode(sk_hex).unwrap().try_into().unwrap();
+        let network = net_conf
+            .bitcoin_network()
+            .unwrap_or(bitcoin::Network::Bitcoin);
+        let sk = SecretKey::Secp256k1Bitcoin((sk_bytes, network, bitcoin::AddressType::P2wpkh));
+
+        bg.add_sk_wallet(BackgroundSKParams {
+            password: &password,
+            secret_key: sk,
+            wallet_name: "BTC SK wallet".to_string(),
+            biometric_type: AuthMethod::None,
+            wallet_settings: Default::default(),
+            chain_hash: net_conf.hash(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        let wallet = bg.get_wallet_by_index(0).unwrap();
+        let data = wallet.get_wallet_data().unwrap();
+        let account = data.get_selected_account().unwrap();
+
+        let addr_str = account.addr.auto_format();
+        assert!(
+            addr_str.starts_with("bcrt1p"),
+            "expected default P2tr regtest address, got: {}",
+            addr_str
+        );
+
+        let chains = wallet.get_btc_addresses(0, net_conf.hash()).unwrap();
+        dbg!(&chains);
+        assert_eq!(chains.len(), 4);
+        for addr_type in [
+            bitcoin::AddressType::P2pkh,
+            bitcoin::AddressType::P2sh,
+            bitcoin::AddressType::P2wpkh,
+            bitcoin::AddressType::P2tr,
+        ] {
+            let chain = chains
+                .get(&addr_type)
+                .unwrap_or_else(|| panic!("missing chain for {:?}", addr_type));
+            assert_eq!(chain.external.len(), 1, "{:?} external", addr_type);
+            assert!(chain.internal.is_empty(), "{:?} internal", addr_type);
+        }
+        let p2tr = chains.get(&bitcoin::AddressType::P2tr).unwrap();
+        assert_eq!(p2tr.external[0].address, account.addr);
+
+        bg.sync_ftokens_balances(0).await.unwrap();
+
+        let ftokens = wallet.get_ftokens().unwrap();
+        let btc_token = ftokens
+            .iter()
+            .find(|t| t.native && t.chain_hash == net_conf.hash())
+            .expect("BTC native token must be present");
+        assert!(btc_token.balances.contains_key(&account.addr.to_hash()));
     }
 }
