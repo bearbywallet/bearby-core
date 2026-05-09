@@ -13,6 +13,14 @@ type Result<T> = std::result::Result<T, PubKeyError>;
 
 pub const GAP_LIMIT: u32 = 20;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BtcAccountXpubsInput {
+    pub bip44_xpub: bitcoin::bip32::Xpub,
+    pub bip49_xpub: bitcoin::bip32::Xpub,
+    pub bip84_xpub: bitcoin::bip32::Xpub,
+    pub bip86_xpub: bitcoin::bip32::Xpub,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Utxo {
     pub txid: bitcoin::Txid,
@@ -150,55 +158,149 @@ pub fn create_btc_address(
     Ok(addr)
 }
 
-pub fn generate_btc_addresses(
-    seed: &SecretBox<[u8; SHA512_SIZE]>,
+impl BtcAccountXpubsInput {
+    pub fn from_seed(
+        seed: &SecretBox<[u8; SHA512_SIZE]>,
+        account_index: u32,
+        network: bitcoin::Network,
+    ) -> std::result::Result<Self, Bip329Errors> {
+        use bitcoin::bip32::{ChildNumber, DerivationPath as BtcPath, Xpriv, Xpub};
+        use bitcoin::secp256k1::Secp256k1;
+        use secrecy::ExposeSecret;
+
+        let secp = Secp256k1::new();
+        let master = Xpriv::new_master(network, seed.expose_secret())
+            .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
+
+        let account_path = |purpose: u32| -> std::result::Result<BtcPath, Bip329Errors> {
+            let parts = [
+                ChildNumber::from_hardened_idx(purpose)
+                    .map_err(|e| Bip329Errors::InvalidChild(e.to_string()))?,
+                ChildNumber::from_hardened_idx(slip44::BITCOIN)
+                    .map_err(|e| Bip329Errors::InvalidChild(e.to_string()))?,
+                ChildNumber::from_hardened_idx(account_index)
+                    .map_err(|e| Bip329Errors::InvalidChild(e.to_string()))?,
+            ];
+            Ok(BtcPath::from(&parts[..]))
+        };
+
+        let derive = |purpose: u32| -> std::result::Result<Xpub, Bip329Errors> {
+            let path = account_path(purpose)?;
+            let xpriv = master
+                .derive_priv(&secp, &path)
+                .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
+            Ok(Xpub::from_priv(&secp, &xpriv))
+        };
+
+        Ok(Self {
+            bip44_xpub: derive(DerivationPath::BIP44_PURPOSE)?,
+            bip49_xpub: derive(DerivationPath::BIP49_PURPOSE)?,
+            bip84_xpub: derive(DerivationPath::BIP84_PURPOSE)?,
+            bip86_xpub: derive(DerivationPath::BIP86_PURPOSE)?,
+        })
+    }
+
+    pub fn xpub_for(&self, addr_type: bitcoin::AddressType) -> Option<&bitcoin::bip32::Xpub> {
+        match addr_type {
+            bitcoin::AddressType::P2pkh => Some(&self.bip44_xpub),
+            bitcoin::AddressType::P2sh => Some(&self.bip49_xpub),
+            bitcoin::AddressType::P2wpkh => Some(&self.bip84_xpub),
+            bitcoin::AddressType::P2tr => Some(&self.bip86_xpub),
+            _ => None,
+        }
+    }
+}
+
+pub fn derive_btc_chain_from_xpub(
+    account_xpub: &bitcoin::bip32::Xpub,
+    account_index: usize,
+    addr_type: bitcoin::AddressType,
+    network: bitcoin::Network,
+    start_index: u32,
+    count: u32,
+    chain: &mut AddressChain,
+) -> std::result::Result<(), Bip329Errors> {
+    use bitcoin::bip32::ChildNumber;
+    use bitcoin::secp256k1::Secp256k1;
+
+    let secp = Secp256k1::new();
+    let bip = DerivationPath::bip_from_address_type(addr_type);
+    let end = start_index.saturating_add(count);
+
+    let external_xpub = account_xpub
+        .ckd_pub(&secp, ChildNumber::Normal { index: 0 })
+        .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
+    let internal_xpub = account_xpub
+        .ckd_pub(&secp, ChildNumber::Normal { index: 1 })
+        .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
+
+    chain.external.reserve(count as usize);
+    chain.internal.reserve(count as usize);
+
+    let make_entry = |branch_xpub: &bitcoin::bip32::Xpub,
+                      change: usize,
+                      idx: u32|
+     -> std::result::Result<BtcAddressEntry, Bip329Errors> {
+        let child = branch_xpub
+            .ckd_pub(&secp, ChildNumber::Normal { index: idx })
+            .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
+        let pk_bytes = child.public_key.serialize();
+        let address = create_btc_address(&pk_bytes, network, addr_type)
+            .map_err(|e| Bip329Errors::InvalidKey(format!("{:?}", e)))?;
+        let path = DerivationPath::new(
+            slip44::BITCOIN,
+            DerivationType::AddressIndex(account_index, change, idx as usize),
+            bip,
+        );
+        Ok(BtcAddressEntry {
+            address: Address::Secp256k1Bitcoin(address.to_string().into_bytes()),
+            path,
+            history: Vec::new(),
+            utxos: Vec::new(),
+        })
+    };
+
+    for idx in start_index..end {
+        chain.external.push(make_entry(&external_xpub, 0, idx)?);
+        chain.internal.push(make_entry(&internal_xpub, 1, idx)?);
+    }
+    Ok(())
+}
+
+pub fn derive_btc_addresses_from_xpubs(
+    xpubs: &BtcAccountXpubsInput,
     account_index: usize,
     network: bitcoin::Network,
     start_index: u32,
     count: u32,
-) -> std::result::Result<HashMap<bitcoin::AddressType, AddressChain>, Bip329Errors> {
-    let formats: [(bitcoin::AddressType, u32); 4] = [
-        (bitcoin::AddressType::P2pkh, DerivationPath::BIP44_PURPOSE),
-        (bitcoin::AddressType::P2sh, DerivationPath::BIP49_PURPOSE),
-        (bitcoin::AddressType::P2wpkh, DerivationPath::BIP84_PURPOSE),
-        (bitcoin::AddressType::P2tr, DerivationPath::BIP86_PURPOSE),
+    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+) -> std::result::Result<(), Bip329Errors> {
+    const TYPES: [bitcoin::AddressType; 4] = [
+        bitcoin::AddressType::P2pkh,
+        bitcoin::AddressType::P2sh,
+        bitcoin::AddressType::P2wpkh,
+        bitcoin::AddressType::P2tr,
     ];
 
-    let mut result: HashMap<bitcoin::AddressType, AddressChain> = HashMap::with_capacity(4);
-    let end = start_index.saturating_add(count);
-
-    for (addr_type, bip) in formats {
-        let mut external = Vec::with_capacity(count as usize);
-        let mut internal = Vec::with_capacity(count as usize);
-
-        let derive_one =
-            |change: usize, idx: u32| -> std::result::Result<BtcAddressEntry, Bip329Errors> {
-                let path = DerivationPath::new(
-                    slip44::BITCOIN,
-                    DerivationType::AddressIndex(account_index, change, idx as usize),
-                    bip,
-                );
-                let sk = crate::bip32::derive_private_key(seed, &path.get_path())?;
-                let pk_bytes = sk.public_key().to_sec1_bytes();
-                let address = create_btc_address(&pk_bytes, network, addr_type)
-                    .map_err(|e| Bip329Errors::InvalidKey(format!("{:?}", e)))?;
-                Ok(BtcAddressEntry {
-                    address: Address::Secp256k1Bitcoin(address.to_string().into_bytes()),
-                    path,
-                    history: Vec::new(),
-                    utxos: Vec::new(),
-                })
-            };
-
-        for idx in start_index..end {
-            external.push(derive_one(0, idx)?);
-            internal.push(derive_one(1, idx)?);
-        }
-
-        result.insert(addr_type, AddressChain { external, internal });
+    for addr_type in TYPES {
+        let xpub = xpubs
+            .xpub_for(addr_type)
+            .expect("BtcAccountXpubsInput covers all four BIP purposes");
+        let chain = chains.entry(addr_type).or_insert_with(|| AddressChain {
+            external: Vec::new(),
+            internal: Vec::new(),
+        });
+        derive_btc_chain_from_xpub(
+            xpub,
+            account_index,
+            addr_type,
+            network,
+            start_index,
+            count,
+            chain,
+        )?;
     }
-
-    Ok(result)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -216,6 +318,32 @@ mod tests {
         mnemonic.to_seed(&SecretString::from("")).unwrap()
     }
 
+    fn test_xpubs() -> (BtcAccountXpubsInput, SecretBox<[u8; 64]>) {
+        let seed = test_seed();
+        let xpubs = BtcAccountXpubsInput::from_seed(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
+        (xpubs, seed)
+    }
+
+    fn generate_test_addresses(
+        xpubs: &BtcAccountXpubsInput,
+        account_index: usize,
+        network: bitcoin::Network,
+        start_index: u32,
+        count: u32,
+    ) -> HashMap<bitcoin::AddressType, AddressChain> {
+        let mut map = HashMap::new();
+        derive_btc_addresses_from_xpubs(
+            xpubs,
+            account_index,
+            network,
+            start_index,
+            count,
+            &mut map,
+        )
+        .unwrap();
+        map
+    }
+
     const ALL_TYPES: [bitcoin::AddressType; 4] = [
         bitcoin::AddressType::P2pkh,
         bitcoin::AddressType::P2sh,
@@ -225,9 +353,8 @@ mod tests {
 
     #[test]
     fn test_generate_btc_addresses_default_window() {
-        let seed = test_seed();
-        let map =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT);
 
         assert_eq!(map.len(), 4);
         for t in ALL_TYPES {
@@ -300,14 +427,11 @@ mod tests {
 
     #[test]
     fn test_generate_btc_addresses_pagination() {
-        let seed = test_seed();
-        let page_a =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
-        let page_b =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, GAP_LIMIT, GAP_LIMIT)
-                .unwrap();
-        let combined =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT * 2).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let net = bitcoin::Network::Bitcoin;
+        let page_a = generate_test_addresses(&xpubs, 0, net, 0, GAP_LIMIT);
+        let page_b = generate_test_addresses(&xpubs, 0, net, GAP_LIMIT, GAP_LIMIT);
+        let combined = generate_test_addresses(&xpubs, 0, net, 0, GAP_LIMIT * 2);
 
         for addr_type in ALL_TYPES {
             let a = &page_a[&addr_type];
@@ -331,7 +455,7 @@ mod tests {
             }
         }
 
-        let empty = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 0).unwrap();
+        let empty = generate_test_addresses(&xpubs, 0, net, 0, 0);
         assert_eq!(empty.len(), 4);
         for chain in empty.values() {
             assert!(chain.external.is_empty());
@@ -346,8 +470,8 @@ mod tests {
 
     #[test]
     fn test_get_external_returns_first_unused() {
-        let seed = test_seed();
-        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let mut map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 3);
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         chain.external[0].history = vec![dummy_txid()];
@@ -359,8 +483,8 @@ mod tests {
 
     #[test]
     fn test_get_internal_returns_first_unused() {
-        let seed = test_seed();
-        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let mut map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 3);
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         chain.internal[0].history = vec![dummy_txid()];
@@ -373,8 +497,8 @@ mod tests {
 
     #[test]
     fn test_get_external_picks_lowest_index_among_multiple_unused() {
-        let seed = test_seed();
-        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 5).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let mut map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 5);
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         let result = chain.get_external().unwrap();
@@ -383,8 +507,8 @@ mod tests {
 
     #[test]
     fn test_get_external_errors_when_all_used() {
-        let seed = test_seed();
-        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let mut map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 3);
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         for entry in &mut chain.external {
@@ -397,8 +521,8 @@ mod tests {
 
     #[test]
     fn test_get_external_errors_when_empty_chain() {
-        let seed = test_seed();
-        let map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 0).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 0);
         let chain = map.get(&bitcoin::AddressType::P2wpkh).unwrap();
 
         let err = chain.get_external().unwrap_err();
@@ -407,8 +531,8 @@ mod tests {
 
     #[test]
     fn test_get_internal_errors_when_all_used() {
-        let seed = test_seed();
-        let mut map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 3).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let mut map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 3);
         let chain = map.get_mut(&bitcoin::AddressType::P2wpkh).unwrap();
 
         for entry in &mut chain.internal {
@@ -421,8 +545,8 @@ mod tests {
 
     #[test]
     fn test_get_internal_errors_when_empty_chain() {
-        let seed = test_seed();
-        let map = generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, 0).unwrap();
+        let (xpubs, _) = test_xpubs();
+        let map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 0);
         let chain = map.get(&bitcoin::AddressType::P2wpkh).unwrap();
 
         let err = chain.get_internal().unwrap_err();

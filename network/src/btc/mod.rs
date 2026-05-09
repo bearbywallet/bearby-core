@@ -835,11 +835,12 @@ mod tests {
     #[test]
     fn print_get_history_payloads() {
         use bitcoin::hashes::{sha256, Hash};
-        use proto::btc_utils::{generate_btc_addresses, GAP_LIMIT};
+        use proto::btc_utils::{derive_btc_addresses_from_xpubs, BtcAccountXpubsInput, GAP_LIMIT};
 
         let seed = anvil_seed();
-        let chains =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
+        let xpubs = BtcAccountXpubsInput::from_seed(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
+        let mut chains = HashMap::new();
+        derive_btc_addresses_from_xpubs(&xpubs, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT, &mut chains).unwrap();
 
         let mut all_scripthashes: Vec<String> = Vec::new();
 
@@ -898,14 +899,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_script_get_history_account_zero() {
-        use proto::btc_utils::{generate_btc_addresses, GAP_LIMIT};
+        use proto::btc_utils::{derive_btc_addresses_from_xpubs, BtcAccountXpubsInput, GAP_LIMIT};
         use test_data::gen_btc_regtest_conf;
 
         let provider = NetworkProvider::new(gen_btc_regtest_conf());
         let seed = anvil_seed();
 
-        let mut chains =
-            generate_btc_addresses(&seed, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT).unwrap();
+        let xpubs = BtcAccountXpubsInput::from_seed(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
+        let mut chains = HashMap::new();
+        derive_btc_addresses_from_xpubs(&xpubs, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT, &mut chains).unwrap();
 
         let original_lengths: HashMap<bitcoin::AddressType, usize> =
             chains.iter().map(|(k, c)| (*k, c.external.len())).collect();

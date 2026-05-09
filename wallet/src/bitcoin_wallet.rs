@@ -17,8 +17,8 @@ use proto::{
     address::Address,
     btc_tx::{self, BitcoinMetadata},
     btc_utils::{
-        create_btc_address, generate_btc_addresses, AddressChain, BtcAddressEntry, ByteCodec,
-        GAP_LIMIT,
+        create_btc_address, derive_btc_addresses_from_xpubs, derive_btc_chain_from_xpub,
+        AddressChain, BtcAccountXpubsInput, BtcAddressEntry, ByteCodec, GAP_LIMIT,
     },
     secret_key::SecretKey,
     tx::{TransactionMetadata, TransactionReceipt},
@@ -109,7 +109,7 @@ pub fn derive_sk_btc_address_chains(
 
 fn append_new_p2tr_address(
     chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
-    seed: &SecretBox<[u8; SHA512_SIZE]>,
+    xpubs: &BtcAccountXpubsInput,
     account_index: usize,
     network: bitcoin::Network,
 ) -> Result<()> {
@@ -117,16 +117,16 @@ fn append_new_p2tr_address(
         .get_mut(&bitcoin::AddressType::P2tr)
         .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?;
     let next_index = p2tr.external.len() as u32;
-    let mut batch = generate_btc_addresses(seed, account_index, network, next_index, 1)?;
-    let mut new_chain = batch
-        .remove(&bitcoin::AddressType::P2tr)
-        .ok_or_else(|| WalletErrors::BincodeError("P2TR not generated".to_string()))?;
-    if let Some(ext) = new_chain.external.pop() {
-        p2tr.external.push(ext);
-    }
-    if let Some(int) = new_chain.internal.pop() {
-        p2tr.internal.push(int);
-    }
+    derive_btc_chain_from_xpub(
+        &xpubs.bip86_xpub,
+        account_index,
+        bitcoin::AddressType::P2tr,
+        network,
+        next_index,
+        1,
+        p2tr,
+    )
+    .map_err(WalletErrors::Bip329Error)?;
     Ok(())
 }
 
@@ -473,18 +473,19 @@ impl BitcoinWallet for Wallet {
         let mut scan_succeeded = false;
         let mut last_scan_view: Option<HashMap<bitcoin::AddressType, AddressChain>> = None;
 
-        for _ in 0..MAX_GAP_EXTENSIONS {
-            let batch =
-                generate_btc_addresses(seed, account_index, network, next_start, GAP_LIMIT)?;
+        let xpubs = BtcAccountXpubsInput::from_seed(seed, account_index as u32, network)
+            .map_err(WalletErrors::Bip329Error)?;
 
-            for (addr_type, batch_chain) in batch {
-                let target = master.entry(addr_type).or_insert_with(|| AddressChain {
-                    external: Vec::new(),
-                    internal: Vec::new(),
-                });
-                target.external.extend(batch_chain.external);
-                target.internal.extend(batch_chain.internal);
-            }
+        for _ in 0..MAX_GAP_EXTENSIONS {
+            derive_btc_addresses_from_xpubs(
+                &xpubs,
+                account_index,
+                network,
+                next_start,
+                GAP_LIMIT,
+                &mut master,
+            )
+            .map_err(WalletErrors::Bip329Error)?;
             next_start = next_start.saturating_add(GAP_LIMIT);
 
             let mut scan_view = master.clone();
@@ -645,7 +646,9 @@ impl BitcoinWallet for Wallet {
             .unwrap_or(true);
 
         if needs_new_change {
-            append_new_p2tr_address(&mut chains, &seed_secret, account_index, network)?;
+            let xpubs = BtcAccountXpubsInput::from_seed(&seed_secret, account_index as u32, network)
+                .map_err(WalletErrors::Bip329Error)?;
+            append_new_p2tr_address(&mut chains, &xpubs, account_index, network)?;
             self.save_btc_addresses(account_index, &chains, data.chain_hash)?;
         }
 
@@ -763,7 +766,9 @@ impl BitcoinWallet for Wallet {
             chain.bitcoin_network()
         );
 
-        append_new_p2tr_address(&mut chains, seed, account_index, network)?;
+        let xpubs = BtcAccountXpubsInput::from_seed(seed, account_index as u32, network)
+            .map_err(WalletErrors::Bip329Error)?;
+        append_new_p2tr_address(&mut chains, &xpubs, account_index, network)?;
         self.save_btc_addresses(account_index, &chains, chain.hash())?;
 
         let new_addr = chains
