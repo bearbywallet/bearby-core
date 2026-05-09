@@ -5,6 +5,7 @@ use config::argon::KEY_SIZE;
 use config::cipher::{PROOF_SALT, PROOF_SIZE};
 use config::session::AuthMethod;
 use proto::address::Address;
+use proto::btc_utils::BtcAccountXpubsInput;
 use proto::pubkey::PubKey;
 
 use cipher::keychain::KeyChain;
@@ -40,6 +41,7 @@ pub struct LedgerParams<'a> {
     pub wallet_name: String,
     pub biometric_type: AuthMethod,
     pub chain_config: &'a ChainConfig,
+    pub btc_xpubs: Vec<BtcAccountXpubsInput>,
 }
 
 pub struct SecretKeyParams<'a> {

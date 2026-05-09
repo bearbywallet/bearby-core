@@ -1,5 +1,5 @@
 use crate::{
-    account::{self, AccountV2},
+    account::AccountV2,
     bitcoin_wallet::BitcoinWallet,
     wallet_data::WalletDataV2,
     wallet_types::WalletTypes,
@@ -10,7 +10,8 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
 use config::sha::SHA256_SIZE;
-use errors::{account::AccountErrors, wallet::WalletErrors};
+use crypto::slip44;
+use errors::wallet::WalletErrors;
 use proto::pubkey::PubKey;
 use secrecy::ExposeSecret;
 use std::{
@@ -25,8 +26,8 @@ use crate::{wallet_storage::StorageOperations, Bip39Params, LedgerParams, Wallet
 pub trait WalletInit {
     type Error;
 
-    fn from_ledger(
-        params: LedgerParams,
+    async fn from_ledger(
+        params: LedgerParams<'_>,
         config: WalletConfig,
         ftokens: Vec<FToken>,
     ) -> std::result::Result<Self, Self::Error>
@@ -65,8 +66,8 @@ impl WalletInit for Wallet {
         chacha_key
     }
 
-    fn from_ledger(
-        params: LedgerParams,
+    async fn from_ledger(
+        params: LedgerParams<'_>,
         config: WalletConfig,
         ftokens: Vec<FToken>,
     ) -> Result<Self> {
@@ -80,15 +81,47 @@ impl WalletInit for Wallet {
         let wallet_address: [u8; SHA256_SIZE] = Self::wallet_key_gen();
         let target_network = params.chain_config.bitcoin_network();
         let target_bip = crypto::bip49::DerivationPath::default_bip(params.chain_config.slip_44);
-        let accounts: Vec<AccountV2> = params
+
+        let wallet = Self {
+            storage: config.storage,
+            wallet_address,
+        };
+
+        let is_btc = params.chain_config.slip_44 == slip44::BITCOIN;
+        let mut built_accounts: Vec<AccountV2> = Vec::new();
+
+        for (i, ((ledger_index, pub_key, addr), account_name)) in params
             .accounts
             .into_iter()
             .zip(params.account_names.into_iter())
-            .map(|((ledger_index, pub_key, addr), account_name)| {
-                let pub_key = match pub_key {
-                    Some(PubKey::Secp256k1Sha256(_)) => pub_key,
-                    _ => None,
-                };
+            .enumerate()
+        {
+            let pub_key = match pub_key {
+                Some(PubKey::Secp256k1Sha256(_)) => pub_key,
+                _ => None,
+            };
+
+            if is_btc {
+                let xpubs = params.btc_xpubs.get(i).ok_or_else(|| {
+                    WalletErrors::BincodeError(
+                        "BTC Ledger import requires xpubs for each account".to_string(),
+                    )
+                })?;
+                let acc_idx = ledger_index as usize;
+                let entry = wallet
+                    .generate_wallet(xpubs, acc_idx, params.chain_config)
+                    .await?;
+                if i != acc_idx {
+                    let chains = wallet.get_btc_addresses(acc_idx, params.chain_config.hash())?;
+                    wallet.save_btc_addresses(i, &chains, params.chain_config.hash())?;
+                }
+                built_accounts.push(AccountV2 {
+                    account_type: crate::account_type::AccountType::Ledger(acc_idx),
+                    addr: entry.address,
+                    name: account_name,
+                    pub_key: None,
+                });
+            } else {
                 let addr = if let Some(network) = target_network {
                     match &addr {
                         proto::address::Address::Secp256k1Bitcoin(_) => {
@@ -99,17 +132,18 @@ impl WalletInit for Wallet {
                 } else {
                     addr
                 };
-                Ok(AccountV2 {
+                built_accounts.push(AccountV2 {
                     account_type: crate::account_type::AccountType::Ledger(ledger_index as usize),
                     addr,
                     name: account_name,
                     pub_key,
-                })
-            })
-            .collect::<std::result::Result<Vec<account::AccountV2>, AccountErrors>>()?;
+                });
+            }
+        }
+
         let slip44_accounts = HashMap::from([(
             params.chain_config.slip_44,
-            HashMap::from([(target_bip, accounts)]),
+            HashMap::from([(target_bip, built_accounts)]),
         )]);
 
         let data = WalletDataV2 {
@@ -125,10 +159,6 @@ impl WalletInit for Wallet {
             bip: target_bip,
             bip_preferences: HashMap::new(),
             derivation_type: 0,
-        };
-        let wallet = Self {
-            storage: config.storage,
-            wallet_address,
         };
 
         wallet.save_wallet_data(data)?;
@@ -270,7 +300,7 @@ impl WalletInit for Wallet {
             for (pos_idx, (idx, name)) in params.indexes.iter().enumerate() {
                 let account = if slip44 == crypto::slip44::BITCOIN {
                     let account = wallet
-                        .generate_wallet(&mnemonic_seed_secret, *idx, name.clone(), effective_chain)
+                        .generate_bip39_btc_account(&mnemonic_seed_secret, *idx, name.clone(), effective_chain)
                         .await?;
                     if pos_idx != *idx {
                         let chains = wallet.get_btc_addresses(*idx, chain_hash)?;
@@ -492,5 +522,4 @@ mod tests_init_wallet {
 
         assert_eq!(w_data, data);
     }
-
 }

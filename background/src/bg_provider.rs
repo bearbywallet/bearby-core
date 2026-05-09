@@ -262,7 +262,7 @@ impl ProvidersManagement for Background {
 
                     for (idx, name) in btc_accounts {
                         wallet
-                            .generate_wallet(&seed_secret, idx, name, &provider.config)
+                            .generate_bip39_btc_account(&seed_secret, idx, name, &provider.config)
                             .await?;
                     }
                 }

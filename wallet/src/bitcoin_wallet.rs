@@ -326,6 +326,13 @@ pub trait BitcoinWallet {
 
     async fn generate_wallet(
         &self,
+        xpubs: &BtcAccountXpubsInput,
+        account_index: usize,
+        chain: &ChainConfig,
+    ) -> std::result::Result<BtcAddressEntry, Self::Error>;
+
+    async fn generate_bip39_btc_account(
+        &self,
         seed: &SecretBox<[u8; SHA512_SIZE]>,
         account_index: usize,
         name: String,
@@ -459,11 +466,10 @@ impl BitcoinWallet for Wallet {
 
     async fn generate_wallet(
         &self,
-        seed: &SecretBox<[u8; SHA512_SIZE]>,
+        xpubs: &BtcAccountXpubsInput,
         account_index: usize,
-        name: String,
         chain: &ChainConfig,
-    ) -> Result<AccountV2> {
+    ) -> Result<BtcAddressEntry> {
         let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
         let provider = NetworkProvider::new(chain.clone());
         let preferred_type = bitcoin::AddressType::P2tr;
@@ -473,12 +479,9 @@ impl BitcoinWallet for Wallet {
         let mut scan_succeeded = false;
         let mut last_scan_view: Option<HashMap<bitcoin::AddressType, AddressChain>> = None;
 
-        let xpubs = BtcAccountXpubsInput::from_seed(seed, account_index as u32, network)
-            .map_err(WalletErrors::Bip329Error)?;
-
         for _ in 0..MAX_GAP_EXTENSIONS {
             derive_btc_addresses_from_xpubs(
-                &xpubs,
+                xpubs,
                 account_index,
                 network,
                 next_start,
@@ -553,8 +556,21 @@ impl BitcoinWallet for Wallet {
             p2tr_fallback()?
         };
 
-        let account = AccountV2::from_hd(seed, name, &entry.path, Some(network))?;
-        Ok(account)
+        Ok(entry)
+    }
+
+    async fn generate_bip39_btc_account(
+        &self,
+        seed: &SecretBox<[u8; SHA512_SIZE]>,
+        account_index: usize,
+        name: String,
+        chain: &ChainConfig,
+    ) -> Result<AccountV2> {
+        let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
+        let xpubs = BtcAccountXpubsInput::from_seed(seed, account_index as u32, network)
+            .map_err(WalletErrors::Bip329Error)?;
+        let entry = self.generate_wallet(&xpubs, account_index, chain).await?;
+        AccountV2::from_hd(seed, name, &entry.path, Some(network)).map_err(Into::into)
     }
 
     fn get_btc_addresses(
@@ -886,7 +902,7 @@ impl BitcoinWallet for Wallet {
                 let mnemonic = self.reveal_mnemonic(seed_bytes)?;
                 let seed = mnemonic.to_seed(&crate::empty_passphrase())?;
 
-                let account = self.generate_wallet(&seed, 0, legacy_name, chain).await?;
+                let account = self.generate_bip39_btc_account(&seed, 0, legacy_name, chain).await?;
 
                 let mut new_btc: HashMap<u32, Vec<AccountV2>> = HashMap::new();
                 new_btc.insert(DerivationPath::BIP86_PURPOSE, vec![account]);

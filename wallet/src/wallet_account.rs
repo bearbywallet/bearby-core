@@ -222,7 +222,7 @@ impl AccountManagement for Wallet {
 
             let hd_account = if slip44 == crypto::slip44::BITCOIN {
                 self
-                    .generate_wallet(&mnemonic_seed_secret, index, name.clone(), effective_chain)
+                    .generate_bip39_btc_account(&mnemonic_seed_secret, index, name.clone(), effective_chain)
                     .await?
             } else {
                 let path = crypto::bip49::DerivationPath::with_index(slip44, (0, 0, index));
