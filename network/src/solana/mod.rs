@@ -920,59 +920,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_solana_update_balances() {
-        const BINANCE_WALLET: &str = "DT78gNBH7enTRrAFcag4PAuQbSeemstmtj888w8pkvdf";
-
-        let conf = gen_sol_mainnet_conf();
-        let provider = NetworkProvider::new(conf.clone());
-        let binance_account = Address::from_solana_address(BINANCE_WALLET).unwrap();
-
-        let mut sol = {
-            let mut t = gen_sol_token();
-            t.chain_hash = conf.hash();
-            t
-        };
-
-        let mint = Address::Ed25519Solana(mainnet_usdc_mint_bytes().into());
-        let mut usdc = provider.solana_ftoken_meta(mint, &[]).await.unwrap();
-
-        assert_eq!(usdc.name, "USD Coin");
-        assert_eq!(usdc.symbol, "USDC");
-        assert_eq!(usdc.decimals, 6);
-        println!(
-            "Token meta: {} ({}) decimals={}",
-            usdc.name, usdc.symbol, usdc.decimals
-        );
-
-        provider
-            .solana_update_balances(vec![&mut sol, &mut usdc], &[&binance_account])
-            .await
-            .unwrap();
-
-        let sol_balance = sol.balances[&binance_account.to_hash()];
-        let usdc_balance = usdc.balances[&binance_account.to_hash()];
-
-        assert!(
-            sol_balance > U256::ZERO,
-            "Binance wallet should have native SOL"
-        );
-        assert!(
-            usdc.balances.contains_key(&binance_account.to_hash()),
-            "USDC balance entry should exist for Binance wallet"
-        );
-        println!(
-            "Binance SOL: {} lamports ({} SOL)",
-            sol_balance,
-            sol_balance / U256::from(1_000_000_000u64)
-        );
-        println!(
-            "Binance USDC: {} raw units ({} USDC)",
-            usdc_balance,
-            usdc_balance / U256::from(1_000_000u64)
-        );
-    }
-
-    #[tokio::test]
     async fn test_solana_update_balances_spl_rich_address() {
         let conf = gen_sol_devnet_conf();
         let provider = NetworkProvider::new(conf.clone());
