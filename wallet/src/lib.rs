@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use cipher::argon2::{derive_key, Argon2Seed};
 use config::argon::KEY_SIZE;
 use config::cipher::{PROOF_SALT, PROOF_SIZE};
 use config::session::AuthMethod;
 use proto::address::Address;
-use proto::btc_utils::BtcAccountXpubsInput;
+use proto::btc_utils::AddressChain;
 use proto::pubkey::PubKey;
 
 use cipher::keychain::KeyChain;
@@ -41,7 +41,7 @@ pub struct LedgerParams<'a> {
     pub wallet_name: String,
     pub biometric_type: AuthMethod,
     pub chain_config: &'a ChainConfig,
-    pub btc_xpubs: Vec<BtcAccountXpubsInput>,
+    pub btc_chains: HashMap<u8, HashMap<bitcoin::AddressType, AddressChain>>,
 }
 
 pub struct SecretKeyParams<'a> {

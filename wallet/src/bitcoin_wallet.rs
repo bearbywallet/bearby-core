@@ -30,6 +30,97 @@ use std::collections::{HashMap, HashSet};
 
 const MAX_GAP_EXTENSIONS: u32 = 10;
 
+pub async fn scan_btc_chains_for_xpubs(
+    xpubs: &BtcAccountXpubsInput,
+    account_index: usize,
+    chain: &ChainConfig,
+) -> Result<HashMap<bitcoin::AddressType, AddressChain>> {
+    let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
+    let provider = NetworkProvider::new(chain.clone());
+
+    let mut master: HashMap<bitcoin::AddressType, AddressChain> = HashMap::new();
+    let mut next_start: u32 = 0;
+    let mut scan_succeeded = false;
+    let mut last_scan_view: Option<HashMap<bitcoin::AddressType, AddressChain>> = None;
+
+    for _ in 0..MAX_GAP_EXTENSIONS {
+        derive_btc_addresses_from_xpubs(
+            xpubs,
+            account_index,
+            network,
+            next_start,
+            GAP_LIMIT,
+            &mut master,
+        )
+        .map_err(WalletErrors::Bip329Error)?;
+        next_start = next_start.saturating_add(GAP_LIMIT);
+
+        let mut scan_view = master.clone();
+        match provider.batch_script_get_history(&mut scan_view).await {
+            Ok(()) => {
+                scan_succeeded = true;
+                let done = scan_view
+                    .values()
+                    .all(|c| c.get_external().is_ok() && c.get_internal().is_ok());
+                last_scan_view = Some(scan_view);
+                if done {
+                    break;
+                }
+            }
+            Err(e) => {
+                println!(
+                    "[scan_btc_chains_for_xpubs] scan failed (offline?): {:?}",
+                    e
+                );
+                break;
+            }
+        }
+    }
+
+    if scan_succeeded {
+        let mut result = last_scan_view.unwrap_or(master);
+        if let Err(e) = provider.batch_btc_list_unspent(&mut result).await {
+            println!(
+                "[scan_btc_chains_for_xpubs] UTXO scan failed (offline?): {:?}",
+                e
+            );
+        }
+        Ok(result)
+    } else {
+        Ok(master)
+    }
+}
+
+pub fn pick_primary_btc_entry(
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
+) -> Result<BtcAddressEntry> {
+    let preferred_type = bitcoin::AddressType::P2tr;
+
+    let p2tr_fallback = || {
+        chains
+            .get(&preferred_type)
+            .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?
+            .external
+            .first()
+            .cloned()
+            .ok_or_else(|| WalletErrors::BincodeError("P2TR external chain is empty".to_string()))
+    };
+
+    match chains.get(&preferred_type) {
+        Some(chain) => match chain.get_external() {
+            Ok(e) => Ok(e.clone()),
+            Err(_) => {
+                println!(
+                    "[pick_primary_btc_entry] gap limit ({}) exceeded - falling back to first P2TR external entry",
+                    MAX_GAP_EXTENSIONS * GAP_LIMIT,
+                );
+                p2tr_fallback()
+            }
+        },
+        None => p2tr_fallback(),
+    }
+}
+
 pub fn get_dust_limit(addr: &Address) -> u64 {
     match addr.get_bitcoin_address_type() {
         Ok(bitcoin::AddressType::P2wpkh) => 294,
@@ -470,93 +561,9 @@ impl BitcoinWallet for Wallet {
         account_index: usize,
         chain: &ChainConfig,
     ) -> Result<BtcAddressEntry> {
-        let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
-        let provider = NetworkProvider::new(chain.clone());
-        let preferred_type = bitcoin::AddressType::P2tr;
-
-        let mut master: HashMap<bitcoin::AddressType, AddressChain> = HashMap::new();
-        let mut next_start: u32 = 0;
-        let mut scan_succeeded = false;
-        let mut last_scan_view: Option<HashMap<bitcoin::AddressType, AddressChain>> = None;
-
-        for _ in 0..MAX_GAP_EXTENSIONS {
-            derive_btc_addresses_from_xpubs(
-                xpubs,
-                account_index,
-                network,
-                next_start,
-                GAP_LIMIT,
-                &mut master,
-            )
-            .map_err(WalletErrors::Bip329Error)?;
-            next_start = next_start.saturating_add(GAP_LIMIT);
-
-            let mut scan_view = master.clone();
-            match provider.batch_script_get_history(&mut scan_view).await {
-                Ok(()) => {
-                    scan_succeeded = true;
-                    let done = scan_view
-                        .values()
-                        .all(|chain| chain.get_external().is_ok() && chain.get_internal().is_ok());
-                    last_scan_view = Some(scan_view);
-                    if done {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    println!("[generate_wallet] scan failed (offline?): {:?}", e);
-                    break;
-                }
-            }
-        }
-
-        let to_persist = last_scan_view.as_ref().unwrap_or(&master);
-        let stored: Vec<(u8, AddressChain)> = to_persist
-            .iter()
-            .map(|(addr_type, chain)| (addr_type.to_byte(), chain.clone()))
-            .collect();
-        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index, chain.hash());
-        self.storage.set_versioned(&key, &stored)?;
-
-        let p2tr_fallback = || {
-            master
-                .get(&preferred_type)
-                .ok_or_else(|| {
-                    WalletErrors::BincodeError("P2TR chain missing after generation".to_string())
-                })?
-                .external
-                .first()
-                .cloned()
-                .ok_or_else(|| {
-                    WalletErrors::BincodeError(
-                        "P2TR external chain is empty after generation".to_string(),
-                    )
-                })
-        };
-
-        let entry = if scan_succeeded {
-            let view = last_scan_view.as_ref().ok_or_else(|| {
-                WalletErrors::BincodeError("scan_view missing after successful scan".to_string())
-            })?;
-            let preferred = view.get(&preferred_type).ok_or_else(|| {
-                WalletErrors::BincodeError("P2TR chain missing in scan view".to_string())
-            })?;
-            match preferred.get_external() {
-                Ok(e) => e.clone(),
-                Err(_) => {
-                    println!(
-                        "[generate_wallet] gap limit ({}) exceeded for account {} - wallet may have unscanned activity beyond this window",
-                        MAX_GAP_EXTENSIONS * GAP_LIMIT,
-                        account_index
-                    );
-                    p2tr_fallback()?
-                }
-            }
-        } else {
-            p2tr_fallback()?
-        };
-
-        Ok(entry)
+        let chains = scan_btc_chains_for_xpubs(xpubs, account_index, chain).await?;
+        self.save_btc_addresses(account_index, &chains, chain.hash())?;
+        pick_primary_btc_entry(&chains)
     }
 
     async fn generate_bip39_btc_account(
@@ -662,8 +669,9 @@ impl BitcoinWallet for Wallet {
             .unwrap_or(true);
 
         if needs_new_change {
-            let xpubs = BtcAccountXpubsInput::from_seed(&seed_secret, account_index as u32, network)
-                .map_err(WalletErrors::Bip329Error)?;
+            let xpubs =
+                BtcAccountXpubsInput::from_seed(&seed_secret, account_index as u32, network)
+                    .map_err(WalletErrors::Bip329Error)?;
             append_new_p2tr_address(&mut chains, &xpubs, account_index, network)?;
             self.save_btc_addresses(account_index, &chains, data.chain_hash)?;
         }
@@ -902,7 +910,9 @@ impl BitcoinWallet for Wallet {
                 let mnemonic = self.reveal_mnemonic(seed_bytes)?;
                 let seed = mnemonic.to_seed(&crate::empty_passphrase())?;
 
-                let account = self.generate_bip39_btc_account(&seed, 0, legacy_name, chain).await?;
+                let account = self
+                    .generate_bip39_btc_account(&seed, 0, legacy_name, chain)
+                    .await?;
 
                 let mut new_btc: HashMap<u32, Vec<AccountV2>> = HashMap::new();
                 new_btc.insert(DerivationPath::BIP86_PURPOSE, vec![account]);

@@ -2,9 +2,10 @@ pub use pqbip39::mnemonic::Mnemonic;
 
 use config::session::AuthMethod;
 use errors::background::BackgroundError;
-use proto::{address::Address, btc_utils::BtcAccountXpubsInput, pubkey::PubKey, secret_key::SecretKey};
+use proto::{address::Address, btc_utils::AddressChain, pubkey::PubKey, secret_key::SecretKey};
 use secrecy::SecretString;
 use settings::wallet_settings::WalletSettings;
+use std::collections::HashMap;
 use std::sync::Arc;
 use storage::LocalStorage;
 use token::ft::FToken;
@@ -48,7 +49,7 @@ pub struct BackgroundLedgerParams {
     pub wallet_settings: WalletSettings,
     pub chain_hash: u64,
     pub ftokens: Vec<FToken>,
-    pub btc_xpubs: Vec<BtcAccountXpubsInput>,
+    pub btc_chains: HashMap<u8, HashMap<bitcoin::AddressType, AddressChain>>,
 }
 
 pub struct Background {
@@ -56,6 +57,7 @@ pub struct Background {
     pub wallets: Vec<Wallet>,
 }
 
+pub mod bg_bitcoin;
 pub mod bg_book;
 pub mod bg_connections;
 pub mod bg_crypto;

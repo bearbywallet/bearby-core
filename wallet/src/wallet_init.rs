@@ -1,9 +1,6 @@
 use crate::{
-    account::AccountV2,
-    bitcoin_wallet::BitcoinWallet,
-    wallet_data::WalletDataV2,
-    wallet_types::WalletTypes,
-    Result, SecretKeyParams, Wallet, WalletAddrType,
+    account::AccountV2, bitcoin_wallet::BitcoinWallet, wallet_data::WalletDataV2,
+    wallet_types::WalletTypes, Result, SecretKeyParams, Wallet, WalletAddrType,
 };
 use async_trait::async_trait;
 use rand::{Rng, SeedableRng};
@@ -102,21 +99,16 @@ impl WalletInit for Wallet {
             };
 
             if is_btc {
-                let xpubs = params.btc_xpubs.get(i).ok_or_else(|| {
+                let chains = params.btc_chains.get(&ledger_index).ok_or_else(|| {
                     WalletErrors::BincodeError(
-                        "BTC Ledger import requires xpubs for each account".to_string(),
+                        "BTC Ledger import requires pre-scanned chains for each ledger_index"
+                            .to_string(),
                     )
                 })?;
-                let acc_idx = ledger_index as usize;
-                let entry = wallet
-                    .generate_wallet(xpubs, acc_idx, params.chain_config)
-                    .await?;
-                if i != acc_idx {
-                    let chains = wallet.get_btc_addresses(acc_idx, params.chain_config.hash())?;
-                    wallet.save_btc_addresses(i, &chains, params.chain_config.hash())?;
-                }
+                wallet.save_btc_addresses(i, chains, params.chain_config.hash())?;
+                let entry = crate::bitcoin_wallet::pick_primary_btc_entry(chains)?;
                 built_accounts.push(AccountV2 {
-                    account_type: crate::account_type::AccountType::Ledger(acc_idx),
+                    account_type: crate::account_type::AccountType::Ledger(ledger_index as usize),
                     addr: entry.address,
                     name: account_name,
                     pub_key: None,
@@ -300,7 +292,12 @@ impl WalletInit for Wallet {
             for (pos_idx, (idx, name)) in params.indexes.iter().enumerate() {
                 let account = if slip44 == crypto::slip44::BITCOIN {
                     let account = wallet
-                        .generate_bip39_btc_account(&mnemonic_seed_secret, *idx, name.clone(), effective_chain)
+                        .generate_bip39_btc_account(
+                            &mnemonic_seed_secret,
+                            *idx,
+                            name.clone(),
+                            effective_chain,
+                        )
                         .await?;
                     if pos_idx != *idx {
                         let chains = wallet.get_btc_addresses(*idx, chain_hash)?;
