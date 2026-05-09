@@ -45,7 +45,11 @@ pub fn sign_psbt_input(
     let secp = Secp256k1::new();
 
     if index >= psbt.inputs.len() || index >= prevouts.len() {
-        println!("[sign_psbt_input] index={}/{} OOB", index, psbt.inputs.len());
+        println!(
+            "[sign_psbt_input] index={}/{} OOB",
+            index,
+            psbt.inputs.len()
+        );
         return Err(TransactionErrors::PsbtSigningFailed);
     }
 
@@ -66,7 +70,7 @@ pub fn sign_psbt_input(
     match addr_type {
         bitcoin::AddressType::P2tr => {
             let sighash_type = TapSighashType::Default;
-            let prevouts_ref = Prevouts::All(&prevouts);
+            let prevouts_ref = Prevouts::All(prevouts);
             let sighash = cache
                 .taproot_key_spend_signature_hash(index, &prevouts_ref, sighash_type)
                 .map_err(|_| TransactionErrors::SighashComputationFailed)?;
