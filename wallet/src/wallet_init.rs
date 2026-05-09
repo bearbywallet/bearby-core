@@ -9,6 +9,7 @@ use rand_chacha::ChaCha20Rng;
 use config::sha::SHA256_SIZE;
 use crypto::slip44;
 use errors::wallet::WalletErrors;
+use proto::address::Address;
 use proto::pubkey::PubKey;
 use secrecy::ExposeSecret;
 use std::{
@@ -87,17 +88,12 @@ impl WalletInit for Wallet {
         let is_btc = params.chain_config.slip_44 == slip44::BITCOIN;
         let mut built_accounts: Vec<AccountV2> = Vec::new();
 
-        for (i, ((ledger_index, pub_key, addr), account_name)) in params
+        for (i, ((ledger_index, opt_pub_key), account_name)) in params
             .accounts
             .into_iter()
             .zip(params.account_names.into_iter())
             .enumerate()
         {
-            let pub_key = match pub_key {
-                Some(PubKey::Secp256k1Sha256(_)) => pub_key,
-                _ => None,
-            };
-
             if is_btc {
                 let chains = params.btc_chains.get(&ledger_index).ok_or_else(|| {
                     WalletErrors::BincodeError(
@@ -114,11 +110,20 @@ impl WalletInit for Wallet {
                     pub_key: None,
                 });
             } else {
+                let pub_key = opt_pub_key.ok_or_else(|| {
+                    WalletErrors::BincodeError(
+                        "Non-BTC Ledger account requires a public key".to_string(),
+                    )
+                })?;
+                let stored_pub_key = if matches!(&pub_key, PubKey::Secp256k1Sha256(_)) {
+                    Some(pub_key.clone())
+                } else {
+                    None
+                };
+                let addr = pub_key.get_addr()?;
                 let addr = if let Some(network) = target_network {
                     match &addr {
-                        proto::address::Address::Secp256k1Bitcoin(_) => {
-                            addr.re_encode_btc_network(network)?
-                        }
+                        Address::Secp256k1Bitcoin(_) => addr.re_encode_btc_network(network)?,
                         _ => addr,
                     }
                 } else {
@@ -128,7 +133,7 @@ impl WalletInit for Wallet {
                     account_type: crate::account_type::AccountType::Ledger(ledger_index as usize),
                     addr,
                     name: account_name,
-                    pub_key,
+                    pub_key: stored_pub_key,
                 });
             }
         }

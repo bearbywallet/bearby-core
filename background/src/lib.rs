@@ -2,7 +2,7 @@ pub use pqbip39::mnemonic::Mnemonic;
 
 use config::session::AuthMethod;
 use errors::background::BackgroundError;
-use proto::{address::Address, btc_utils::AddressChain, pubkey::PubKey, secret_key::SecretKey};
+use proto::{btc_utils::AddressChain, pubkey::PubKey, secret_key::SecretKey};
 use secrecy::SecretString;
 use settings::wallet_settings::WalletSettings;
 use std::collections::HashMap;
@@ -41,7 +41,7 @@ pub struct BackgroundSKParams<'a> {
 #[derive(Debug)]
 pub struct BackgroundLedgerParams {
     pub ledger_id: Vec<u8>,
-    pub accounts: Vec<(u8, Option<PubKey>, Address)>,
+    pub accounts: Vec<(u8, Option<PubKey>)>,
     pub wallet_name: String,
     pub account_names: Vec<String>,
     pub wallet_index: usize,

@@ -4,7 +4,6 @@ use cipher::argon2::{derive_key, Argon2Seed};
 use config::argon::KEY_SIZE;
 use config::cipher::{PROOF_SALT, PROOF_SIZE};
 use config::session::AuthMethod;
-use proto::address::Address;
 use proto::btc_utils::AddressChain;
 use proto::pubkey::PubKey;
 
@@ -33,7 +32,7 @@ pub struct WalletConfig {
 }
 
 pub struct LedgerParams<'a> {
-    pub accounts: Vec<(u8, Option<PubKey>, Address)>,
+    pub accounts: Vec<(u8, Option<PubKey>)>,
     pub ledger_id: Vec<u8>,
     pub proof: [u8; KEY_SIZE],
     pub account_names: Vec<String>,

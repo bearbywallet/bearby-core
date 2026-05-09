@@ -27,8 +27,8 @@ impl BitcoinManagement for Background {
         chain_hash: u64,
     ) -> Result<HashMap<bitcoin::AddressType, AddressChain>> {
         let provider = self.get_provider(chain_hash)?;
-        let chains = scan_btc_chains_for_xpubs(xpubs, ledger_index as usize, &provider.config)
-            .await?;
+        let chains =
+            scan_btc_chains_for_xpubs(xpubs, ledger_index as usize, &provider.config).await?;
         Ok(chains)
     }
 }
@@ -117,17 +117,7 @@ mod tests_bg_bitcoin {
 
             btc_chains.insert(li, chains);
 
-            let dummy_addr = proto::address::Address::Secp256k1Bitcoin(
-                proto::btc_utils::create_btc_address(
-                    &xpubs.bip86_xpub.public_key.serialize(),
-                    network,
-                    bitcoin::AddressType::P2tr,
-                )
-                .unwrap()
-                .to_string()
-                .into_bytes(),
-            );
-            accounts.push((li, None, dummy_addr));
+            accounts.push((li, None));
             account_names.push(format!("BTC Ledger {}", li));
         }
 
