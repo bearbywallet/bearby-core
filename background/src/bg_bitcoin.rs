@@ -27,10 +27,8 @@ impl BitcoinManagement for Background {
         chain_hash: u64,
     ) -> Result<HashMap<bitcoin::AddressType, AddressChain>> {
         let provider = self.get_provider(chain_hash)?;
-        let chains: HashMap<bitcoin::AddressType, AddressChain> =
-            scan_btc_chains_for_xpubs(xpubs, ledger_index as usize, &provider.config)
-                .await
-                .map_err(errors::background::BackgroundError::from)?;
+        let chains = scan_btc_chains_for_xpubs(xpubs, ledger_index as usize, &provider.config)
+            .await?;
         Ok(chains)
     }
 }
@@ -45,11 +43,9 @@ mod tests_bg_bitcoin {
     use config::bip39::EN_WORDS;
     use config::session::AuthMethod;
     use pqbip39::mnemonic::Mnemonic;
-    use proto::btc_utils::BtcAccountXpubsInput;
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
     use settings::wallet_settings::WalletSettings;
-    use std::collections::HashMap;
     use test_data::{empty_passphrase, gen_btc_regtest_conf};
     use wallet::bitcoin_wallet::{pick_primary_btc_entry, BitcoinWallet};
     use wallet::wallet_storage::StorageOperations;
