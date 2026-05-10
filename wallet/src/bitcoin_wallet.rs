@@ -512,43 +512,86 @@ impl BitcoinWallet for Wallet {
             )));
         }
 
-        let mnemonic = self.reveal_mnemonic(seed_bytes)?;
-        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
-            WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)))
-        })?;
+        let data = self.get_wallet_data()?;
 
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)
             .map_err(|e| WalletErrors::BincodeError(format!("build_psbt: {:?}", e)))?;
         let secp = bitcoin::secp256k1::Secp256k1::new();
         let prevouts = &witness_utxos;
 
-        for i in 0..psbt.inputs.len() {
-            let (addr_type_byte, path) = &input_meta_raw[i];
-            let addr_type = bitcoin::AddressType::from_byte(*addr_type_byte).map_err(|_| {
-                WalletErrors::BincodeError(format!(
-                    "invalid btc address type byte: {}",
-                    addr_type_byte
-                ))
-            })?;
-            let sk = proto::bip32::derive_private_key(&seed_secret, &path.get_path())
-                .map_err(WalletErrors::Bip329Error)?;
-            let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&sk.to_bytes())
-                .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
-            let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+        let addr_types: Vec<bitcoin::AddressType> = input_meta_raw
+            .iter()
+            .map(|(byte, _)| {
+                bitcoin::AddressType::from_byte(*byte).map_err(|_| {
+                    WalletErrors::BincodeError(format!(
+                        "invalid btc address type byte: {}",
+                        byte
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-            btc_tx::sign_psbt_input(&mut psbt, i, &secret_key, &public_key, addr_type, prevouts)
-                .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
+        let signing_keys: Vec<(
+            bitcoin::secp256k1::SecretKey,
+            bitcoin::secp256k1::PublicKey,
+        )> = match &data.wallet_type {
+            WalletTypes::SecretPhrase(_) => {
+                let mnemonic = self.reveal_mnemonic(seed_bytes)?;
+                let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
+                    WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!(
+                        "{:?}",
+                        e
+                    )))
+                })?;
+
+                input_meta_raw
+                    .iter()
+                    .map(|(_, path)| {
+                        let sk = proto::bip32::derive_private_key(
+                            &seed_secret,
+                            &path.get_path(),
+                        )
+                        .map_err(WalletErrors::Bip329Error)?;
+                        let secret_key =
+                            bitcoin::secp256k1::SecretKey::from_slice(&sk.to_bytes())
+                                .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
+                        let public_key =
+                            bitcoin::secp256k1::PublicKey::from_secret_key(
+                                &secp, &secret_key,
+                            );
+                        Ok((secret_key, public_key))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
+            WalletTypes::SecretKey => {
+                let keypair = self.reveal_keypair(0, seed_bytes, passphrase)?;
+                let sk_bytes = keypair.get_sk_bytes();
+                let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&sk_bytes)
+                    .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
+                let public_key =
+                    bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+                vec![(secret_key, public_key); psbt.inputs.len()]
+            }
+            _ => return Err(WalletErrors::InvalidAccountType),
+        };
+
+        for i in 0..psbt.inputs.len() {
+            let (secret_key, public_key) = signing_keys[i];
+            btc_tx::sign_psbt_input(
+                &mut psbt,
+                i,
+                &secret_key,
+                &public_key,
+                addr_types[i],
+                prevouts,
+            )
+            .map_err(|e| {
+                WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e))
+            })?;
         }
 
         for i in 0..psbt.inputs.len() {
-            let (addr_type_byte, _) = &input_meta_raw[i];
-            let addr_type = bitcoin::AddressType::from_byte(*addr_type_byte).map_err(|_| {
-                WalletErrors::BincodeError(format!(
-                    "invalid btc address type byte: {}",
-                    addr_type_byte
-                ))
-            })?;
-            btc_tx::finalize_psbt_input(&mut psbt, i, addr_type).map_err(|e| {
+            btc_tx::finalize_psbt_input(&mut psbt, i, addr_types[i]).map_err(|e| {
                 WalletErrors::BincodeError(format!("finalize input {}: {:?}", i, e))
             })?;
         }
