@@ -305,14 +305,6 @@ pub trait TransactionsManagement {
         title: Option<String>,
         icon: Option<String>,
     ) -> std::result::Result<(PubKey, Signature), Self::Error>;
-
-    async fn rotate_btc_account(
-        &self,
-        wallet_index: usize,
-        account_index: usize,
-        seed_bytes: &Argon2Seed,
-        passphrase: &SecretString,
-    ) -> std::result::Result<(), Self::Error>;
 }
 
 #[async_trait]
@@ -520,57 +512,6 @@ impl TransactionsManagement for Background {
         wallet.add_history(&history)?;
 
         Ok(history)
-    }
-
-    async fn rotate_btc_account(
-        &self,
-        wallet_index: usize,
-        account_index: usize,
-        seed_bytes: &Argon2Seed,
-        passphrase: &SecretString,
-    ) -> Result<()> {
-        println!(
-            "[rotate_btc_account] wallet_index={} account_index={}",
-            wallet_index, account_index
-        );
-        let wallet = self.get_wallet_by_index(wallet_index)?;
-        let data = wallet.get_wallet_data()?;
-        println!("[rotate_btc_account] chain_hash={}", data.chain_hash);
-        let provider = self.get_provider(data.chain_hash)?;
-
-        let old_addr = data.get_account(account_index)?.addr.clone();
-        let mut ftokens = wallet.get_ftokens()?;
-        let old_balance = ftokens
-            .iter()
-            .find(|t| t.native && t.chain_hash == data.chain_hash)
-            .and_then(|t| t.balances.get(&old_addr.to_hash()).copied())
-            .unwrap_or(U256::ZERO);
-
-        let mnemonic = wallet.reveal_mnemonic(seed_bytes)?;
-        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
-            BackgroundError::WalletError(WalletErrors::Bip329Error(
-                errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)),
-            ))
-        })?;
-
-        wallet
-            .rotate_account(&seed_secret, account_index, &provider.config)
-            .await?;
-
-        let data = wallet.get_wallet_data()?;
-        let new_addr = data.get_account(account_index)?.addr.clone();
-
-        if let Some(token) = ftokens
-            .iter_mut()
-            .find(|t| t.native && t.chain_hash == data.chain_hash)
-        {
-            token.balances.remove(&old_addr.to_hash());
-            token.balances.insert(new_addr.to_hash(), old_balance);
-        }
-        wallet.save_ftokens(&ftokens)?;
-
-        println!("[rotate_btc_account] OK");
-        Ok(())
     }
 }
 

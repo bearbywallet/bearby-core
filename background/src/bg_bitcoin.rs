@@ -1,8 +1,16 @@
+use crate::bg_wallet::WalletManagement;
 use crate::{bg_provider::ProvidersManagement, Background, Result};
 use async_trait::async_trait;
+use cipher::argon2::Argon2Seed;
+use errors::background::BackgroundError;
+use errors::wallet::WalletErrors;
 use proto::btc_utils::{AddressChain, BtcAccountXpubsInput};
+use proto::U256;
+use secrecy::SecretString;
 use std::collections::HashMap;
-use wallet::bitcoin_wallet::scan_btc_chains_for_xpubs;
+use wallet::bitcoin_wallet::{scan_btc_chains_for_xpubs, BitcoinWallet};
+use wallet::wallet_crypto::WalletCrypto;
+use wallet::wallet_storage::StorageOperations;
 
 #[async_trait]
 pub trait BitcoinManagement {
@@ -14,6 +22,14 @@ pub trait BitcoinManagement {
         ledger_index: u8,
         chain_hash: u64,
     ) -> std::result::Result<HashMap<bitcoin::AddressType, AddressChain>, Self::Error>;
+
+    async fn rotate_btc_account(
+        &self,
+        wallet_index: usize,
+        account_index: usize,
+        seed_bytes: &Argon2Seed,
+        passphrase: &SecretString,
+    ) -> std::result::Result<(), Self::Error>;
 }
 
 #[async_trait]
@@ -30,6 +46,57 @@ impl BitcoinManagement for Background {
         let chains =
             scan_btc_chains_for_xpubs(xpubs, ledger_index as usize, &provider.config).await?;
         Ok(chains)
+    }
+
+    async fn rotate_btc_account(
+        &self,
+        wallet_index: usize,
+        account_index: usize,
+        seed_bytes: &Argon2Seed,
+        passphrase: &SecretString,
+    ) -> Result<()> {
+        println!(
+            "[rotate_btc_account] wallet_index={} account_index={}",
+            wallet_index, account_index
+        );
+        let wallet = self.get_wallet_by_index(wallet_index)?;
+        let data = wallet.get_wallet_data()?;
+        println!("[rotate_btc_account] chain_hash={}", data.chain_hash);
+        let provider = self.get_provider(data.chain_hash)?;
+
+        let old_addr = data.get_account(account_index)?.addr.clone();
+        let mut ftokens = wallet.get_ftokens()?;
+        let old_balance = ftokens
+            .iter()
+            .find(|t| t.native && t.chain_hash == data.chain_hash)
+            .and_then(|t| t.balances.get(&old_addr.to_hash()).copied())
+            .unwrap_or(U256::ZERO);
+
+        let mnemonic = wallet.reveal_mnemonic(seed_bytes)?;
+        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
+            BackgroundError::WalletError(WalletErrors::Bip329Error(
+                errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)),
+            ))
+        })?;
+
+        wallet
+            .rotate_account(&seed_secret, account_index, &provider.config)
+            .await?;
+
+        let data = wallet.get_wallet_data()?;
+        let new_addr = data.get_account(account_index)?.addr.clone();
+
+        if let Some(token) = ftokens
+            .iter_mut()
+            .find(|t| t.native && t.chain_hash == data.chain_hash)
+        {
+            token.balances.remove(&old_addr.to_hash());
+            token.balances.insert(new_addr.to_hash(), old_balance);
+        }
+        wallet.save_ftokens(&ftokens)?;
+
+        println!("[rotate_btc_account] OK");
+        Ok(())
     }
 }
 
@@ -50,7 +117,9 @@ mod tests_bg_bitcoin {
     use rpc::network_config::ChainConfig;
     use secrecy::SecretString;
     use settings::wallet_settings::WalletSettings;
-    use test_data::{empty_passphrase, gen_btc_regtest_conf, gen_eth_mainnet_conf, gen_zil_testnet_conf};
+    use test_data::{
+        empty_passphrase, gen_btc_regtest_conf, gen_eth_mainnet_conf, gen_zil_testnet_conf,
+    };
     use wallet::bitcoin_wallet::{pick_primary_btc_entry, BitcoinWallet};
     use wallet::wallet_account::AccountManagement;
     use wallet::wallet_storage::StorageOperations;
@@ -225,7 +294,10 @@ mod tests_bg_bitcoin {
         assert_eq!(appended.account_type.value(), new_li as usize);
         assert_eq!(appended.addr, new_entry.address);
         assert_eq!(appended.name, "BTC Ledger 7");
-        assert_eq!(data_after.selected_account, 0, "selected_account must be unchanged");
+        assert_eq!(
+            data_after.selected_account, 0,
+            "selected_account must be unchanged"
+        );
         assert_eq!(data_after.bip, data.bip, "bip must be unchanged");
 
         let stored_new = wallet
@@ -251,15 +323,13 @@ mod tests_bg_bitcoin {
             "must reject mismatched chain"
         );
 
-        let missing_btc_chains = wallet.add_ledger_account(
-            "no chains".to_string(),
-            0,
-            None,
-            None,
-            &offline_btc_conf,
-        );
+        let missing_btc_chains =
+            wallet.add_ledger_account("no chains".to_string(), 0, None, None, &offline_btc_conf);
         assert!(
-            matches!(missing_btc_chains.unwrap_err(), WalletErrors::BincodeError(_)),
+            matches!(
+                missing_btc_chains.unwrap_err(),
+                WalletErrors::BincodeError(_)
+            ),
             "must reject missing btc_chains for BTC"
         );
     }
@@ -305,13 +375,7 @@ mod tests_bg_bitcoin {
         let expected_addr = pk1.get_addr().unwrap();
 
         wallet
-            .add_ledger_account(
-                "ZIL Ledger 3".to_string(),
-                3,
-                Some(pk1),
-                None,
-                &zil_conf,
-            )
+            .add_ledger_account("ZIL Ledger 3".to_string(), 3, Some(pk1), None, &zil_conf)
             .unwrap();
 
         let data_after = wallet.get_wallet_data().unwrap();
@@ -326,26 +390,15 @@ mod tests_bg_bitcoin {
         assert_eq!(data_after.bip, data_before.bip);
 
         let btc_conf = gen_btc_regtest_conf();
-        let mismatched = wallet.add_ledger_account(
-            "BTC on ZIL wallet".to_string(),
-            0,
-            None,
-            None,
-            &btc_conf,
-        );
+        let mismatched =
+            wallet.add_ledger_account("BTC on ZIL wallet".to_string(), 0, None, None, &btc_conf);
         assert_eq!(
             mismatched.unwrap_err(),
             WalletErrors::InvalidAccountType,
             "must reject BTC account on ZIL ledger wallet"
         );
 
-        let missing_pk = wallet.add_ledger_account(
-            "no pk".to_string(),
-            1,
-            None,
-            None,
-            &zil_conf,
-        );
+        let missing_pk = wallet.add_ledger_account("no pk".to_string(), 1, None, None, &zil_conf);
         assert!(
             matches!(missing_pk.unwrap_err(), WalletErrors::BincodeError(_)),
             "must reject missing pub_key for non-BTC"
@@ -380,13 +433,8 @@ mod tests_bg_bitcoin {
         let kp = KeyPair::gen_keccak256().unwrap();
         let pk = kp.get_pubkey().unwrap();
 
-        let rejected = wallet.add_ledger_account(
-            "Ledger on BIP39".to_string(),
-            0,
-            Some(pk),
-            None,
-            &eth_conf,
-        );
+        let rejected =
+            wallet.add_ledger_account("Ledger on BIP39".to_string(), 0, Some(pk), None, &eth_conf);
         assert_eq!(
             rejected.unwrap_err(),
             WalletErrors::InvalidAccountType,
