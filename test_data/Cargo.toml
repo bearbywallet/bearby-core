@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bitcoin.workspace = true
 config = { path = "../config" }
 crypto = { path = "../crypto" }
+pqbip39.workspace = true
 proto = { path = "../proto" }
 rpc = { path = "../rpc" }
 secrecy.workspace = true

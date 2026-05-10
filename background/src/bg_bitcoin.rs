@@ -1,15 +1,10 @@
 use crate::bg_wallet::WalletManagement;
 use crate::{bg_provider::ProvidersManagement, Background, Result};
 use async_trait::async_trait;
-use cipher::argon2::Argon2Seed;
-use errors::background::BackgroundError;
-use errors::wallet::WalletErrors;
 use proto::btc_utils::{AddressChain, BtcAccountXpubsInput};
 use proto::U256;
-use secrecy::SecretString;
 use std::collections::HashMap;
 use wallet::bitcoin_wallet::{scan_btc_chains_for_xpubs, BitcoinWallet};
-use wallet::wallet_crypto::WalletCrypto;
 use wallet::wallet_storage::StorageOperations;
 
 #[async_trait]
@@ -27,8 +22,7 @@ pub trait BitcoinManagement {
         &self,
         wallet_index: usize,
         account_index: usize,
-        seed_bytes: &Argon2Seed,
-        passphrase: &SecretString,
+        bip86_xpub: &bitcoin::bip32::Xpub,
     ) -> std::result::Result<(), Self::Error>;
 }
 
@@ -52,8 +46,7 @@ impl BitcoinManagement for Background {
         &self,
         wallet_index: usize,
         account_index: usize,
-        seed_bytes: &Argon2Seed,
-        passphrase: &SecretString,
+        bip86_xpub: &bitcoin::bip32::Xpub,
     ) -> Result<()> {
         println!(
             "[rotate_btc_account] wallet_index={} account_index={}",
@@ -72,15 +65,8 @@ impl BitcoinManagement for Background {
             .and_then(|t| t.balances.get(&old_addr.to_hash()).copied())
             .unwrap_or(U256::ZERO);
 
-        let mnemonic = wallet.reveal_mnemonic(seed_bytes)?;
-        let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
-            BackgroundError::WalletError(WalletErrors::Bip329Error(
-                errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)),
-            ))
-        })?;
-
         wallet
-            .rotate_account(&seed_secret, account_index, &provider.config)
+            .rotate_account(bip86_xpub, account_index, &provider.config)
             .await?;
 
         let data = wallet.get_wallet_data()?;

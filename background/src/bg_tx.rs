@@ -518,6 +518,7 @@ impl TransactionsManagement for Background {
 #[cfg(test)]
 mod tests_background_transactions {
     use super::*;
+    use crate::bg_bitcoin::BitcoinManagement;
     use crate::{bg_storage::StorageManagement, bg_token::TokensManagement, BackgroundBip39Params};
     use alloy::{primitives::U256, rpc::types::TransactionRequest as ETHTransactionRequest};
     use network::btc::BtcOperations;
@@ -1035,9 +1036,12 @@ mod tests_background_transactions {
         let new_account = data.get_accounts().unwrap().first().unwrap();
 
         assert_eq!(new_account.addr, account.addr);
-        bg.rotate_btc_account(0, 0, &argon_seed, &empty_passphrase())
-            .await
-            .unwrap();
+        let bip86_xpub = test_data::derive_bip86_xpub(
+            &wallet.reveal_mnemonic(&argon_seed).unwrap(),
+            account.account_type.value() as u32,
+            net_config.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin),
+        );
+        bg.rotate_btc_account(0, 0, &bip86_xpub).await.unwrap();
         let data = wallet.get_wallet_data().unwrap();
         let new_account = data.get_accounts().unwrap().first().unwrap();
 

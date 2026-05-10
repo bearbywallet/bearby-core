@@ -7243,8 +7243,10 @@ dependencies = [
 name = "test_data"
 version = "0.1.0"
 dependencies = [
+ "bitcoin",
  "config",
  "crypto",
+ "pqbip39",
  "proto",
  "rpc",
  "secrecy",

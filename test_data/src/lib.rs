@@ -458,3 +458,14 @@ pub mod solana_addresses {
     pub const ADDR_0: &str = "vines1vzrYbzLMRdu58ou5XTby4qAqVRLmqo36NKPTg";
     pub const ADDR_1: &str = "4fYNw3dojWmQ4dXtSGE9epjRGy9GHeo5UCCbg6NbyNjF";
 }
+
+pub fn derive_bip86_xpub(
+    mnemonic: &pqbip39::mnemonic::Mnemonic,
+    account_index: u32,
+    network: bitcoin::Network,
+) -> bitcoin::bip32::Xpub {
+    let seed = mnemonic.to_seed(&empty_passphrase()).unwrap();
+    proto::btc_utils::BtcAccountXpubsInput::from_seed(&seed, account_index, network)
+        .unwrap()
+        .bip86_xpub
+}

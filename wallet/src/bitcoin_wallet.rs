@@ -200,7 +200,7 @@ pub fn derive_sk_btc_address_chains(
 
 fn append_new_p2tr_address(
     chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
-    xpubs: &BtcAccountXpubsInput,
+    bip86_xpub: &bitcoin::bip32::Xpub,
     account_index: usize,
     network: bitcoin::Network,
 ) -> Result<()> {
@@ -209,7 +209,7 @@ fn append_new_p2tr_address(
         .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?;
     let next_index = p2tr.external.len() as u32;
     derive_btc_chain_from_xpub(
-        &xpubs.bip86_xpub,
+        bip86_xpub,
         account_index,
         bitcoin::AddressType::P2tr,
         network,
@@ -461,7 +461,7 @@ pub trait BitcoinWallet {
 
     async fn rotate_account(
         &self,
-        seed: &SecretBox<[u8; SHA512_SIZE]>,
+        bip86_xpub: &bitcoin::bip32::Xpub,
         account_index: usize,
         chain: &ChainConfig,
     ) -> std::result::Result<(), Self::Error>;
@@ -672,7 +672,7 @@ impl BitcoinWallet for Wallet {
             let xpubs =
                 BtcAccountXpubsInput::from_seed(&seed_secret, account_index as u32, network)
                     .map_err(WalletErrors::Bip329Error)?;
-            append_new_p2tr_address(&mut chains, &xpubs, account_index, network)?;
+            append_new_p2tr_address(&mut chains, &xpubs.bip86_xpub, account_index, network)?;
             self.save_btc_addresses(account_index, &chains, data.chain_hash)?;
         }
 
@@ -768,7 +768,7 @@ impl BitcoinWallet for Wallet {
 
     async fn rotate_account(
         &self,
-        seed: &SecretBox<[u8; SHA512_SIZE]>,
+        bip86_xpub: &bitcoin::bip32::Xpub,
         account_index: usize,
         chain: &ChainConfig,
     ) -> Result<()> {
@@ -790,9 +790,7 @@ impl BitcoinWallet for Wallet {
             chain.bitcoin_network()
         );
 
-        let xpubs = BtcAccountXpubsInput::from_seed(seed, account_index as u32, network)
-            .map_err(WalletErrors::Bip329Error)?;
-        append_new_p2tr_address(&mut chains, &xpubs, account_index, network)?;
+        append_new_p2tr_address(&mut chains, bip86_xpub, account_index, network)?;
         self.save_btc_addresses(account_index, &chains, chain.hash())?;
 
         let new_addr = chains

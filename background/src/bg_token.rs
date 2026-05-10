@@ -418,6 +418,7 @@ impl TokensManagement for Background {
 #[cfg(test)]
 mod tests_background_tokens {
     use super::*;
+    use crate::bg_bitcoin::BitcoinManagement;
     use crate::bg_tx::update_tx_from_params;
     use crate::{
         bg_crypto::CryptoOperations, bg_storage::StorageManagement, BackgroundBip39Params,
@@ -444,6 +445,7 @@ mod tests_background_tokens {
         gen_zil_testnet_conf, tron_addresses, TEST_PASSWORD,
     };
     use tokio;
+    use wallet::wallet_crypto::WalletCrypto;
     use wallet::wallet_token::TokenManagement;
     use wallet::wallet_transaction::WalletTransaction;
 
@@ -802,7 +804,12 @@ mod tests_background_tokens {
         let rotated_account = data.get_accounts().unwrap().get(from_index).unwrap();
         assert_eq!(rotated_account.addr, from_account.addr);
 
-        bg.rotate_btc_account(0, from_index, &argon_seed, &empty_passphrase())
+        let bip86_xpub = test_data::derive_bip86_xpub(
+            &wallet_check.reveal_mnemonic(&argon_seed).unwrap(),
+            from_account.account_type.value() as u32,
+            net_config.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin),
+        );
+        bg.rotate_btc_account(0, from_index, &bip86_xpub)
             .await
             .unwrap();
 
