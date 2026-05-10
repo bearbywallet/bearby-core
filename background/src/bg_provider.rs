@@ -3,13 +3,14 @@ use async_trait::async_trait;
 use config::session::AuthMethod;
 use crypto::{bip49::DerivationPath, slip44};
 use errors::{background::BackgroundError, wallet::WalletErrors};
-use network::{common::Provider, provider::NetworkProvider};
+use network::{btc::BtcOperations, common::Provider, provider::NetworkProvider};
 use proto::address::Address;
 use rpc::network_config::ChainConfig;
 use secrecy::SecretString;
 use std::sync::Arc;
 use wallet::{
-    bitcoin_wallet::BitcoinWallet, wallet_account::AccountManagement,
+    bitcoin_wallet::{derive_sk_btc_address_chains, BitcoinWallet},
+    wallet_account::AccountManagement,
     wallet_crypto::WalletCrypto, wallet_storage::StorageOperations, wallet_types::WalletTypes,
 };
 
@@ -247,24 +248,67 @@ impl ProvidersManagement for Background {
                 .unwrap_or_default();
 
             if !btc_accounts.is_empty() {
-                if let WalletTypes::SecretPhrase(_) = data.wallet_type {
-                    let seed = if data.biometric_type != AuthMethod::None {
-                        self.unlock_wallet_with_session(wallet_index).await?
-                    } else if let Some(pass) = password {
-                        self.unlock_wallet_with_password(pass, None, wallet_index)
-                            .await?
-                    } else {
-                        return Err(BackgroundError::AuthenticationRequired);
-                    };
+                match &data.wallet_type {
+                    WalletTypes::SecretPhrase(_) => {
+                        let seed = if data.biometric_type != AuthMethod::None {
+                            self.unlock_wallet_with_session(wallet_index).await?
+                        } else if let Some(pass) = password {
+                            self.unlock_wallet_with_password(pass, None, wallet_index)
+                                .await?
+                        } else {
+                            return Err(BackgroundError::AuthenticationRequired);
+                        };
 
-                    let mnemonic = wallet.reveal_mnemonic(&seed)?;
-                    let seed_secret = mnemonic.to_seed(&wallet::empty_passphrase())?;
+                        let mnemonic = wallet.reveal_mnemonic(&seed)?;
+                        let seed_secret = mnemonic.to_seed(&wallet::empty_passphrase())?;
 
-                    for (idx, name) in btc_accounts {
-                        wallet
-                            .generate_bip39_btc_account(&seed_secret, idx, name, &provider.config)
-                            .await?;
+                        for (idx, name) in btc_accounts {
+                            wallet
+                                .generate_bip39_btc_account(
+                                    &seed_secret,
+                                    idx,
+                                    name,
+                                    &provider.config,
+                                )
+                                .await?;
+                        }
                     }
+                    WalletTypes::SecretKey => {
+                        let seed = if data.biometric_type != AuthMethod::None {
+                            self.unlock_wallet_with_session(wallet_index).await?
+                        } else if let Some(pass) = password {
+                            self.unlock_wallet_with_password(pass, None, wallet_index)
+                                .await?
+                        } else {
+                            return Err(BackgroundError::AuthenticationRequired);
+                        };
+
+                        let network = provider
+                            .config
+                            .bitcoin_network()
+                            .unwrap_or(bitcoin::Network::Bitcoin);
+
+                        for (idx, _) in btc_accounts {
+                            let keypair = wallet.reveal_keypair(
+                                idx,
+                                &seed,
+                                &wallet::empty_passphrase(),
+                            )?;
+                            let sk_bytes = keypair.get_sk_bytes();
+                            let (mut chains, _) =
+                                derive_sk_btc_address_chains(&sk_bytes, network)?;
+                            if let Err(e) =
+                                provider.batch_script_get_history(&mut chains).await
+                            {
+                                println!(
+                                    "[select_accounts_chain] sk btc history scan failed: {:?}",
+                                    e,
+                                );
+                            }
+                            wallet.save_btc_addresses(idx, &chains, chain_hash)?;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
