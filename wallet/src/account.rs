@@ -1,12 +1,17 @@
 use crate::account_type::AccountType;
 use crypto::bip49::DerivationPath;
+use crypto::slip44;
 use errors::account::AccountErrors;
+use errors::wallet::WalletErrors;
 use proto::address::Address;
+use proto::btc_utils::AddressChain;
 use proto::keypair::KeyPair;
 use proto::pubkey::PubKey;
 use proto::secret_key::SecretKey;
+use rpc::network_config::ChainConfig;
 use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use storage::codec::Codec;
 
 type Result<T> = std::result::Result<T, AccountErrors>;
@@ -54,20 +59,53 @@ impl AccountV2 {
         <Self as Codec>::from_bytes(encoded).map_err(|e| AccountErrors::BincodeError(e.to_string()))
     }
 
-    pub fn from_ledger(pub_key: PubKey, name: String, index: usize) -> Result<Self> {
-        let addr = pub_key.get_addr()?;
-        let account_type = AccountType::Ledger(index);
-        let pub_key = match pub_key {
-            PubKey::Secp256k1Sha256(_) => Some(pub_key),
-            _ => None,
-        };
-
-        Ok(Self {
-            account_type,
-            addr,
-            name,
-            pub_key,
-        })
+    pub fn from_ledger(
+        ledger_index: u8,
+        name: String,
+        pub_key: Option<PubKey>,
+        btc_chains: Option<&HashMap<bitcoin::AddressType, AddressChain>>,
+        chain_config: &ChainConfig,
+    ) -> std::result::Result<Self, WalletErrors> {
+        if chain_config.slip_44 == slip44::BITCOIN {
+            let chains = btc_chains.ok_or_else(|| {
+                WalletErrors::BincodeError(
+                    "BTC Ledger account requires pre-scanned chains".to_string(),
+                )
+            })?;
+            let entry = crate::bitcoin_wallet::pick_primary_btc_entry(chains)?;
+            Ok(Self {
+                account_type: AccountType::Ledger(ledger_index as usize),
+                addr: entry.address,
+                name,
+                pub_key: None,
+            })
+        } else {
+            let pk = pub_key.ok_or_else(|| {
+                WalletErrors::BincodeError(
+                    "Non-BTC Ledger account requires a public key".to_string(),
+                )
+            })?;
+            let stored_pub_key = if matches!(&pk, PubKey::Secp256k1Sha256(_)) {
+                Some(pk.clone())
+            } else {
+                None
+            };
+            let addr = pk.get_addr()?;
+            let addr = if let Some(network) = chain_config.bitcoin_network() {
+                match &addr {
+                    Address::Secp256k1Bitcoin(_) => addr.re_encode_btc_network(network)?,
+                    _ => addr,
+                }
+            } else {
+                addr
+            };
+            Ok(Self {
+                account_type: AccountType::Ledger(ledger_index as usize),
+                addr,
+                name,
+                pub_key: stored_pub_key,
+            })
+        }
     }
 
     pub fn from_secret_key(

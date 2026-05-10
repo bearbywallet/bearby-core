@@ -38,16 +38,21 @@ mod tests_bg_bitcoin {
     use super::*;
     use crate::{
         bg_crypto::CryptoOperations, bg_provider::ProvidersManagement,
-        bg_storage::StorageManagement, bg_wallet::WalletManagement, BackgroundLedgerParams,
+        bg_storage::StorageManagement, bg_wallet::WalletManagement, BackgroundBip39Params,
+        BackgroundLedgerParams,
     };
     use config::bip39::EN_WORDS;
     use config::session::AuthMethod;
+    use errors::wallet::WalletErrors;
     use pqbip39::mnemonic::Mnemonic;
+    use proto::keypair::KeyPair;
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
+    use secrecy::SecretString;
     use settings::wallet_settings::WalletSettings;
-    use test_data::{empty_passphrase, gen_btc_regtest_conf};
+    use test_data::{empty_passphrase, gen_btc_regtest_conf, gen_eth_mainnet_conf, gen_zil_testnet_conf};
     use wallet::bitcoin_wallet::{pick_primary_btc_entry, BitcoinWallet};
+    use wallet::wallet_account::AccountManagement;
     use wallet::wallet_storage::StorageOperations;
 
     fn setup_test_background() -> (Background, String) {
@@ -193,5 +198,199 @@ mod tests_bg_bitcoin {
                 );
             }
         }
+
+        let new_li: u8 = 7;
+        let xpubs = BtcAccountXpubsInput::from_seed(&seed, new_li as u32, network).unwrap();
+        let new_chains = bg
+            .scan_btc_account_history(&xpubs, new_li, offline_btc_conf.hash())
+            .await
+            .unwrap();
+        let new_entry = pick_primary_btc_entry(&new_chains).unwrap();
+
+        wallet
+            .add_ledger_account(
+                "BTC Ledger 7".to_string(),
+                new_li,
+                None,
+                Some(new_chains.clone()),
+                &offline_btc_conf,
+            )
+            .unwrap();
+
+        let data_after = wallet.get_wallet_data().unwrap();
+        let all_after = data_after.get_accounts().unwrap();
+        assert_eq!(all_after.len(), 4);
+
+        let appended = &all_after[3];
+        assert_eq!(appended.account_type.value(), new_li as usize);
+        assert_eq!(appended.addr, new_entry.address);
+        assert_eq!(appended.name, "BTC Ledger 7");
+        assert_eq!(data_after.selected_account, 0, "selected_account must be unchanged");
+        assert_eq!(data_after.bip, data.bip, "bip must be unchanged");
+
+        let stored_new = wallet
+            .get_btc_addresses(3, offline_btc_conf.hash())
+            .unwrap();
+        assert_eq!(stored_new.len(), 4);
+        let stored_p2tr = stored_new.get(&bitcoin::AddressType::P2tr).unwrap();
+        assert_eq!(stored_p2tr.external[0].address, appended.addr);
+
+        let eth_conf = gen_eth_mainnet_conf();
+        let kp = KeyPair::gen_keccak256().unwrap();
+        let pk = kp.get_pubkey().unwrap();
+        let mismatched = wallet.add_ledger_account(
+            "ETH on BTC wallet".to_string(),
+            0,
+            Some(pk),
+            None,
+            &eth_conf,
+        );
+        assert_eq!(
+            mismatched.unwrap_err(),
+            WalletErrors::InvalidAccountType,
+            "must reject mismatched chain"
+        );
+
+        let missing_btc_chains = wallet.add_ledger_account(
+            "no chains".to_string(),
+            0,
+            None,
+            None,
+            &offline_btc_conf,
+        );
+        assert!(
+            matches!(missing_btc_chains.unwrap_err(), WalletErrors::BincodeError(_)),
+            "must reject missing btc_chains for BTC"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_ledger_account_non_btc_append_and_guards() {
+        let (mut bg, _dir) = setup_test_background();
+
+        let zil_conf = gen_zil_testnet_conf();
+        bg.add_provider(zil_conf.clone()).unwrap();
+
+        let kp0 = KeyPair::gen_sha256().unwrap();
+        let pk0 = kp0.get_pubkey().unwrap();
+        let addr0 = pk0.get_addr().unwrap();
+
+        bg.add_ledger_wallet(
+            BackgroundLedgerParams {
+                ledger_id: vec![2],
+                accounts: vec![(0u8, Some(pk0))],
+                wallet_name: "ZIL Ledger".to_string(),
+                account_names: vec!["ZIL Ledger 0".to_string()],
+                wallet_index: 0,
+                biometric_type: AuthMethod::None,
+                wallet_settings: WalletSettings::default(),
+                chain_hash: zil_conf.hash(),
+                ftokens: vec![],
+                btc_chains: HashMap::new(),
+            },
+            WalletSettings::default(),
+        )
+        .await
+        .unwrap();
+
+        let wallet = bg.get_wallet_by_index(0).unwrap();
+        let data_before = wallet.get_wallet_data().unwrap();
+        let accounts_before = data_before.get_accounts().unwrap();
+        assert_eq!(accounts_before.len(), 1);
+        assert_eq!(accounts_before[0].addr, addr0);
+        assert!(accounts_before[0].pub_key.is_some());
+
+        let kp1 = KeyPair::gen_sha256().unwrap();
+        let pk1 = kp1.get_pubkey().unwrap();
+        let expected_addr = pk1.get_addr().unwrap();
+
+        wallet
+            .add_ledger_account(
+                "ZIL Ledger 3".to_string(),
+                3,
+                Some(pk1),
+                None,
+                &zil_conf,
+            )
+            .unwrap();
+
+        let data_after = wallet.get_wallet_data().unwrap();
+        let accounts_after = data_after.get_accounts().unwrap();
+        assert_eq!(accounts_after.len(), 2);
+
+        let appended = &accounts_after[1];
+        assert_eq!(appended.account_type.value(), 3);
+        assert_eq!(appended.addr, expected_addr);
+        assert!(appended.pub_key.is_some());
+        assert_eq!(data_after.selected_account, data_before.selected_account);
+        assert_eq!(data_after.bip, data_before.bip);
+
+        let btc_conf = gen_btc_regtest_conf();
+        let mismatched = wallet.add_ledger_account(
+            "BTC on ZIL wallet".to_string(),
+            0,
+            None,
+            None,
+            &btc_conf,
+        );
+        assert_eq!(
+            mismatched.unwrap_err(),
+            WalletErrors::InvalidAccountType,
+            "must reject BTC account on ZIL ledger wallet"
+        );
+
+        let missing_pk = wallet.add_ledger_account(
+            "no pk".to_string(),
+            1,
+            None,
+            None,
+            &zil_conf,
+        );
+        assert!(
+            matches!(missing_pk.unwrap_err(), WalletErrors::BincodeError(_)),
+            "must reject missing pub_key for non-BTC"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_ledger_account_rejects_non_ledger_wallet() {
+        let (mut bg, _dir) = setup_test_background();
+
+        let eth_conf = gen_eth_mainnet_conf();
+        bg.add_provider(eth_conf.clone()).unwrap();
+
+        let password: SecretString = SecretString::new(test_data::TEST_PASSWORD.into());
+        let words = Background::gen_bip39(24).unwrap();
+        bg.add_bip39_wallet(BackgroundBip39Params {
+            password: &password,
+            mnemonic_check: true,
+            chain_hash: eth_conf.hash(),
+            mnemonic_str: &words,
+            accounts: &[(0, "ETH Account 0".to_string())],
+            wallet_settings: WalletSettings::default(),
+            passphrase: &empty_passphrase(),
+            wallet_name: "BIP39 Wallet".to_string(),
+            biometric_type: Default::default(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        let wallet = bg.get_wallet_by_index(0).unwrap();
+        let kp = KeyPair::gen_keccak256().unwrap();
+        let pk = kp.get_pubkey().unwrap();
+
+        let rejected = wallet.add_ledger_account(
+            "Ledger on BIP39".to_string(),
+            0,
+            Some(pk),
+            None,
+            &eth_conf,
+        );
+        assert_eq!(
+            rejected.unwrap_err(),
+            WalletErrors::InvalidAccountType,
+            "must reject add_ledger_account on non-Ledger wallet"
+        );
     }
 }

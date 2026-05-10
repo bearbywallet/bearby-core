@@ -9,8 +9,6 @@ use rand_chacha::ChaCha20Rng;
 use config::sha::SHA256_SIZE;
 use crypto::slip44;
 use errors::wallet::WalletErrors;
-use proto::address::Address;
-use proto::pubkey::PubKey;
 use secrecy::ExposeSecret;
 use std::{
     collections::{HashMap, HashSet},
@@ -77,7 +75,6 @@ impl WalletInit for Wallet {
         drop(cipher_proof);
 
         let wallet_address: [u8; SHA256_SIZE] = Self::wallet_key_gen();
-        let target_network = params.chain_config.bitcoin_network();
         let target_bip = crypto::bip49::DerivationPath::default_bip(params.chain_config.slip_44);
 
         let wallet = Self {
@@ -102,39 +99,21 @@ impl WalletInit for Wallet {
                     )
                 })?;
                 wallet.save_btc_addresses(i, chains, params.chain_config.hash())?;
-                let entry = crate::bitcoin_wallet::pick_primary_btc_entry(chains)?;
-                built_accounts.push(AccountV2 {
-                    account_type: crate::account_type::AccountType::Ledger(ledger_index as usize),
-                    addr: entry.address,
-                    name: account_name,
-                    pub_key: None,
-                });
+                built_accounts.push(AccountV2::from_ledger(
+                    ledger_index,
+                    account_name,
+                    None,
+                    Some(chains),
+                    params.chain_config,
+                )?);
             } else {
-                let pub_key = opt_pub_key.ok_or_else(|| {
-                    WalletErrors::BincodeError(
-                        "Non-BTC Ledger account requires a public key".to_string(),
-                    )
-                })?;
-                let stored_pub_key = if matches!(&pub_key, PubKey::Secp256k1Sha256(_)) {
-                    Some(pub_key.clone())
-                } else {
-                    None
-                };
-                let addr = pub_key.get_addr()?;
-                let addr = if let Some(network) = target_network {
-                    match &addr {
-                        Address::Secp256k1Bitcoin(_) => addr.re_encode_btc_network(network)?,
-                        _ => addr,
-                    }
-                } else {
-                    addr
-                };
-                built_accounts.push(AccountV2 {
-                    account_type: crate::account_type::AccountType::Ledger(ledger_index as usize),
-                    addr,
-                    name: account_name,
-                    pub_key: stored_pub_key,
-                });
+                built_accounts.push(AccountV2::from_ledger(
+                    ledger_index,
+                    account_name,
+                    opt_pub_key,
+                    None,
+                    params.chain_config,
+                )?);
             }
         }
 

@@ -8,10 +8,12 @@ use cipher::argon2::Argon2Seed;
 use crypto::bip49::DerivationPath;
 use crypto::slip44;
 use errors::wallet::WalletErrors;
-use proto::{pubkey::PubKey, secret_key::SecretKey};
+use proto::btc_utils::AddressChain;
+use proto::pubkey::PubKey;
+use proto::secret_key::SecretKey;
 use rpc::network_config::ChainConfig;
 use secrecy::SecretString;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[async_trait]
@@ -39,6 +41,14 @@ pub trait AccountManagement {
         network: Option<bitcoin::Network>,
         seed_bytes: &Argon2Seed,
         passphrase: &SecretString,
+    ) -> std::result::Result<(), Self::Error>;
+    fn add_ledger_account(
+        &self,
+        name: String,
+        ledger_index: u8,
+        pub_key: Option<PubKey>,
+        btc_chains: Option<HashMap<bitcoin::AddressType, AddressChain>>,
+        chain_config: &ChainConfig,
     ) -> std::result::Result<(), Self::Error>;
     fn select_account(&self, account_index: usize) -> std::result::Result<(), Self::Error>;
     fn delete_account(&self, account_index: usize) -> std::result::Result<(), Self::Error>;
@@ -191,6 +201,59 @@ impl AccountManagement for Wallet {
             }
             _ => return Err(WalletErrors::InvalidAccountType),
         }
+
+        Ok(())
+    }
+
+    fn add_ledger_account(
+        &self,
+        name: String,
+        ledger_index: u8,
+        pub_key: Option<PubKey>,
+        btc_chains: Option<HashMap<bitcoin::AddressType, AddressChain>>,
+        chain_config: &ChainConfig,
+    ) -> Result<()> {
+        let mut data = self.get_wallet_data()?;
+
+        if data.wallet_type.code() != AccountType::Ledger(0).code() {
+            return Err(WalletErrors::InvalidAccountType);
+        }
+
+        if chain_config.slip_44 != data.slip44 {
+            return Err(WalletErrors::InvalidAccountType);
+        }
+
+        let target_bip = DerivationPath::default_bip(chain_config.slip_44);
+
+        let storage_position = data
+            .slip44_accounts
+            .get(&chain_config.slip_44)
+            .and_then(|m| m.get(&target_bip))
+            .map(|v| v.len())
+            .unwrap_or(0);
+
+        if chain_config.slip_44 == slip44::BITCOIN {
+            if let Some(chains) = btc_chains.as_ref() {
+                self.save_btc_addresses(storage_position, chains, chain_config.hash())?;
+            }
+        }
+
+        let account = AccountV2::from_ledger(
+            ledger_index,
+            name,
+            pub_key,
+            btc_chains.as_ref(),
+            chain_config,
+        )?;
+
+        data.slip44_accounts
+            .entry(chain_config.slip_44)
+            .or_default()
+            .entry(target_bip)
+            .or_default()
+            .push(account);
+
+        self.save_wallet_data(data)?;
 
         Ok(())
     }
