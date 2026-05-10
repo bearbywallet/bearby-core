@@ -255,7 +255,7 @@ pub fn build_unsigned_btc_transaction(
     let mut input_vsize_sum: usize = 0;
 
     for addr_type in &sorted_keys {
-        let chain = chains.get(addr_type).expect("seeded above");
+        let chain = chains.get(addr_type).expect("seeded above"); // TODO: remove panic shit!
         println!(
             "[build_unsigned_btc_tx] chain {:?}: ext={} int={}",
             addr_type,
@@ -310,10 +310,17 @@ pub fn build_unsigned_btc_transaction(
         ));
     }
 
-    let change_entry = chains
+    let p2tr_chain = chains
         .get(&bitcoin::AddressType::P2tr)
-        .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?
-        .get_internal()?;
+        .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?;
+
+    let change_entry = match p2tr_chain.get_internal() {
+        Ok(entry) => entry,
+        Err(_) if p2tr_chain.external.len() == 1 && p2tr_chain.internal.is_empty() => {
+            &p2tr_chain.external[0]
+        }
+        Err(e) => return Err(e.into()),
+    };
     let change_address = change_entry.address.clone();
     let change_script = change_address
         .to_bitcoin_addr()
