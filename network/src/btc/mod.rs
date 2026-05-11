@@ -425,6 +425,21 @@ impl BtcOperations for NetworkProvider {
             return Ok(());
         }
 
+        let no_recorded_balance = tokens
+            .iter()
+            .find(|t| t.native)
+            .map(|t| !t.balances.contains_key(&selected_account.to_hash()))
+            .unwrap_or(true);
+
+        let no_history = chains.values().all(|c| {
+            c.external.iter().all(|e| e.history.is_empty())
+                && c.internal.iter().all(|e| e.history.is_empty())
+        });
+
+        if no_recorded_balance && no_history {
+            self.batch_script_get_history(chains).await?;
+        }
+
         self.batch_btc_list_unspent(chains).await?;
 
         let total: u64 = chains
