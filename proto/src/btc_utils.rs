@@ -48,7 +48,7 @@ pub struct BtcAddressEntry {
     pub utxos: Vec<Utxo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AddressChain {
     pub external: Vec<BtcAddressEntry>,
     pub internal: Vec<BtcAddressEntry>,

@@ -14,8 +14,10 @@ use config::{
     sha::SHA256_SIZE,
     storage::{GLOBAL_SETTINGS_DB_KEY_V1, INDICATORS_DB_KEY_V1},
 };
+use crypto::slip44;
 use errors::background::BackgroundError;
 use pqbip39::mnemonic::Mnemonic;
+use proto::btc_utils::AddressChain;
 use rpc::network_config::ChainConfig;
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Serialize};
@@ -26,6 +28,7 @@ use storage::LocalStorage;
 use token::ft::FToken;
 use wallet::{
     account_type::AccountType,
+    bitcoin_wallet::BitcoinWallet,
     wallet_crypto::WalletCrypto,
     wallet_data::{WalletDataV1, WalletDataV2},
     wallet_init::WalletInit,
@@ -54,6 +57,8 @@ pub struct KeyStore {
     pub chain_config: ChainConfig,
     pub ftokens: Vec<FToken>,
     pub keys: Vec<u8>,
+    #[serde(default)]
+    pub btc_address_chains: Vec<(usize, Vec<(u8, AddressChain)>)>,
 }
 
 impl From<KeyStoreV0> for KeyStore {
@@ -64,6 +69,7 @@ impl From<KeyStoreV0> for KeyStore {
             chain_config: v0.chain_config,
             ftokens: v0.ftokens,
             keys: v0.keys,
+            btc_address_chains: Vec::new(),
         }
     }
 }
@@ -172,13 +178,13 @@ impl StorageManagement for Background {
         )?;
         let mut keystore = KeyStore::from_backup(backup_cipher, &argon_seed)?;
 
+        let chain_hash = keystore.chain_config.hash();
+        let is_btc = keystore.chain_config.slip_44 == slip44::BITCOIN;
+
         {
             let providers = self.get_providers();
 
-            if !providers
-                .iter()
-                .any(|p| p.config.hash() == keystore.chain_config.hash())
-            {
+            if !providers.iter().any(|p| p.config.hash() == chain_hash) {
                 self.add_provider(keystore.chain_config)?;
             }
         }
@@ -265,6 +271,9 @@ impl StorageManagement for Background {
 
         wallet.save_wallet_data(keystore.wallet_data)?;
         wallet.save_ftokens(&keystore.ftokens)?;
+        if is_btc {
+            wallet.restore_btc_chains_from_backup(chain_hash, keystore.btc_address_chains)?;
+        }
         let mut indicators = Self::get_indicators(Arc::clone(&self.storage));
 
         indicators.push(wallet.wallet_address);
@@ -298,12 +307,18 @@ impl StorageManagement for Background {
                 .to_bytes()?
                 .to_vec(),
         };
+        let btc_address_chains = if chain_config.slip_44 == slip44::BITCOIN {
+            wallet.collect_btc_chains_for_backup(chain_config.hash())?
+        } else {
+            Vec::new()
+        };
         let keystore = KeyStore {
             wallet_data,
             chain_config,
             ftokens,
             keys,
             wallet_address: wallet.wallet_address,
+            btc_address_chains,
         };
         let new_argon_seed = argon2::derive_key(
             password.expose_secret().as_bytes(),
@@ -411,6 +426,7 @@ mod tests_background_storage {
     use rand::RngExt;
     use wallet::account::AccountV1;
     use wallet::account_type::AccountType;
+    use wallet::bitcoin_wallet::BitcoinWallet;
     use wallet::wallet_data::WalletDataV1;
 
     use test_data::{
@@ -760,8 +776,12 @@ mod tests_background_storage {
             .await
             .unwrap();
 
-        let keypair0 = wallet0.reveal_keypair(0, &seed_bytes0, &empty_passphrase()).unwrap();
-        let keypair1 = wallet1.reveal_keypair(0, &seed_bytes1, &empty_passphrase()).unwrap();
+        let keypair0 = wallet0
+            .reveal_keypair(0, &seed_bytes0, &empty_passphrase())
+            .unwrap();
+        let keypair1 = wallet1
+            .reveal_keypair(0, &seed_bytes1, &empty_passphrase())
+            .unwrap();
 
         assert_eq!(keypair0, keypair1);
     }
@@ -991,5 +1011,101 @@ mod tests_background_storage {
         assert_eq!(restored.chain_config, net_conf);
         assert_eq!(restored.wallet_data.wallet_name, "v0 wallet");
         assert_eq!(restored.wallet_data.slip44, ETHEREUM);
+    }
+
+    #[tokio::test]
+    async fn test_keystore_btc_round_trip() {
+        let (mut bg, _dir) = setup_test_background();
+
+        let offline_btc_conf = ChainConfig {
+            rpc: vec!["ssl://localhost:1".to_string()],
+            slip_44: BITCOIN,
+            testnet: Some(true),
+            ..gen_btc_regtest_conf()
+        };
+        bg.add_provider(offline_btc_conf.clone()).unwrap();
+
+        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
+        let accounts = [(0, "btc acc 0".to_string()), (1, "btc acc 1".to_string())];
+
+        bg.add_bip39_wallet(BackgroundBip39Params {
+            password: &password,
+            chain_hash: offline_btc_conf.hash(),
+            mnemonic_str: &mnemonic_secret,
+            mnemonic_check: true,
+            accounts: &accounts,
+            wallet_settings: Default::default(),
+            passphrase: &empty_passphrase(),
+            wallet_name: "btc round trip".to_string(),
+            biometric_type: Default::default(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        let keystore_bytes = bg.get_keystore(0, &password).await.unwrap();
+
+        bg.load_keystore(keystore_bytes, &password, AuthMethod::None)
+            .await
+            .unwrap();
+
+        let wallet = bg.get_wallet_by_index(0).unwrap();
+        let restored_wallet = bg.get_wallet_by_index(1).unwrap();
+        let origin_data = wallet.get_wallet_data().unwrap();
+        let restored_data = restored_wallet.get_wallet_data().unwrap();
+
+        assert_eq!(origin_data.slip44_accounts, restored_data.slip44_accounts);
+        assert_eq!(origin_data.chain_hash, restored_data.chain_hash);
+
+        let chain_hash = offline_btc_conf.hash();
+
+        for idx in 0..2 {
+            let origin_history = wallet.get_btc_addresses(idx, chain_hash).unwrap();
+            let restored_history = restored_wallet.get_btc_addresses(idx, chain_hash).unwrap();
+            assert_eq!(origin_history, restored_history);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_keystore_non_btc_empty_chains() {
+        let (mut bg, _) = setup_test_background();
+        let net_conf = gen_anvil_net_conf();
+        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
+
+        bg.add_provider(net_conf.clone()).unwrap();
+
+        let words = Background::gen_bip39(12).unwrap();
+        let accounts = [(0, "eth wallet".to_string())];
+
+        bg.add_bip39_wallet(BackgroundBip39Params {
+            password: &password,
+            chain_hash: net_conf.hash(),
+            mnemonic_str: &words,
+            mnemonic_check: true,
+            accounts: &accounts,
+            wallet_settings: Default::default(),
+            passphrase: &empty_passphrase(),
+            wallet_name: "eth wallet".to_string(),
+            biometric_type: Default::default(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        let keystore_bytes = bg.get_keystore(0, &password).await.unwrap();
+        let argon_seed = argon2::derive_key(
+            password.expose_secret().as_bytes(),
+            b"",
+            &ARGON2_DEFAULT_CONFIG,
+        )
+        .unwrap();
+        let keystore = KeyStore::from_backup(keystore_bytes.clone(), &argon_seed).unwrap();
+        assert!(keystore.btc_address_chains.is_empty());
+
+        bg.load_keystore(keystore_bytes, &password, AuthMethod::None)
+            .await
+            .unwrap();
+        assert_eq!(bg.wallets.len(), 2);
     }
 }

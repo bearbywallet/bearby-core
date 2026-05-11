@@ -9,6 +9,7 @@ use config::sha::SHA512_SIZE;
 use config::storage::BTC_ADDRESSES_DB_KEY_V1;
 use crypto::bip49::DerivationPath;
 use crypto::slip44;
+use errors::storage::LocalStorageError;
 use errors::wallet::WalletErrors;
 use history::transaction::HistoricalTransaction;
 use network::btc::BtcOperations;
@@ -437,6 +438,19 @@ pub trait BitcoinWallet {
         chain: &ChainConfig,
     ) -> std::result::Result<AccountV2, Self::Error>;
 
+    fn get_btc_addresses_raw(
+        &self,
+        account_index: usize,
+        chain_hash: u64,
+    ) -> std::result::Result<Vec<(u8, AddressChain)>, Self::Error>;
+
+    fn save_btc_addresses_raw(
+        &self,
+        account_index: usize,
+        raw: Vec<(u8, AddressChain)>,
+        chain_hash: u64,
+    ) -> std::result::Result<(), Self::Error>;
+
     fn get_btc_addresses(
         &self,
         account_index: usize,
@@ -483,6 +497,17 @@ pub trait BitcoinWallet {
         &self,
         seed_bytes: &Argon2Seed,
         chain: &ChainConfig,
+    ) -> std::result::Result<(), Self::Error>;
+
+    fn collect_btc_chains_for_backup(
+        &self,
+        chain_hash: u64,
+    ) -> std::result::Result<Vec<(usize, Vec<(u8, AddressChain)>)>, Self::Error>;
+
+    fn restore_btc_chains_from_backup(
+        &self,
+        chain_hash: u64,
+        backup: Vec<(usize, Vec<(u8, AddressChain)>)>,
     ) -> std::result::Result<(), Self::Error>;
 }
 
@@ -630,13 +655,32 @@ impl BitcoinWallet for Wallet {
         AccountV2::from_hd(seed, name, &entry.path, Some(network)).map_err(Into::into)
     }
 
+    fn get_btc_addresses_raw(
+        &self,
+        account_index: usize,
+        chain_hash: u64,
+    ) -> Result<Vec<(u8, AddressChain)>> {
+        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index, chain_hash);
+        self.storage.get_versioned(&key).map_err(Into::into)
+    }
+
+    fn save_btc_addresses_raw(
+        &self,
+        account_index: usize,
+        raw: Vec<(u8, AddressChain)>,
+        chain_hash: u64,
+    ) -> Result<()> {
+        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index, chain_hash);
+        self.storage.set_versioned(&key, &raw)?;
+        Ok(())
+    }
+
     fn get_btc_addresses(
         &self,
         account_index: usize,
         chain_hash: u64,
     ) -> Result<HashMap<bitcoin::AddressType, AddressChain>> {
-        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index, chain_hash);
-        let stored: Vec<(u8, AddressChain)> = self.storage.get_versioned(&key)?;
+        let stored = self.get_btc_addresses_raw(account_index, chain_hash)?;
 
         let mut map = HashMap::with_capacity(stored.len());
         for (byte, chain) in stored {
@@ -662,9 +706,7 @@ impl BitcoinWallet for Wallet {
             .iter()
             .map(|(addr_type, chain)| (addr_type.to_byte(), chain.clone()))
             .collect();
-        let key = Self::get_btc_addresses_db_key(&self.wallet_address, account_index, chain_hash);
-        self.storage.set_versioned(&key, &stored)?;
-        Ok(())
+        self.save_btc_addresses_raw(account_index, stored, chain_hash)
     }
 
     #[inline]
@@ -1016,6 +1058,49 @@ impl BitcoinWallet for Wallet {
             }
             _ => Ok(()),
         }
+    }
+
+    fn collect_btc_chains_for_backup(
+        &self,
+        chain_hash: u64,
+    ) -> Result<Vec<(usize, Vec<(u8, AddressChain)>)>> {
+        let data = self.get_wallet_data()?;
+        let btc_accounts = match data.slip44_accounts.get(&slip44::BITCOIN) {
+            Some(m) => m,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut indices: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for accs in btc_accounts.values() {
+            for i in 0..accs.len() {
+                indices.insert(i);
+            }
+        }
+
+        let mut result = Vec::with_capacity(indices.len());
+        for idx in indices {
+            match self.get_btc_addresses_raw(idx, chain_hash) {
+                Ok(raw) if !raw.is_empty() => result.push((idx, raw)),
+                Ok(_) => {}
+                Err(WalletErrors::LocalStorageError(
+                    LocalStorageError::StorageDataNotFound,
+                )) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn restore_btc_chains_from_backup(
+        &self,
+        chain_hash: u64,
+        backup: Vec<(usize, Vec<(u8, AddressChain)>)>,
+    ) -> Result<()> {
+        for (idx, raw) in backup {
+            self.save_btc_addresses_raw(idx, raw, chain_hash)?;
+        }
+        Ok(())
     }
 }
 
