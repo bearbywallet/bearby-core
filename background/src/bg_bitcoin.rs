@@ -48,13 +48,8 @@ impl BitcoinManagement for Background {
         account_index: usize,
         bip86_xpub: &bitcoin::bip32::Xpub,
     ) -> Result<()> {
-        println!(
-            "[rotate_btc_account] wallet_index={} account_index={}",
-            wallet_index, account_index
-        );
         let wallet = self.get_wallet_by_index(wallet_index)?;
         let data = wallet.get_wallet_data()?;
-        println!("[rotate_btc_account] chain_hash={}", data.chain_hash);
         let provider = self.get_provider(data.chain_hash)?;
 
         let old_addr = data.get_account(account_index)?.addr.clone();
@@ -81,7 +76,6 @@ impl BitcoinManagement for Background {
         }
         wallet.save_ftokens(&ftokens)?;
 
-        println!("[rotate_btc_account] OK");
         Ok(())
     }
 }

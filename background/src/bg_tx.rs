@@ -1039,7 +1039,9 @@ mod tests_background_transactions {
         let bip86_xpub = test_data::derive_bip86_xpub(
             &wallet.reveal_mnemonic(&argon_seed).unwrap(),
             account.account_type.value() as u32,
-            net_config.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin),
+            net_config
+                .bitcoin_network()
+                .unwrap_or(bitcoin::Network::Bitcoin),
         );
         bg.rotate_btc_account(0, 0, &bip86_xpub).await.unwrap();
         let data = wallet.get_wallet_data().unwrap();

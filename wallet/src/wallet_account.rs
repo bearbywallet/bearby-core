@@ -276,7 +276,10 @@ impl AccountManagement for Wallet {
         for chain in chains.iter().filter(|c| seen_slip44.insert(c.slip_44)) {
             let slip44 = chain.slip_44;
             let effective_chain = if slip44 == wallet_slip44 {
-                chains.iter().find(|c| c.hash() == wallet_chain_hash).unwrap_or(chain)
+                chains
+                    .iter()
+                    .find(|c| c.hash() == wallet_chain_hash)
+                    .unwrap_or(chain)
             } else {
                 chain
             };
@@ -284,9 +287,13 @@ impl AccountManagement for Wallet {
             let network = effective_chain.bitcoin_network();
 
             let hd_account = if slip44 == crypto::slip44::BITCOIN {
-                self
-                    .generate_bip39_btc_account(&mnemonic_seed_secret, index, name.clone(), effective_chain)
-                    .await?
+                self.generate_bip39_btc_account(
+                    &mnemonic_seed_secret,
+                    index,
+                    name.clone(),
+                    effective_chain,
+                )
+                .await?
             } else {
                 let path = crypto::bip49::DerivationPath::with_index(slip44, (0, 0, index));
                 AccountV2::from_hd(&mnemonic_seed_secret, name.clone(), &path, network)?

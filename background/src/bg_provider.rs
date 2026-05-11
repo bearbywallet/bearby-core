@@ -11,7 +11,9 @@ use std::sync::Arc;
 use wallet::{
     bitcoin_wallet::{derive_sk_btc_address_chains, BitcoinWallet},
     wallet_account::AccountManagement,
-    wallet_crypto::WalletCrypto, wallet_storage::StorageOperations, wallet_types::WalletTypes,
+    wallet_crypto::WalletCrypto,
+    wallet_storage::StorageOperations,
+    wallet_types::WalletTypes,
 };
 
 #[async_trait]
@@ -289,17 +291,11 @@ impl ProvidersManagement for Background {
                             .unwrap_or(bitcoin::Network::Bitcoin);
 
                         for (idx, _) in btc_accounts {
-                            let keypair = wallet.reveal_keypair(
-                                idx,
-                                &seed,
-                                &wallet::empty_passphrase(),
-                            )?;
+                            let keypair =
+                                wallet.reveal_keypair(idx, &seed, &wallet::empty_passphrase())?;
                             let sk_bytes = keypair.get_sk_bytes();
-                            let (mut chains, _) =
-                                derive_sk_btc_address_chains(&sk_bytes, network)?;
-                            if let Err(e) =
-                                provider.batch_script_get_history(&mut chains).await
-                            {
+                            let (mut chains, _) = derive_sk_btc_address_chains(&sk_bytes, network)?;
+                            if let Err(e) = provider.batch_script_get_history(&mut chains).await {
                                 println!(
                                     "[select_accounts_chain] sk btc history scan failed: {:?}",
                                     e,
@@ -558,10 +554,13 @@ mod tests_providers {
         let providers = bg.get_providers();
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].config.name, "Net 1 Updated");
-        assert_eq!(providers[0].config.rpc, vec![
-            "http://new-rpc-1.example.com",
-            "http://new-rpc-2.example.com"
-        ]);
+        assert_eq!(
+            providers[0].config.rpc,
+            vec![
+                "http://new-rpc-1.example.com",
+                "http://new-rpc-2.example.com"
+            ]
+        );
     }
 
     #[test]

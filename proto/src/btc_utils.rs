@@ -109,7 +109,7 @@ impl ByteCodec for bitcoin::AddressType {
             bitcoin::AddressType::P2wsh => 3,
             bitcoin::AddressType::P2tr => 4,
             bitcoin::AddressType::P2a => 5,
-            &_ => todo!(),
+            &_ => u8::MAX,
         }
     }
 

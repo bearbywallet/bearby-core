@@ -6,8 +6,8 @@ use errors::wallet::WalletErrors;
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use secrecy::SecretString;
 
-use crate::{wallet_crypto::WalletCrypto, Wallet};
 use crate::bitcoin_wallet::BitcoinWallet;
+use crate::{wallet_crypto::WalletCrypto, Wallet};
 
 #[async_trait]
 pub trait WalletTransaction {

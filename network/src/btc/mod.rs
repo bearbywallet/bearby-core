@@ -378,7 +378,7 @@ impl BtcOperations for NetworkProvider {
                 };
             }
 
-        Ok(())
+            Ok(())
         })
     }
 
@@ -468,25 +468,12 @@ impl BtcOperations for NetworkProvider {
             .to_bitcoin_addr()
             .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
         let script = btc_addr.script_pubkey();
-        let script_hex = alloy::hex::encode(script.as_bytes());
 
         let unspents = self.with_electrum_client(|client| {
             client
                 .script_list_unspent(script.as_ref())
                 .map_err(|e| NetworkErrors::RPCError(format!("Failed to list unspent: {}", e)))
         })?;
-        println!(
-            "[btc_list_unspent] addr={} script={} unspent_count={}",
-            btc_addr,
-            script_hex,
-            unspents.len()
-        );
-        for (i, u) in unspents.iter().enumerate() {
-            println!(
-                "[btc_list_unspent]   utxo[{}]: txid={} vout={} value={} height={}",
-                i, u.tx_hash, u.tx_pos, u.value, u.height
-            );
-        }
         Ok(unspents)
     }
 
@@ -550,14 +537,12 @@ impl BtcOperations for NetworkProvider {
             for i in 0..ext_n {
                 let ext_history = std::mem::take(&mut results[cursor]);
                 cursor += 1;
-                chain.external[i].history =
-                    ext_history.into_iter().map(|h| h.tx_hash).collect();
+                chain.external[i].history = ext_history.into_iter().map(|h| h.tx_hash).collect();
             }
             for i in 0..int_n {
                 let int_history = std::mem::take(&mut results[cursor]);
                 cursor += 1;
-                chain.internal[i].history =
-                    int_history.into_iter().map(|h| h.tx_hash).collect();
+                chain.internal[i].history = int_history.into_iter().map(|h| h.tx_hash).collect();
             }
         }
 
@@ -855,7 +840,15 @@ mod tests {
         let seed = anvil_seed();
         let xpubs = BtcAccountXpubsInput::from_seed(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
         let mut chains = HashMap::new();
-        derive_btc_addresses_from_xpubs(&xpubs, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT, &mut chains).unwrap();
+        derive_btc_addresses_from_xpubs(
+            &xpubs,
+            0,
+            bitcoin::Network::Bitcoin,
+            0,
+            GAP_LIMIT,
+            &mut chains,
+        )
+        .unwrap();
 
         let mut all_scripthashes: Vec<String> = Vec::new();
 
@@ -922,7 +915,15 @@ mod tests {
 
         let xpubs = BtcAccountXpubsInput::from_seed(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
         let mut chains = HashMap::new();
-        derive_btc_addresses_from_xpubs(&xpubs, 0, bitcoin::Network::Bitcoin, 0, GAP_LIMIT, &mut chains).unwrap();
+        derive_btc_addresses_from_xpubs(
+            &xpubs,
+            0,
+            bitcoin::Network::Bitcoin,
+            0,
+            GAP_LIMIT,
+            &mut chains,
+        )
+        .unwrap();
 
         let original_lengths: HashMap<bitcoin::AddressType, usize> =
             chains.iter().map(|(k, c)| (*k, c.external.len())).collect();

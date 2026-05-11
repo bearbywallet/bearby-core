@@ -256,7 +256,9 @@ mod tests_wallet_crypto {
         let wallet = create_test_wallet_from_secret_key(Arc::clone(&storage), &argon_seed);
 
         // Reveal the keypair for account 0
-        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let keypair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
 
         // Verify the keypair can sign and verify messages
         let msg = b"test message";
@@ -308,7 +310,9 @@ mod tests_wallet_crypto {
         .await;
 
         for i in 0..3 {
-            let keypair = wallet.reveal_keypair(i, &argon_seed, &empty_passphrase()).unwrap();
+            let keypair = wallet
+                .reveal_keypair(i, &argon_seed, &empty_passphrase())
+                .unwrap();
 
             // Verify the address matches
             let data = wallet.get_wallet_data().unwrap();
@@ -340,7 +344,9 @@ mod tests_wallet_crypto {
         .await;
 
         for i in 0..2 {
-            let keypair = wallet.reveal_keypair(i, &argon_seed, &empty_passphrase()).unwrap();
+            let keypair = wallet
+                .reveal_keypair(i, &argon_seed, &empty_passphrase())
+                .unwrap();
 
             // Verify the address matches
             let data = wallet.get_wallet_data().unwrap();
@@ -371,7 +377,9 @@ mod tests_wallet_crypto {
         )
         .await;
 
-        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let keypair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
 
         let data = wallet.get_wallet_data().unwrap();
         let account_addr = &data.get_account(0).unwrap().addr;
@@ -468,10 +476,14 @@ mod tests_wallet_crypto {
         .await;
 
         let msg = b"Hello, Zilliqa!";
-        let signature = wallet.sign_message(msg, 0, &argon_seed, &empty_passphrase()).unwrap();
+        let signature = wallet
+            .sign_message(msg, 0, &argon_seed, &empty_passphrase())
+            .unwrap();
 
         // Reveal the keypair and verify the signature
-        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let keypair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
         let verified = keypair.verify_sig(msg, &signature).unwrap();
 
         assert!(verified);
@@ -495,7 +507,9 @@ mod tests_wallet_crypto {
         )
         .await;
 
-        let keypair = wallet.reveal_keypair(0, &argon_seed, &empty_passphrase()).unwrap();
+        let keypair = wallet
+            .reveal_keypair(0, &argon_seed, &empty_passphrase())
+            .unwrap();
 
         let data = wallet.get_wallet_data().unwrap();
         let account_addr = &data.get_account(0).unwrap().addr;
