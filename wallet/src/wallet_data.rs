@@ -38,6 +38,7 @@ pub struct WalletDataV2 {
     pub bip: u32,
     #[serde(default)]
     pub bip_preferences: HashMap<u32, u32>,
+    #[serde(default)]
     pub derivation_type: u8,
 }
 
