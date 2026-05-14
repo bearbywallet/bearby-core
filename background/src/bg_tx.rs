@@ -182,72 +182,70 @@ pub fn update_tx_from_params(
                 .map(|u| u.value.to_sat())
                 .sum();
 
-            let output_count = btc_tx.output.len();
-            if output_count == 0 {
-                Err(TransactionErrors::ConvertTxError(
-                    "No outputs in transaction".to_string(),
-                ))?
+            let value_indices: Vec<usize> = btc_tx
+                .output
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| !o.script_pubkey.is_op_return())
+                .map(|(i, _)| i)
+                .collect();
+
+            if value_indices.is_empty() {
+                return Err(TransactionErrors::ConvertTxError(
+                    "No spendable outputs in transaction".into(),
+                ));
             }
 
-            let is_max_transfer = output_count == 1;
+            let dust_limit = metadata
+                .signer
+                .as_ref()
+                .map(wallet::bitcoin_wallet::get_dust_limit)
+                .unwrap_or(546);
+
+            let change_idx = *value_indices.last().unwrap();
+            let is_max_transfer = value_indices.len() == 1;
+            let has_op_return = btc_tx.output.len() > value_indices.len();
+
+            if is_max_transfer && has_op_return {
+                return Err(TransactionErrors::ConvertTxError(
+                    "Cannot adjust fee: transaction carries an OP_RETURN memo but has no change output to absorb the fee delta; rebuild the transaction with the updated fee rate".into(),
+                ));
+            }
 
             if is_max_transfer {
-                let dust_limit = metadata
-                    .signer
-                    .as_ref()
-                    .map(wallet::bitcoin_wallet::get_dust_limit)
-                    .unwrap_or(546);
-
                 let max_fee_affordable = total_input.saturating_sub(dust_limit);
-
-                if new_fee > max_fee_affordable {
-                    let new_amount = dust_limit;
-                    btc_tx.output[0].value = bitcoin::Amount::from_sat(new_amount);
-
-                    if output_count > 1 {
-                        btc_tx.output.pop();
-                    }
+                let new_amount = if new_fee > max_fee_affordable {
+                    dust_limit
                 } else {
-                    let new_amount = total_input.saturating_sub(new_fee);
-
-                    if new_amount < dust_limit {
-                        let min_required = new_fee + dust_limit;
-                        Err(TransactionErrors::ConvertTxError(format!(
+                    let amt = total_input.saturating_sub(new_fee);
+                    if amt < dust_limit {
+                        return Err(TransactionErrors::ConvertTxError(format!(
                             "Insufficient funds: need {} sats (fee) + {} sats (min output) = {} sats, but only have {} sats",
-                            new_fee, dust_limit, min_required, total_input
-                        )))?
+                            new_fee, dust_limit, new_fee + dust_limit, total_input
+                        )));
                     }
-
-                    btc_tx.output[0].value = bitcoin::Amount::from_sat(new_amount);
-
-                    if output_count > 1 {
-                        btc_tx.output.pop();
-                    }
-                }
+                    amt
+                };
+                btc_tx.output[change_idx].value = bitcoin::Amount::from_sat(new_amount);
             } else {
-                let mut total_output: u64 = 0;
-                for i in 0..output_count.saturating_sub(1) {
-                    total_output += btc_tx.output[i].value.to_sat();
-                }
+                let total_dest: u64 = btc_tx
+                    .output
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, o)| *i != change_idx && !o.script_pubkey.is_op_return())
+                    .map(|(_, o)| o.value.to_sat())
+                    .sum();
 
-                let new_change = total_input
-                    .saturating_sub(total_output)
-                    .saturating_sub(new_fee);
-
-                let dust_limit = metadata
-                    .signer
-                    .as_ref()
-                    .map(wallet::bitcoin_wallet::get_dust_limit)
-                    .unwrap_or(546);
+                let new_change =
+                    total_input
+                        .saturating_sub(total_dest)
+                        .saturating_sub(new_fee);
 
                 if new_change >= dust_limit {
-                    btc_tx.output[output_count - 1].value = bitcoin::Amount::from_sat(new_change);
-                } else if output_count > 1 {
-                    btc_tx.output.pop();
+                    btc_tx.output[change_idx].value =
+                        bitcoin::Amount::from_sat(new_change);
                 } else {
-                    Err(TransactionErrors::ConvertTxError(
-                        "Insufficient funds for fee".to_string(),
-                    ))?
+                    btc_tx.output.remove(change_idx);
                 }
             }
         }
@@ -523,7 +521,7 @@ mod tests_background_transactions {
     use alloy::{primitives::U256, rpc::types::TransactionRequest as ETHTransactionRequest};
     use network::btc::BtcOperations;
 
-    use proto::{address::Address, tx::TransactionRequest};
+    use proto::{address::Address, tx::{TransactionMetadata, TransactionRequest}};
     use rand::RngExt;
     use secrecy::{ExposeSecret, SecretString};
     use test_data::{
@@ -1296,5 +1294,154 @@ mod tests_background_transactions {
 
         let is_valid = key_pair.verify_hash(&hash.0, &signature).unwrap();
         assert!(is_valid, "Tron hex message signature verification failed");
+    }
+
+    fn make_op_return(memo: &[u8]) -> bitcoin::TxOut {
+        wallet::bitcoin_wallet::build_op_return_output(memo).unwrap()
+    }
+
+    fn make_params(fee: u64) -> RequiredTxParams {
+        RequiredTxParams {
+            gas_price: U256::ZERO,
+            max_priority_fee: U256::ZERO,
+            fee_history: network::evm::GasFeeHistory::default(),
+            tx_estimate_gas: U256::ZERO,
+            blob_base_fee: U256::ZERO,
+            nonce: 0,
+            slow: U256::ZERO,
+            market: U256::ZERO,
+            fast: U256::ZERO,
+            current: U256::from(fee),
+        }
+    }
+
+    fn make_btc_tx_with_input(outputs: Vec<bitcoin::TxOut>, input_sats: u64) -> TransactionRequest {
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn {
+                previous_output: bitcoin::OutPoint {
+                    txid: "0000000000000000000000000000000000000000000000000000000000000000"
+                        .parse::<bitcoin::Txid>()
+                        .unwrap(),
+                    vout: 0,
+                },
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: bitcoin::Witness::new(),
+            }],
+            output: outputs,
+        };
+        TransactionRequest::Bitcoin((
+            tx,
+            TransactionMetadata::default(),
+            proto::btc_tx::BitcoinMetadata {
+                witness_utxos: vec![bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(input_sats),
+                    script_pubkey: bitcoin::ScriptBuf::new(),
+                }],
+                input_meta: vec![(0, crypto::bip49::DerivationPath::new(
+                    0,
+                    crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
+                    86,
+                ))],
+            },
+        ))
+    }
+
+    fn make_btc_tx(outputs: Vec<bitcoin::TxOut>) -> TransactionRequest {
+        make_btc_tx_with_input(outputs, 200_000)
+    }
+
+    #[test]
+    fn test_update_tx_preserves_op_return() {
+        let memo = b"SWAP:THOR.RUNE:thor1abc";
+        let mut tx = make_btc_tx(vec![
+            bitcoin::TxOut { value: bitcoin::Amount::from_sat(100_000), script_pubkey: bitcoin::ScriptBuf::new() },
+            bitcoin::TxOut { value: bitcoin::Amount::from_sat(50_000), script_pubkey: bitcoin::ScriptBuf::new() },
+            make_op_return(memo),
+        ]);
+
+        let params = make_params(5_000);
+
+        update_tx_from_params(&mut tx, params, U256::ZERO).unwrap();
+
+        match tx {
+            TransactionRequest::Bitcoin((ref btc_tx, _, _)) => {
+                assert_eq!(btc_tx.output.len(), 3);
+                assert_eq!(btc_tx.output[0].value.to_sat(), 100_000);
+                assert_eq!(btc_tx.output[1].value.to_sat(), 95_000);
+                assert!(btc_tx.output[2].script_pubkey.is_op_return());
+                assert_eq!(&btc_tx.output[2].script_pubkey.as_bytes()[2..], memo);
+            }
+            _ => panic!("expected Bitcoin variant"),
+        }
+    }
+
+    #[test]
+    fn test_update_tx_drops_dust_change_keeps_op_return() {
+        let memo = b"SWAP:THOR.RUNE:thor1abc";
+        let mut tx = make_btc_tx_with_input(vec![
+            bitcoin::TxOut { value: bitcoin::Amount::from_sat(100_000), script_pubkey: bitcoin::ScriptBuf::new() },
+            bitcoin::TxOut { value: bitcoin::Amount::from_sat(100), script_pubkey: bitcoin::ScriptBuf::new() },
+            make_op_return(memo),
+        ], 100_100);
+
+        let params = make_params(5_000);
+
+        update_tx_from_params(&mut tx, params, U256::ZERO).unwrap();
+
+        match tx {
+            TransactionRequest::Bitcoin((ref btc_tx, _, _)) => {
+                assert_eq!(btc_tx.output.len(), 2);
+                assert_eq!(btc_tx.output[0].value.to_sat(), 100_000);
+                assert!(btc_tx.output[1].script_pubkey.is_op_return());
+            }
+            _ => panic!("expected Bitcoin variant"),
+        }
+    }
+
+    #[test]
+    fn test_update_tx_rejects_max_transfer_with_op_return() {
+        let memo = b"SWAP:ETH:0xabc";
+        let mut tx = make_btc_tx(vec![
+            bitcoin::TxOut { value: bitcoin::Amount::from_sat(200_000), script_pubkey: bitcoin::ScriptBuf::new() },
+            make_op_return(memo),
+        ]);
+
+        let params = make_params(3_000);
+
+        let res = update_tx_from_params(&mut tx, params, U256::from(200_000));
+        assert!(res.is_err(), "expected error for [dest, OP_RETURN] with no change output");
+
+        match tx {
+            TransactionRequest::Bitcoin((ref btc_tx, _, _)) => {
+                assert_eq!(btc_tx.output.len(), 2);
+                assert_eq!(btc_tx.output[0].value.to_sat(), 200_000);
+                assert!(btc_tx.output[1].script_pubkey.is_op_return());
+            }
+            _ => panic!("expected Bitcoin variant"),
+        }
+    }
+
+    #[test]
+    fn test_update_tx_plain_btc_unchanged() {
+        let mut tx = make_btc_tx(vec![
+            bitcoin::TxOut { value: bitcoin::Amount::from_sat(100_000), script_pubkey: bitcoin::ScriptBuf::new() },
+            bitcoin::TxOut { value: bitcoin::Amount::from_sat(50_000), script_pubkey: bitcoin::ScriptBuf::new() },
+        ]);
+
+        let params = make_params(5_000);
+
+        update_tx_from_params(&mut tx, params, U256::ZERO).unwrap();
+
+        match tx {
+            TransactionRequest::Bitcoin((ref btc_tx, _, _)) => {
+                assert_eq!(btc_tx.output.len(), 2);
+                assert_eq!(btc_tx.output[0].value.to_sat(), 100_000);
+                assert_eq!(btc_tx.output[1].value.to_sat(), 95_000);
+            }
+            _ => panic!("expected Bitcoin variant"),
+        }
     }
 }

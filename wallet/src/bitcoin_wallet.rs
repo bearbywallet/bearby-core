@@ -30,6 +30,8 @@ use secrecy::SecretString;
 use std::collections::{HashMap, HashSet};
 
 const MAX_GAP_EXTENSIONS: u32 = 10;
+const TX_OVERHEAD_VSIZE: usize = 10;
+const DEFAULT_FEE_RATE: u64 = 10;
 
 pub async fn scan_btc_chains_for_xpubs(
     xpubs: &BtcAccountXpubsInput,
@@ -129,6 +131,30 @@ fn output_vsize_for(addr_type: bitcoin::AddressType) -> usize {
     }
 }
 
+pub fn build_op_return_output(memo: &[u8]) -> Result<bitcoin::TxOut> {
+    use bitcoin::{
+        opcodes::all::OP_RETURN,
+        script::{Builder, PushBytesBuf},
+    };
+
+    if memo.len() > 80 {
+        return Err(WalletErrors::BincodeError(format!(
+            "OP_RETURN memo too long: {} bytes > 80",
+            memo.len()
+        )));
+    }
+    let push = PushBytesBuf::try_from(memo.to_vec())
+        .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
+    let script = Builder::new()
+        .push_opcode(OP_RETURN)
+        .push_slice(push)
+        .into_script();
+    Ok(bitcoin::TxOut {
+        value: bitcoin::Amount::from_sat(0),
+        script_pubkey: script,
+    })
+}
+
 pub fn derive_sk_btc_address_chains(
     sk_bytes: &[u8; config::key::SECRET_KEY_SIZE],
     network: bitcoin::Network,
@@ -214,13 +240,30 @@ pub fn build_unsigned_btc_transaction(
     Vec<bitcoin::TxOut>,
     Vec<(bitcoin::AddressType, DerivationPath)>,
 )> {
+    build_unsigned_btc_transaction_with_extras(chains, destinations, vec![], fee_rate_sat_per_vbyte)
+}
+
+pub fn build_unsigned_btc_transaction_with_extras(
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
+    destinations: Vec<(Address, u64)>,
+    extra_outputs: Vec<bitcoin::TxOut>,
+    fee_rate_sat_per_vbyte: Option<u64>,
+) -> Result<(
+    bitcoin::Transaction,
+    Vec<bitcoin::TxOut>,
+    Vec<(bitcoin::AddressType, DerivationPath)>,
+)> {
     use bitcoin::{
         absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence,
         Transaction, TxIn, TxOut, Witness,
     };
 
-    const TX_OVERHEAD_VSIZE: usize = 10;
-    const DEFAULT_FEE_RATE: u64 = 10;
+    if let Some(bad) = extra_outputs.iter().find(|o| o.value.to_sat() != 0) {
+        return Err(WalletErrors::BincodeError(format!(
+            "extra_outputs must be zero-value (got {} sats)",
+            bad.value.to_sat()
+        )));
+    }
 
     let mut sorted_entries: Vec<(&bitcoin::AddressType, &AddressChain)> = chains.iter().collect();
     sorted_entries.sort_by_key(|(k, _)| k.to_byte());
@@ -297,47 +340,59 @@ pub fn build_unsigned_btc_transaction(
         dest_output_vsize_sum = dest_output_vsize_sum.saturating_add(output_vsize_for(at));
     }
 
+    let extras_vsize: usize = extra_outputs
+        .iter()
+        .map(|o| {
+            debug_assert!(o.script_pubkey.len() < 253);
+            8 + 1 + o.script_pubkey.len()
+        })
+        .sum();
+
     let change_output_vsize = output_vsize_for(bitcoin::AddressType::P2tr);
-    let estimated_vsize_with_change =
-        (input_vsize_sum + dest_output_vsize_sum + change_output_vsize + TX_OVERHEAD_VSIZE) as u64;
+    let estimated_vsize_with_change = (input_vsize_sum
+        + dest_output_vsize_sum
+        + extras_vsize
+        + change_output_vsize
+        + TX_OVERHEAD_VSIZE) as u64;
     let fee_rate = fee_rate_sat_per_vbyte.unwrap_or(DEFAULT_FEE_RATE);
     let estimated_fee = estimated_vsize_with_change * fee_rate;
 
-    let (adjusted_destinations, total_output) = if total_input
-        < original_total_output + estimated_fee
-    {
-        let max_threshold = estimated_fee.saturating_mul(3).max(10000);
-        let is_max_transfer = destinations.len() == 1
-            && original_total_output <= total_input
-            && original_total_output + estimated_fee > total_input
-            && (original_total_output + estimated_fee).saturating_sub(total_input) < max_threshold;
+    let (adjusted_destinations, total_output) =
+        if total_input < original_total_output + estimated_fee {
+            let max_threshold = estimated_fee.saturating_mul(3).max(10000);
+            let is_max_transfer = destinations.len() == 1
+                && original_total_output <= total_input
+                && original_total_output + estimated_fee > total_input
+                && (original_total_output + estimated_fee)
+                    .saturating_sub(total_input)
+                    < max_threshold;
 
-        if is_max_transfer {
-            let adjusted_amount = total_input.saturating_sub(estimated_fee);
-            let dust_limit = get_dust_limit(&destinations[0].0);
+            if is_max_transfer {
+                let adjusted_amount = total_input.saturating_sub(estimated_fee);
+                let dust_limit = get_dust_limit(&destinations[0].0);
 
-            if adjusted_amount < dust_limit {
+                if adjusted_amount < dust_limit {
+                    return Err(WalletErrors::BincodeError(format!(
+                        "Insufficient funds: balance too low after fee (have: {}, fee: {})",
+                        total_input, estimated_fee
+                    )));
+                }
+                let adjusted_dests = vec![(destinations[0].0.clone(), adjusted_amount)];
+                (adjusted_dests, adjusted_amount)
+            } else {
                 return Err(WalletErrors::BincodeError(format!(
-                    "Insufficient funds: balance too low after fee (have: {}, fee: {})",
-                    total_input, estimated_fee
+                    "Insufficient funds: have {}, need {} (output: {}, fee: {})",
+                    total_input,
+                    original_total_output + estimated_fee,
+                    original_total_output,
+                    estimated_fee
                 )));
             }
-            let adjusted_dests = vec![(destinations[0].0.clone(), adjusted_amount)];
-            (adjusted_dests, adjusted_amount)
         } else {
-            return Err(WalletErrors::BincodeError(format!(
-                "Insufficient funds: have {}, need {} (output: {}, fee: {})",
-                total_input,
-                original_total_output + estimated_fee,
-                original_total_output,
-                estimated_fee
-            )));
-        }
-    } else {
-        (destinations.clone(), original_total_output)
-    };
+            (destinations.clone(), original_total_output)
+        };
 
-    let mut outputs: Vec<TxOut> = Vec::with_capacity(adjusted_destinations.len() + 1);
+    let mut outputs: Vec<TxOut> = Vec::with_capacity(adjusted_destinations.len() + 1 + extra_outputs.len());
     for (dest_addr, amount) in adjusted_destinations {
         let btc_addr = dest_addr
             .to_bitcoin_addr()
@@ -356,6 +411,10 @@ pub fn build_unsigned_btc_transaction(
             value: Amount::from_sat(change),
             script_pubkey: change_script,
         });
+    }
+
+    for extra in extra_outputs {
+        outputs.push(extra);
     }
 
     let tx = Transaction {
@@ -1163,5 +1222,78 @@ mod tests_btc_wallet {
         };
 
         wallet.mark_btc_addresses_used(0, &historical).unwrap();
+    }
+
+    #[test]
+    fn test_build_op_return_output_round_trip() {
+        let memo = b"SWAP:THOR.RUNE:thor1abc";
+        let out = super::build_op_return_output(memo).unwrap();
+        assert_eq!(out.value.to_sat(), 0);
+        assert!(out.script_pubkey.is_op_return());
+        let bytes = out.script_pubkey.as_bytes();
+        assert_eq!(bytes[0], 0x6a);
+        assert_eq!(&bytes[2..], memo);
+    }
+
+    #[test]
+    fn test_build_op_return_output_rejects_oversized_memo() {
+        let memo = vec![0xAA; 81];
+        assert!(super::build_op_return_output(&memo).is_err());
+    }
+
+    #[test]
+    fn test_build_unsigned_btc_transaction_with_extras_rejects_nonzero_extra() {
+        let chains = std::collections::HashMap::new();
+        let extra = vec![bitcoin::TxOut {
+            value: bitcoin::Amount::from_sat(1),
+            script_pubkey: bitcoin::ScriptBuf::new(),
+        }];
+        assert!(super::build_unsigned_btc_transaction_with_extras(
+            &chains,
+            vec![],
+            extra,
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_build_unsigned_btc_transaction_with_extras_op_return() {
+        let sk_bytes = [0x01; 32];
+        let (mut chains, _) =
+            super::derive_sk_btc_address_chains(&sk_bytes, bitcoin::Network::Regtest).unwrap();
+
+        let p2tr = chains.get_mut(&bitcoin::AddressType::P2tr).unwrap();
+        let entry = p2tr.get_external().unwrap().clone();
+        let dest_addr = entry.address.clone();
+
+        let p2tr_entry = chains.get_mut(&bitcoin::AddressType::P2tr).unwrap();
+        p2tr_entry.external[0].utxos.push(proto::btc_utils::Utxo {
+            txid: "0000000000000000000000000000000000000000000000000000000000000001"
+                .parse()
+                .unwrap(),
+            vout: 0,
+            value: 200_000,
+            height: 100,
+        });
+
+        let memo = b"=:ETH.ETH:0xabc:0/1/0";
+        let op_return = super::build_op_return_output(memo).unwrap();
+
+        let (tx, _utxos, _meta) = super::build_unsigned_btc_transaction_with_extras(
+            &chains,
+            vec![(dest_addr, 100_000)],
+            vec![op_return],
+            Some(10),
+        )
+        .unwrap();
+
+        assert_eq!(tx.output.len(), 3);
+        assert_eq!(tx.output[0].value.to_sat(), 100_000);
+        assert!(!tx.output[0].script_pubkey.is_op_return());
+        assert!(tx.output[1].value.to_sat() > 0);
+        assert!(!tx.output[1].script_pubkey.is_op_return());
+        assert_eq!(tx.output[2].value.to_sat(), 0);
+        assert!(tx.output[2].script_pubkey.is_op_return());
     }
 }
