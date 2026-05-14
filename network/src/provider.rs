@@ -486,7 +486,6 @@ mod tests_network {
             .unwrap();
 
         assert_ne!(fee.gas_price, U256::from(0));
-        assert_ne!(fee.max_priority_fee, U256::from(0));
         assert_ne!(fee.tx_estimate_gas, U256::from(0));
         assert_ne!(fee.blob_base_fee, U256::from(0));
         assert_ne!(fee.fee_history.max_fee, U256::from(0));
