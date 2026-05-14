@@ -124,7 +124,7 @@ impl NetworkProvider {
         urls.shuffle(&mut rand::rng());
 
         for url in urls {
-            let config = ConfigBuilder::new().timeout(Some(5)).build();
+            let config = ConfigBuilder::new().timeout(Some(std::time::Duration::from_secs(5))).build();
 
             match ElectrumClient::from_config(url, config) {
                 Ok(client) => match operation(&client) {
@@ -219,9 +219,9 @@ impl BtcOperations for NetworkProvider {
             }
 
             let mut batch = Batch::default();
-            batch.estimate_fee(FAST_BLOCKS);
-            batch.estimate_fee(MARKET_BLOCKS);
-            batch.estimate_fee(SLOW_BLOCKS);
+            batch.estimate_fee(FAST_BLOCKS, None);
+            batch.estimate_fee(MARKET_BLOCKS, None);
+            batch.estimate_fee(SLOW_BLOCKS, None);
 
             let results = client
                 .batch_call(&batch)

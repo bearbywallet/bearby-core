@@ -7,4 +7,4 @@ edition = "2021"
 alloy.workspace = true
 image.workspace = true
 errors = { path = "../errors" }
-fast_qr  = { version = "0.12.7", default-features = false, features = ["image"] }
+fast_qr  = { version = "0.13", default-features = false, features = ["image"] }

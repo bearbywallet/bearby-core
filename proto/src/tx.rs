@@ -9,7 +9,7 @@ use crate::zil_tx::{ZILTransactionReceipt, ZILTransactionRequest};
 use crate::zq1_proto::{create_proto_tx, version_from_chainid};
 use alloy::consensus::transaction::SignerRecoverable;
 use alloy::consensus::{SignableTransaction, TxEip4844Variant, TxEnvelope, TypedTransaction};
-use alloy::network::TransactionBuilder;
+use alloy::network::NetworkTransactionBuilder;
 use alloy::primitives::{TxKind, U256};
 use alloy::signers::Signature as EthersSignature;
 use bitcoin::ecdsa::Signature as BitcoinEcdsaSignature;
@@ -285,7 +285,7 @@ impl TransactionRequest {
             }
             TransactionRequest::Ethereum((tx, mut metadata)) => {
                 let wallet = keypair.get_local_eth_wallet()?;
-                let tx_envelope = tx
+                let tx_envelope: TxEnvelope = tx
                     .build(&wallet)
                     .await
                     .map_err(|e| KeyPairError::FailToSignTx(e.to_string()))?;
