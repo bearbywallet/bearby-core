@@ -692,8 +692,8 @@ mod tests_background_tokens {
 
         match &txn_req {
             TransactionRequest::Bitcoin((tx, meta, btc_meta)) => {
-                assert!(tx.input.len() > 0, "Should have at least one input");
-                assert!(tx.output.len() > 0, "Should have at least one output");
+                assert!(!tx.input.is_empty(), "Should have at least one input");
+                assert!(!tx.output.is_empty(), "Should have at least one output");
                 assert_eq!(meta.chain_hash, net_config.hash());
                 assert!(!btc_meta.witness_utxos.is_empty());
                 assert_eq!(
@@ -798,7 +798,7 @@ mod tests_background_tokens {
 
         let wallet_check = bg.get_wallet_by_index(0).unwrap();
         let history_check = wallet_check.get_history().unwrap();
-        assert!(history_check.len() > 0, "Transaction should be in history");
+        assert!(!history_check.is_empty(), "Transaction should be in history");
 
         let data = wallet_check.get_wallet_data().unwrap();
         let rotated_account = data.get_accounts().unwrap().get(from_index).unwrap();
@@ -1244,8 +1244,8 @@ mod tests_background_tokens {
         dbg!(accs[1].addr.auto_format());
 
         let sol_token = ftokens.first().unwrap();
-        assert!(sol_token.balances.get(&accs[0].addr.to_hash()).is_some());
-        assert!(sol_token.balances.get(&accs[1].addr.to_hash()).is_some());
+        assert!(sol_token.balances.contains_key(&accs[0].addr.to_hash()));
+        assert!(sol_token.balances.contains_key(&accs[1].addr.to_hash()));
         assert_eq!(
             accs[0].addr.auto_format(),
             "AqynRZwvVqUPRwRJXvm6odUb3t93fDjnWe3p6BeuUFxD"

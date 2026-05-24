@@ -250,11 +250,11 @@ impl WalletManagement for Background {
             &params.wallet_settings.argon_params.into_config(),
         )?;
         let keychain = KeyChain::from_seed(&argon_seed)?;
-        let mnemonic_str_secret = <&SecretString>::from(params.mnemonic_str);
+        let mnemonic_str_secret = params.mnemonic_str;
         let mnemonic = if params.mnemonic_check {
-            Mnemonic::parse_str(&EN_WORDS, &mnemonic_str_secret)?
+            Mnemonic::parse_str(&EN_WORDS, mnemonic_str_secret)?
         } else {
-            Mnemonic::parse_str_without_checksum(&EN_WORDS, &mnemonic_str_secret)?
+            Mnemonic::parse_str_without_checksum(&EN_WORDS, mnemonic_str_secret)?
         };
         let proof = argon2::derive_key(
             &argon_seed[..PROOF_SIZE],
@@ -533,7 +533,6 @@ mod tests_background_wallet {
             .unwrap()
             .addr
         {
-            assert!(true);
         } else {
             panic!("address should convert to legacy mode");
         }

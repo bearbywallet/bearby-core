@@ -942,11 +942,11 @@ mod tests_background_transactions {
         );
         assert_eq!(
             "d7986cf4acc822c1a6cdc4170f5561a6cee1591c37ec6a887bb650d051e4ad71",
-            hex::encode(&keypair.get_secretkey().unwrap().as_ref())
+            hex::encode(keypair.get_secretkey().unwrap().as_ref())
         );
         assert_eq!(
             "022b8e6855eaf04ec7bd2e01d5aaf4e46a111b509882e5456d97af60a6d1ed6f28",
-            hex::encode(&keypair.get_pubkey().unwrap().as_bytes())
+            hex::encode(keypair.get_pubkey().unwrap().as_bytes())
         );
     }
 
@@ -1023,7 +1023,7 @@ mod tests_background_transactions {
         assert!(signed_tx.verify().unwrap());
 
         if let TransactionReceipt::Bitcoin((signed_btc_tx, _, _)) = &signed_tx {
-            assert!(signed_btc_tx.output.len() >= 1);
+            assert!(!signed_btc_tx.output.is_empty());
         } else {
             panic!("Not a BTC tx");
         }

@@ -83,22 +83,12 @@ mod tests {
         }
     }
 
-    #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+    #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
     #[serde(default)]
     struct ChainConfigV3 {
         name: String,
         chain_ids: [u64; 2],
         slip_44: u32,
-    }
-
-    impl Default for ChainConfigV3 {
-        fn default() -> Self {
-            Self {
-                name: String::new(),
-                chain_ids: [0, 0],
-                slip_44: 0,
-            }
-        }
     }
 
     fn sample_v1() -> ChainConfigV1 {

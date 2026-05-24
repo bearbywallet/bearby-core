@@ -216,7 +216,7 @@ mod tests_bg_bitcoin {
             );
 
             let stored_chains = wallet
-                .get_btc_addresses(pos as usize, offline_btc_conf.hash())
+                .get_btc_addresses(pos, offline_btc_conf.hash())
                 .unwrap();
             assert_eq!(
                 stored_chains.len(),

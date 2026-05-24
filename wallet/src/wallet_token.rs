@@ -362,7 +362,7 @@ mod tests_wallet_tokens {
         .unwrap();
 
         // Add multiple custom tokens
-        let tokens = vec![
+        let tokens = [
             gen_bsc_token(),
             FToken {
                 rate: 0f64,

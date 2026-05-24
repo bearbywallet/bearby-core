@@ -235,7 +235,7 @@ mod tests_security {
                 indexes: &indexes,
                 wallet_name: "Bitcoin Wallet".to_string(),
                 biometric_type: AuthMethod::None,
-                chains: &[chain_config.clone()],
+                chains: std::slice::from_ref(&chain_config),
             },
             wallet_config,
             vec![],

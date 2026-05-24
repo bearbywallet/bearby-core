@@ -231,15 +231,19 @@ fn append_new_p2tr_address(
     Ok(())
 }
 
+type BtcTransactionParts = (
+    bitcoin::Transaction,
+    Vec<bitcoin::TxOut>,
+    Vec<(bitcoin::AddressType, DerivationPath)>,
+);
+
+type BtcBackupData = Vec<(usize, Vec<(u8, AddressChain)>)>;
+
 pub fn build_unsigned_btc_transaction(
     chains: &HashMap<bitcoin::AddressType, AddressChain>,
     destinations: Vec<(Address, u64)>,
     fee_rate_sat_per_vbyte: Option<u64>,
-) -> Result<(
-    bitcoin::Transaction,
-    Vec<bitcoin::TxOut>,
-    Vec<(bitcoin::AddressType, DerivationPath)>,
-)> {
+) -> Result<BtcTransactionParts> {
     build_unsigned_btc_transaction_with_extras(chains, destinations, vec![], fee_rate_sat_per_vbyte)
 }
 
@@ -248,11 +252,7 @@ pub fn build_unsigned_btc_transaction_with_extras(
     destinations: Vec<(Address, u64)>,
     extra_outputs: Vec<bitcoin::TxOut>,
     fee_rate_sat_per_vbyte: Option<u64>,
-) -> Result<(
-    bitcoin::Transaction,
-    Vec<bitcoin::TxOut>,
-    Vec<(bitcoin::AddressType, DerivationPath)>,
-)> {
+) -> Result<BtcTransactionParts> {
     use bitcoin::{
         absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence,
         Transaction, TxIn, TxOut, Witness,
@@ -299,7 +299,7 @@ pub fn build_unsigned_btc_transaction_with_extras(
                     value: Amount::from_sat(utxo.value),
                     script_pubkey: script_pubkey.clone(),
                 });
-                input_meta.push((*addr_type, entry.path.clone()));
+                input_meta.push((*addr_type, entry.path));
                 total_input = total_input.saturating_add(utxo.value);
                 input_vsize_sum = input_vsize_sum.saturating_add(in_vs);
             }
@@ -519,12 +519,12 @@ pub trait BitcoinWallet {
     fn collect_btc_chains_for_backup(
         &self,
         chain_hash: u64,
-    ) -> std::result::Result<Vec<(usize, Vec<(u8, AddressChain)>)>, Self::Error>;
+    ) -> std::result::Result<BtcBackupData, Self::Error>;
 
     fn restore_btc_chains_from_backup(
         &self,
         chain_hash: u64,
-        backup: Vec<(usize, Vec<(u8, AddressChain)>)>,
+        backup: BtcBackupData,
     ) -> std::result::Result<(), Self::Error>;
 }
 
@@ -608,21 +608,20 @@ impl BitcoinWallet for Wallet {
                 _ => return Err(WalletErrors::InvalidAccountType),
             };
 
-        for i in 0..psbt.inputs.len() {
-            let (secret_key, public_key) = signing_keys[i];
+        for (i, ((secret_key, public_key), addr_type)) in signing_keys.iter().zip(addr_types.iter()).enumerate() {
             btc_tx::sign_psbt_input(
                 &mut psbt,
                 i,
-                &secret_key,
-                &public_key,
-                addr_types[i],
+                secret_key,
+                public_key,
+                *addr_type,
                 prevouts,
             )
             .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
         }
 
-        for i in 0..psbt.inputs.len() {
-            btc_tx::finalize_psbt_input(&mut psbt, i, addr_types[i]).map_err(|e| {
+        for (i, addr_type) in addr_types.iter().enumerate().take(psbt.inputs.len()) {
+            btc_tx::finalize_psbt_input(&mut psbt, i, *addr_type).map_err(|e| {
                 WalletErrors::BincodeError(format!("finalize input {}: {:?}", i, e))
             })?;
         }
@@ -774,8 +773,7 @@ impl BitcoinWallet for Wallet {
 
         let prevouts: Vec<bitcoin::TxOut> = witness_utxos.clone();
 
-        for i in 0..psbt.inputs.len() {
-            let (addr_type, path) = &input_meta[i];
+        for (i, (addr_type, path)) in input_meta.iter().enumerate().take(psbt.inputs.len()) {
             let sk = proto::bip32::derive_private_key(&seed_secret, &path.get_path())
                 .map_err(WalletErrors::Bip329Error)?;
             let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&sk.to_bytes())
@@ -793,8 +791,7 @@ impl BitcoinWallet for Wallet {
             .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
         }
 
-        for i in 0..psbt.inputs.len() {
-            let (addr_type, _) = &input_meta[i];
+        for (i, (addr_type, _)) in input_meta.iter().enumerate().take(psbt.inputs.len()) {
             btc_tx::finalize_psbt_input(&mut psbt, i, *addr_type).map_err(|e| {
                 WalletErrors::BincodeError(format!("finalize input {}: {:?}", i, e))
             })?;
@@ -992,7 +989,7 @@ impl BitcoinWallet for Wallet {
     fn collect_btc_chains_for_backup(
         &self,
         chain_hash: u64,
-    ) -> Result<Vec<(usize, Vec<(u8, AddressChain)>)>> {
+    ) -> Result<BtcBackupData> {
         let data = self.get_wallet_data()?;
         let btc_accounts = match data.slip44_accounts.get(&slip44::BITCOIN) {
             Some(m) => m,
@@ -1022,7 +1019,7 @@ impl BitcoinWallet for Wallet {
     fn restore_btc_chains_from_backup(
         &self,
         chain_hash: u64,
-        backup: Vec<(usize, Vec<(u8, AddressChain)>)>,
+        backup: BtcBackupData,
     ) -> Result<()> {
         for (idx, raw) in backup {
             self.save_btc_addresses_raw(idx, raw, chain_hash)?;
@@ -1083,7 +1080,7 @@ mod tests_btc_wallet {
                 indexes: &[(0, "Bitcoin Account 0".to_string())],
                 wallet_name: "Bitcoin Wallet".to_string(),
                 biometric_type: AuthMethod::Biometric,
-                chains: &[chain_config.clone()],
+                chains: std::slice::from_ref(&chain_config),
             },
             wallet_config,
             vec![],
@@ -1203,7 +1200,7 @@ mod tests_btc_wallet {
                 indexes: &[(0, "Bitcoin Account 0".to_string())],
                 wallet_name: "Bitcoin Wallet".to_string(),
                 biometric_type: AuthMethod::Biometric,
-                chains: &[chain_config.clone()],
+                chains: std::slice::from_ref(&chain_config),
             },
             wallet_config,
             vec![],

@@ -434,7 +434,7 @@ mod tests_network {
         let amount = U256::from(100u64);
         let transfer_data = generate_erc20_transfer_data(&recipient, amount).unwrap();
         let token_transfer_request = ETHTransactionRequest {
-            from: Some(from.to_alloy_addr().into()),
+            from: Some(from.to_alloy_addr()),
             to: Some(token_address.to_alloy_addr().into()),
             value: Some(U256::ZERO),
             max_fee_per_gas: Some(2_000_000_000),
@@ -467,7 +467,7 @@ mod tests_network {
         let amount = U256::from(100u64);
         let transfer_data = generate_erc20_transfer_data(&recipient, amount).unwrap();
         let token_transfer_request = ETHTransactionRequest {
-            from: Some(from.to_alloy_addr().into()),
+            from: Some(from.to_alloy_addr()),
             to: Some(token_address.to_alloy_addr().into()),
             value: Some(U256::ZERO),
             max_fee_per_gas: Some(2_000_000_000),
@@ -501,7 +501,7 @@ mod tests_network {
         let from = Address::from_eth_address("0x451806FE45D9231eb1db3584494366edF05CB4AB").unwrap();
         let amount = U256::from(100u64);
         let token_transfer_request = ETHTransactionRequest {
-            from: Some(from.to_alloy_addr().into()),
+            from: Some(from.to_alloy_addr()),
             to: Some(recipient.to_alloy_addr().into()),
             value: Some(amount),
             chain_id: Some(provider.config.chain_id()),
@@ -543,7 +543,7 @@ mod tests_network {
             Address::from_eth_address("0x246C5881E3F109B2aF170F5C773EF969d3da581B").unwrap();
         let from = Address::from_eth_address("0x7b501c7944185130DD4aD73293e8Aa84eFfDcee7").unwrap();
         let token_transfer_request = ETHTransactionRequest {
-            from: Some(from.to_alloy_addr().into()),
+            from: Some(from.to_alloy_addr()),
             to: Some(recipient.to_alloy_addr().into()),
             value: Some(U256::ZERO),
             max_fee_per_gas: Some(2_000_000_000),
@@ -563,7 +563,7 @@ mod tests_network {
         assert_ne!(fee.gas_price, U256::from(0));
 
         let block_diff_time = provider.estimate_block_time(&recipient).await.unwrap();
-        assert!(block_diff_time >= 1 && block_diff_time < 5);
+        assert!((1..5).contains(&block_diff_time));
     }
 
     #[tokio::test]

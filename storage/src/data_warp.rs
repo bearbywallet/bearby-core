@@ -169,7 +169,7 @@ mod storage_tests {
             decimals: u8,
         }
 
-        #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+        #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
         #[serde(default)]
         struct TokenV2 {
             name: String,
@@ -177,18 +177,6 @@ mod storage_tests {
             decimals: u8,
             logo: String,
             native: bool,
-        }
-
-        impl Default for TokenV2 {
-            fn default() -> Self {
-                Self {
-                    name: String::new(),
-                    symbol: String::new(),
-                    decimals: 0,
-                    logo: String::new(),
-                    native: false,
-                }
-            }
         }
 
         let dir = format!("/tmp/zilpay_datawarp_migrate_{}", rand_num());

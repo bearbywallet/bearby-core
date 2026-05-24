@@ -491,7 +491,7 @@ mod tests {
     async fn test_tron_estimate_block_time() {
         let provider = NetworkProvider::new(gen_tron_testnet_conf());
         let block_time = provider.tron_estimate_block_time().await.unwrap();
-        assert!(block_time >= 1 && block_time <= 10);
+        assert!((1..=10).contains(&block_time));
     }
 
     #[tokio::test]

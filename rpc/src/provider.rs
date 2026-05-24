@@ -264,7 +264,7 @@ mod tests {
         use bitcoin::Address;
         use electrum_client::{Client as ElectrumClient, ConfigBuilder, ElectrumApi};
 
-        let addresses = vec![
+        let addresses = [
             "bcrt1q6klf3cny45skpulz4kazm9dx9fd44usmccdp6z",
             "bcrt1q6klf3cny45skpulz4kazm9dx9fd44usmccdp6z",
             "bcrt1q6klf3cny45skpulz4kazm9dx9fd44usmccdp6z",

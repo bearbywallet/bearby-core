@@ -120,7 +120,7 @@ mod tests_cache {
     use crate::Cache;
     use rand::RngExt;
     use std::path::PathBuf;
-    use tokio;
+
 
     fn setup_test_dir() -> String {
         format!("/tmp/{}", rand::rng().random::<u64>())

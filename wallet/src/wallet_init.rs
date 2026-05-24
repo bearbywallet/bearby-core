@@ -88,7 +88,7 @@ impl WalletInit for Wallet {
         for (i, ((ledger_index, opt_pub_key), account_name)) in params
             .accounts
             .into_iter()
-            .zip(params.account_names.into_iter())
+            .zip(params.account_names)
             .enumerate()
         {
             if is_btc {
@@ -387,7 +387,7 @@ mod tests_init_wallet {
                 indexes: &indexes,
                 wallet_name: "Wllaet name".to_string(),
                 biometric_type: AuthMethod::Biometric,
-                chains: &[chain_config.clone()],
+                chains: std::slice::from_ref(&chain_config),
             },
             wallet_config,
             vec![],
@@ -440,7 +440,7 @@ mod tests_init_wallet {
                 indexes: &indexes,
                 wallet_name: "Bitcoin Wallet".to_string(),
                 biometric_type: AuthMethod::Biometric,
-                chains: &[chain_config.clone()],
+                chains: std::slice::from_ref(&chain_config),
             },
             wallet_config,
             vec![],
