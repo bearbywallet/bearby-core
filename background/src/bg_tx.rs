@@ -78,6 +78,10 @@ pub fn update_tx_from_params(
                 } else {
                     min_required_fee
                 };
+                // Enforce EIP-1559 invariant: max_fee_per_gas >= max_priority_fee_per_gas.
+                // For large gas limits (275k+), the integer division above can drop below
+                // priority_fee, which causes -32003 (transaction underpriced).
+                let max_fee_per_gas = std::cmp::max(max_fee_per_gas, priority_fee);
 
                 eth_tx.max_priority_fee_per_gas = Some(priority_fee.try_into().map_err(|_| {
                     TransactionErrors::ConvertTxError("Priority fee overflow".to_string())
