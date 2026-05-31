@@ -68,10 +68,15 @@ pub fn update_tx_from_params(
                     params.fee_history.priority_fee
                 };
                 let priority_fee = base_priority_fee.saturating_mul(multiplier) / precision;
-                let max_fee_per_gas = if eth_tx.gas.unwrap_or_default() > 0 {
-                    params.current / U256::from(eth_tx.gas.unwrap_or_default())
+                // EIP-1559 invariant: max_fee must cover at least base_fee + priority_fee.
+                // Using max_priority_fee alone without base_fee would stall in the mempool.
+                let min_required_fee = params.fee_history.base_fee.saturating_add(priority_fee);
+                let gas_limit = eth_tx.gas.unwrap_or_default();
+                let max_fee_per_gas = if gas_limit > 0 {
+                    let computed_fee = params.current / U256::from(gas_limit);
+                    std::cmp::max(computed_fee, min_required_fee)
                 } else {
-                    params.fee_history.base_fee.saturating_add(priority_fee)
+                    min_required_fee
                 };
 
                 eth_tx.max_priority_fee_per_gas = Some(priority_fee.try_into().map_err(|_| {
@@ -236,14 +241,12 @@ pub fn update_tx_from_params(
                     .map(|(_, o)| o.value.to_sat())
                     .sum();
 
-                let new_change =
-                    total_input
-                        .saturating_sub(total_dest)
-                        .saturating_sub(new_fee);
+                let new_change = total_input
+                    .saturating_sub(total_dest)
+                    .saturating_sub(new_fee);
 
                 if new_change >= dust_limit {
-                    btc_tx.output[change_idx].value =
-                        bitcoin::Amount::from_sat(new_change);
+                    btc_tx.output[change_idx].value = bitcoin::Amount::from_sat(new_change);
                 } else {
                     btc_tx.output.remove(change_idx);
                 }
@@ -521,7 +524,10 @@ mod tests_background_transactions {
     use alloy::{primitives::U256, rpc::types::TransactionRequest as ETHTransactionRequest};
     use network::btc::BtcOperations;
 
-    use proto::{address::Address, tx::{TransactionMetadata, TransactionRequest}};
+    use proto::{
+        address::Address,
+        tx::{TransactionMetadata, TransactionRequest},
+    };
     use rand::RngExt;
     use secrecy::{ExposeSecret, SecretString};
     use test_data::{
@@ -1340,11 +1346,14 @@ mod tests_background_transactions {
                     value: bitcoin::Amount::from_sat(input_sats),
                     script_pubkey: bitcoin::ScriptBuf::new(),
                 }],
-                input_meta: vec![(0, crypto::bip49::DerivationPath::new(
+                input_meta: vec![(
                     0,
-                    crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
-                    86,
-                ))],
+                    crypto::bip49::DerivationPath::new(
+                        0,
+                        crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
+                        86,
+                    ),
+                )],
             },
         ))
     }
@@ -1357,8 +1366,14 @@ mod tests_background_transactions {
     fn test_update_tx_preserves_op_return() {
         let memo = b"SWAP:THOR.RUNE:thor1abc";
         let mut tx = make_btc_tx(vec![
-            bitcoin::TxOut { value: bitcoin::Amount::from_sat(100_000), script_pubkey: bitcoin::ScriptBuf::new() },
-            bitcoin::TxOut { value: bitcoin::Amount::from_sat(50_000), script_pubkey: bitcoin::ScriptBuf::new() },
+            bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(100_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            },
+            bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(50_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            },
             make_op_return(memo),
         ]);
 
@@ -1381,11 +1396,20 @@ mod tests_background_transactions {
     #[test]
     fn test_update_tx_drops_dust_change_keeps_op_return() {
         let memo = b"SWAP:THOR.RUNE:thor1abc";
-        let mut tx = make_btc_tx_with_input(vec![
-            bitcoin::TxOut { value: bitcoin::Amount::from_sat(100_000), script_pubkey: bitcoin::ScriptBuf::new() },
-            bitcoin::TxOut { value: bitcoin::Amount::from_sat(100), script_pubkey: bitcoin::ScriptBuf::new() },
-            make_op_return(memo),
-        ], 100_100);
+        let mut tx = make_btc_tx_with_input(
+            vec![
+                bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(100_000),
+                    script_pubkey: bitcoin::ScriptBuf::new(),
+                },
+                bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(100),
+                    script_pubkey: bitcoin::ScriptBuf::new(),
+                },
+                make_op_return(memo),
+            ],
+            100_100,
+        );
 
         let params = make_params(5_000);
 
@@ -1405,14 +1429,20 @@ mod tests_background_transactions {
     fn test_update_tx_rejects_max_transfer_with_op_return() {
         let memo = b"SWAP:ETH:0xabc";
         let mut tx = make_btc_tx(vec![
-            bitcoin::TxOut { value: bitcoin::Amount::from_sat(200_000), script_pubkey: bitcoin::ScriptBuf::new() },
+            bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(200_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            },
             make_op_return(memo),
         ]);
 
         let params = make_params(3_000);
 
         let res = update_tx_from_params(&mut tx, params, U256::from(200_000));
-        assert!(res.is_err(), "expected error for [dest, OP_RETURN] with no change output");
+        assert!(
+            res.is_err(),
+            "expected error for [dest, OP_RETURN] with no change output"
+        );
 
         match tx {
             TransactionRequest::Bitcoin((ref btc_tx, _, _)) => {
@@ -1427,8 +1457,14 @@ mod tests_background_transactions {
     #[test]
     fn test_update_tx_plain_btc_unchanged() {
         let mut tx = make_btc_tx(vec![
-            bitcoin::TxOut { value: bitcoin::Amount::from_sat(100_000), script_pubkey: bitcoin::ScriptBuf::new() },
-            bitcoin::TxOut { value: bitcoin::Amount::from_sat(50_000), script_pubkey: bitcoin::ScriptBuf::new() },
+            bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(100_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            },
+            bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(50_000),
+                script_pubkey: bitcoin::ScriptBuf::new(),
+            },
         ]);
 
         let params = make_params(5_000);
