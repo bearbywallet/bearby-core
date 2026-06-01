@@ -128,6 +128,18 @@ impl NetworkProvider {
         }
     }
 
+    /// Live `eth_estimateGas` for a single EVM tx. `Err` on revert/RPC failure (never a
+    /// masked default), so callers can fall back when the tx can't be simulated yet.
+    pub async fn estimate_gas(&self, tx: &TransactionRequest) -> Result<U256> {
+        match self.config.slip_44 {
+            slip44::ETHEREUM | slip44::ZILLIQA => self.evm_estimate_gas(tx).await,
+            _ => Err(NetworkErrors::RPCError(format!(
+                "Unsupported network: {}",
+                self.config.slip_44
+            ))),
+        }
+    }
+
     pub async fn broadcast_signed_transactions(
         &self,
         txns: Vec<TransactionReceipt>,

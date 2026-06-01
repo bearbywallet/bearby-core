@@ -13,7 +13,8 @@ use self::ft_parse::{
     process_zil_balance_response, process_zil_metadata_response, MetadataField, RequestType,
 };
 use self::gas_parse::{
-    build_batch_gas_request, process_parse_fee_history_request, EIP1559, EIP4844,
+    build_batch_gas_request, build_estimate_gas_request, process_parse_fee_history_request,
+    EIP1559, EIP4844,
 };
 use self::nonce_parser::process_nonce_response;
 use self::tx_parse::{
@@ -50,6 +51,7 @@ pub trait EvmOperations {
         block_count: u64,
         percentiles: Option<&[f64]>,
     ) -> Result<RequiredTxParams>;
+    async fn evm_estimate_gas(&self, tx: &TransactionRequest) -> Result<U256>;
     async fn evm_estimate_block_time(&self, address: &Address) -> Result<u64>;
     async fn evm_update_transactions_receipt(
         &self,
@@ -216,6 +218,28 @@ impl EvmOperations for NetworkProvider {
             fast,
             current: market,
         })
+    }
+
+    async fn evm_estimate_gas(&self, tx: &TransactionRequest) -> Result<U256> {
+        let provider: RpcProvider<ChainConfig> = RpcProvider::new(&self.config);
+        let payload = build_estimate_gas_request(tx)?;
+        let response = provider
+            .req::<ResultRes<Value>>(payload)
+            .await
+            .map_err(NetworkErrors::Request)?;
+
+        // Surface the revert/RPC error instead of masking it as a default gas value — the
+        // caller distinguishes "estimated successfully" from "would revert" by Ok vs Err.
+        if let Some(error) = &response.error {
+            return Err(NetworkErrors::RPCError(error.to_string()));
+        }
+
+        response
+            .result
+            .as_ref()
+            .and_then(|result| result.as_str())
+            .and_then(Self::parse_str_to_u256)
+            .ok_or(NetworkErrors::ResponseParseError)
     }
 
     async fn evm_estimate_block_time(&self, address: &Address) -> Result<u64> {

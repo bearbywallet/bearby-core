@@ -41,6 +41,30 @@ pub fn build_fee_history_request(block_count: u64, percentiles: &[f64]) -> Value
     )
 }
 
+/// Single `eth_estimateGas` payload for an EVM `tx` (the `gas` field is stripped so the node
+/// estimates freely). Shared by [`build_batch_gas_request`] and the standalone
+/// `evm_estimate_gas`, so the tx-object shape lives in exactly one place.
+pub fn build_estimate_gas_request(tx: &TransactionRequest) -> Result<Value, NetworkErrors> {
+    let tx_object = match tx {
+        TransactionRequest::Ethereum((eth_tx, _)) => {
+            let mut val = serde_json::to_value(eth_tx)
+                .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
+
+            if let Some(obj) = val.as_object_mut() {
+                obj.remove("gas");
+            }
+
+            val
+        }
+        _ => Err(TransactionErrors::InvalidTransaction)?,
+    };
+
+    Ok(RpcProvider::<ChainConfig>::build_payload(
+        json!([tx_object]),
+        EvmMethods::EstimateGas,
+    ))
+}
+
 pub fn build_batch_gas_request(
     tx: &TransactionRequest,
     block_count: u64,
@@ -69,24 +93,7 @@ pub fn build_batch_gas_request(
         _ => Err(TransactionErrors::InvalidTransaction)?,
     }
 
-    let tx_object = match tx {
-        TransactionRequest::Zilliqa(_) => Err(TransactionErrors::InvalidTransaction)?,
-        TransactionRequest::Ethereum((tx, _)) => {
-            let mut val = serde_json::to_value(tx)
-                .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
-
-            if let Some(obj) = val.as_object_mut() {
-                obj.remove("gas");
-            }
-
-            val
-        }
-        _ => Err(TransactionErrors::InvalidTransaction)?,
-    };
-    let request_estimate_gas =
-        RpcProvider::<ChainConfig>::build_payload(json!([tx_object]), EvmMethods::EstimateGas);
-
-    requests.push(request_estimate_gas);
+    requests.push(build_estimate_gas_request(tx)?);
 
     if features.contains(&EIP1559) {
         requests.push(RpcProvider::<ChainConfig>::build_payload(
