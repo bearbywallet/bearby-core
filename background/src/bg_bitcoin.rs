@@ -1,10 +1,20 @@
 use crate::bg_wallet::WalletManagement;
 use crate::{bg_provider::ProvidersManagement, Background, Result};
 use async_trait::async_trait;
-use proto::btc_utils::{AddressChain, BtcAccountXpubsInput};
+use errors::background::BackgroundError;
+use errors::wallet::WalletErrors;
+use proto::address::Address;
+use proto::btc_tx::BitcoinMetadata;
+use proto::btc_utils::{AddressChain, BtcAccountXpubsInput, ByteCodec};
+use proto::tx::{TransactionMetadata, TransactionRequest};
 use proto::U256;
 use std::collections::HashMap;
-use wallet::bitcoin_wallet::{scan_btc_chains_for_xpubs, BitcoinWallet};
+use token::ft::FToken;
+use wallet::account::AccountV2;
+use wallet::bitcoin_wallet::{
+    build_op_return_output, build_unsigned_btc_transaction_with_extras, scan_btc_chains_for_xpubs,
+    BitcoinWallet,
+};
 use wallet::wallet_storage::StorageOperations;
 
 #[async_trait]
@@ -24,6 +34,20 @@ pub trait BitcoinManagement {
         account_index: usize,
         bip86_xpub: &bitcoin::bip32::Xpub,
     ) -> std::result::Result<(), Self::Error>;
+
+    /// Build a native-BTC deposit paying `amount_sat` to `vault` and carrying `memo` in an
+    /// `OP_RETURN` output — the on-chain shape THORChain expects for a BTC-sourced swap.
+    /// `fee_rate` is sats-per-vbyte. Reuses the same UTXO selection / signing-metadata plumbing as a
+    /// plain BTC transfer, adding only the memo output.
+    async fn build_btc_deposit_with_memo(
+        &self,
+        token: &FToken,
+        from: &AccountV2,
+        vault: Address,
+        amount_sat: u64,
+        memo: &str,
+        fee_rate: Option<u64>,
+    ) -> std::result::Result<TransactionRequest, Self::Error>;
 }
 
 #[async_trait]
@@ -77,6 +101,64 @@ impl BitcoinManagement for Background {
         wallet.save_ftokens(&ftokens)?;
 
         Ok(())
+    }
+
+    async fn build_btc_deposit_with_memo(
+        &self,
+        token: &FToken,
+        from: &AccountV2,
+        vault: Address,
+        amount_sat: u64,
+        memo: &str,
+        fee_rate: Option<u64>,
+    ) -> Result<TransactionRequest> {
+        let (wallet_ref, account_index) = self
+            .wallets
+            .iter()
+            .find_map(|w| {
+                let data = w.get_wallet_data().ok()?;
+                let idx = data
+                    .get_accounts()
+                    .ok()?
+                    .iter()
+                    .position(|a| a.addr == from.addr)?;
+                Some((w, idx))
+            })
+            .ok_or_else(|| {
+                BackgroundError::WalletError(WalletErrors::BincodeError(
+                    "BTC sender not found in any wallet".to_string(),
+                ))
+            })?;
+
+        let wallet_data = wallet_ref.get_wallet_data()?;
+        let chains = wallet_ref.get_btc_addresses(account_index, wallet_data.chain_hash)?;
+        let op_return = build_op_return_output(memo.as_bytes())?;
+
+        let (tx, witness_utxos, input_meta) = build_unsigned_btc_transaction_with_extras(
+            &chains,
+            vec![(vault, amount_sat)],
+            vec![op_return],
+            fee_rate,
+        )?;
+
+        let input_meta = input_meta
+            .into_iter()
+            .map(|(at, path)| (at.to_byte(), path))
+            .collect();
+
+        let metadata = TransactionMetadata {
+            chain_hash: token.chain_hash,
+            signer: Some(from.addr.clone()),
+            token_info: Some((U256::from(amount_sat), token.decimals, token.symbol.clone())),
+            broadcast: true,
+            ..Default::default()
+        };
+        let btc_meta = BitcoinMetadata {
+            witness_utxos,
+            input_meta,
+        };
+
+        Ok(TransactionRequest::Bitcoin((tx, metadata, btc_meta)))
     }
 }
 
