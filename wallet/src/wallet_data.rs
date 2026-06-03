@@ -89,6 +89,22 @@ impl WalletDataV2 {
             ))
     }
 
+    /// Read an account on a DIFFERENT chain type than the selected one (cross-chain swap
+    /// recipient resolution). The bip key matches how accounts are stored at creation:
+    /// `default_bip(slip44)`. Does not change wallet selection.
+    pub fn get_account_for_slip44(
+        &self,
+        slip44: u32,
+        index: usize,
+    ) -> Result<&AccountV2, WalletErrors> {
+        let bip = DerivationPath::default_bip(slip44);
+        self.slip44_accounts
+            .get(&slip44)
+            .and_then(|m| m.get(&bip))
+            .and_then(|accounts| accounts.get(index))
+            .ok_or(WalletErrors::InvalidBIPPathIndex(slip44, bip, index))
+    }
+
     pub fn get_mut_account(&mut self, index: usize) -> Result<&mut AccountV2, WalletErrors> {
         self.slip44_accounts
             .get_mut(&self.slip44)
