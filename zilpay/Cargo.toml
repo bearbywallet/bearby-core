@@ -18,6 +18,13 @@ bitcoin.workspace = true
 zeroize.workspace = true
 secrecy.workspace = true
 thiserror.workspace = true
+solana-hash.workspace = true
+solana-instruction.workspace = true
+solana-message.workspace = true
+solana-pubkey.workspace = true
+solana-system-interface.workspace = true
+spl-associated-token-account.workspace = true
+spl-token.workspace = true
 errors = { path = "../errors" }
 intl = { path = "../intl" }
 background = { path = "../background" }

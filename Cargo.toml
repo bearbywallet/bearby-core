@@ -44,6 +44,13 @@ bitcoin.workspace = true
 zeroize.workspace = true
 secrecy.workspace = true
 thiserror.workspace = true
+solana-hash.workspace = true
+solana-instruction.workspace = true
+solana-message.workspace = true
+solana-pubkey.workspace = true
+solana-system-interface.workspace = true
+spl-associated-token-account.workspace = true
+spl-token.workspace = true
 zilpay = { path = "./zilpay" }
 errors = { path = "./errors" }
 background = { path = "./background" }
