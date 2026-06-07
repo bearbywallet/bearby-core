@@ -1,4 +1,4 @@
-use crate::{bg_provider::ProvidersManagement, bg_wallet::WalletManagement, Result};
+use crate::{Result, bg_provider::ProvidersManagement, bg_wallet::WalletManagement};
 use alloy::primitives::U256;
 use alloy::{dyn_abi::TypedData, primitives::keccak256};
 use async_trait::async_trait;
@@ -6,11 +6,12 @@ use cipher::argon2::Argon2Seed;
 use config::sha::SHA256_SIZE;
 use errors::{background::BackgroundError, tx::TransactionErrors, wallet::WalletErrors};
 use history::{status::TransactionStatus, transaction::HistoricalTransaction};
-use network::{evm::RequiredTxParams, solana::tx_builder::adjust_sol_native_transfer_lamports};
+use network::evm::RequiredTxParams;
 use proto::{
     address::Address,
     pubkey::PubKey,
     signature::Signature,
+    solana_tx::adjust_sol_native_transfer_lamports,
     tx::{TransactionReceipt, TransactionRequest},
 };
 use sha2::{Digest, Sha256};
@@ -230,7 +231,10 @@ pub fn update_tx_from_params(
                     if amt < dust_limit {
                         return Err(TransactionErrors::ConvertTxError(format!(
                             "Insufficient funds: need {} sats (fee) + {} sats (min output) = {} sats, but only have {} sats",
-                            new_fee, dust_limit, new_fee + dust_limit, total_input
+                            new_fee,
+                            dust_limit,
+                            new_fee + dust_limit,
+                            total_input
                         )));
                     }
                     amt
@@ -524,7 +528,7 @@ impl TransactionsManagement for Background {
 mod tests_background_transactions {
     use super::*;
     use crate::bg_bitcoin::BitcoinManagement;
-    use crate::{bg_storage::StorageManagement, bg_token::TokensManagement, BackgroundBip39Params};
+    use crate::{BackgroundBip39Params, bg_storage::StorageManagement, bg_token::TokensManagement};
     use alloy::{primitives::U256, rpc::types::TransactionRequest as ETHTransactionRequest};
     use network::btc::BtcOperations;
 
@@ -535,9 +539,9 @@ mod tests_background_transactions {
     use rand::RngExt;
     use secrecy::{ExposeSecret, SecretString};
     use test_data::{
-        empty_passphrase, gen_anvil_net_conf, gen_anvil_token, gen_btc_regtest_conf,
-        gen_eth_account, gen_zil_account, gen_zil_testnet_conf, gen_zil_token, ANVIL_MNEMONIC,
-        TEST_PASSWORD,
+        ANVIL_MNEMONIC, TEST_PASSWORD, empty_passphrase, gen_anvil_net_conf, gen_anvil_token,
+        gen_btc_regtest_conf, gen_eth_account, gen_zil_account, gen_zil_testnet_conf,
+        gen_zil_token,
     };
     use token::ft::FToken;
     use tokio;
@@ -717,7 +721,7 @@ mod tests_background_transactions {
     #[tokio::test]
     async fn test_update_history_evm() {
         use test_data::anvil_accounts;
-        use tokio::time::{sleep, Duration};
+        use tokio::time::{Duration, sleep};
 
         let (mut bg, _dir) = setup_test_background();
         let net_config = gen_anvil_net_conf();

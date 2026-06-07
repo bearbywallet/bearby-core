@@ -1,10 +1,8 @@
 mod responses;
-pub mod tx_builder;
 
+use crate::Result;
 use crate::evm::{GasFeeHistory, RequiredTxParams};
 use crate::provider::NetworkProvider;
-use crate::solana::tx_builder::build_sol_transfer_message;
-use crate::Result;
 use alloy::primitives::U256;
 use async_trait::async_trait;
 use base64::Engine;
@@ -12,18 +10,18 @@ use errors::network::NetworkErrors;
 use history::status::TransactionStatus;
 use history::transaction::HistoricalTransaction;
 use proto::address::Address;
+use proto::solana_tx::build_sol_transfer_message;
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use responses::{
-    extract_token2022_metadata, AccountInfoValue, BlockhashValue, MetaplexMetadata,
-    RawAccountValue, SolanaAccountInfo, SolanaGetTransactionResult, SolanaValueResponse,
-    TokenAccountEntry,
+    AccountInfoValue, BlockhashValue, MetaplexMetadata, RawAccountValue, SolanaAccountInfo,
+    SolanaGetTransactionResult, SolanaValueResponse, TokenAccountEntry, extract_token2022_metadata,
 };
 use rpc::common::JsonRPC;
 use rpc::methods::SolanaMethod;
 use rpc::network_config::ChainConfig;
 use rpc::provider::RpcProvider;
 use rpc::zil_interfaces::{ErrorRes, ResultRes};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -986,7 +984,9 @@ mod tests {
         assert!(!ftoken.native);
         assert_eq!(
             ftoken.logo.as_deref(),
-            Some("https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png")
+            Some(
+                "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png"
+            )
         );
         assert!(
             *ftoken.balances.get(&rich_account.to_hash()).unwrap() > U256::ZERO,

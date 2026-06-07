@@ -31,6 +31,12 @@ config = { path = "../config" }
 errors = { path = "../errors" }
 ed25519-dalek.workspace = true
 solana-pubkey.workspace = true
+solana-hash.workspace = true
+solana-instruction.workspace = true
+solana-message.workspace = true
+solana-system-interface.workspace = true
+spl-token.workspace = true
+spl-associated-token-account.workspace = true
 
 [dev-dependencies]
 mockito = "1.5.0"

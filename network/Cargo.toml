@@ -16,14 +16,7 @@ bitcoin.workspace = true
 electrum-client.workspace = true
 bs58.workspace = true
 base64.workspace = true
-bincode.workspace = true
 solana-pubkey.workspace = true
-solana-hash.workspace = true
-solana-instruction.workspace = true
-solana-message.workspace = true
-solana-system-interface.workspace = true
-spl-token.workspace = true
-spl-associated-token-account.workspace = true
 storage = { path = "../storage" }
 history = { path = "../history" }
 token = { path = "../token" }
