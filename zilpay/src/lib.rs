@@ -1,4 +1,5 @@
 pub use alloy;
+pub use base64;
 pub use bitcoin;
 pub use hex;
 pub use rand;
