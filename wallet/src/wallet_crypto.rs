@@ -299,7 +299,10 @@ mod tests_wallet_crypto {
 
         let indexes = [0, 1, 2].map(|i| (i, format!("Zilliqa Account {i}")));
 
-        let chain_config = ChainConfig { slip_44: slip44::ZILLIQA, ..Default::default() };
+        let chain_config = ChainConfig {
+            slip_44: slip44::ZILLIQA,
+            ..Default::default()
+        };
         let wallet = create_test_wallet_from_mnemonic(
             Arc::clone(&storage),
             &argon_seed,
@@ -332,7 +335,10 @@ mod tests_wallet_crypto {
 
         let indexes = [0, 1].map(|i| (i, format!("Ethereum Account {i}")));
 
-        let chain_config = ChainConfig { slip_44: slip44::ETHEREUM, ..Default::default() };
+        let chain_config = ChainConfig {
+            slip_44: slip44::ETHEREUM,
+            ..Default::default()
+        };
         let wallet = create_test_wallet_from_mnemonic(
             Arc::clone(&storage),
             &argon_seed,
@@ -365,7 +371,10 @@ mod tests_wallet_crypto {
 
         let indexes = [0].map(|i| (i, format!("Bitcoin BIP86 Account {i}")));
 
-        let chain_config = ChainConfig { slip_44: slip44::BITCOIN, ..Default::default() };
+        let chain_config = ChainConfig {
+            slip_44: slip44::BITCOIN,
+            ..Default::default()
+        };
         let wallet = create_test_wallet_from_mnemonic(
             Arc::clone(&storage),
             &argon_seed,
@@ -398,7 +407,10 @@ mod tests_wallet_crypto {
 
         let indexes = [0].map(|i| (i, format!("Account {i}")));
 
-        let chain_config = ChainConfig { slip_44: slip44::ZILLIQA, ..Default::default() };
+        let chain_config = ChainConfig {
+            slip_44: slip44::ZILLIQA,
+            ..Default::default()
+        };
         let wallet = create_test_wallet_from_mnemonic(
             Arc::clone(&storage),
             &argon_seed,
@@ -422,7 +434,10 @@ mod tests_wallet_crypto {
 
         let indexes = [0].map(|i| (i, format!("Account {i}")));
 
-        let chain_config = ChainConfig { slip_44: slip44::ZILLIQA, ..Default::default() };
+        let chain_config = ChainConfig {
+            slip_44: slip44::ZILLIQA,
+            ..Default::default()
+        };
         let wallet = create_test_wallet_from_mnemonic(
             Arc::clone(&storage),
             &argon_seed,
@@ -460,7 +475,10 @@ mod tests_wallet_crypto {
 
         let indexes = [0].map(|i| (i, format!("Account {i}")));
 
-        let chain_config = ChainConfig { slip_44: slip44::ZILLIQA, ..Default::default() };
+        let chain_config = ChainConfig {
+            slip_44: slip44::ZILLIQA,
+            ..Default::default()
+        };
         let wallet = create_test_wallet_from_mnemonic(
             Arc::clone(&storage),
             &argon_seed,
@@ -490,7 +508,11 @@ mod tests_wallet_crypto {
 
         let indexes = [0].map(|i| (i, format!("Bitcoin Testnet Account {i}")));
 
-        let chain_config = ChainConfig { slip_44: slip44::BITCOIN, testnet: Some(true), ..Default::default() };
+        let chain_config = ChainConfig {
+            slip_44: slip44::BITCOIN,
+            testnet: Some(true),
+            ..Default::default()
+        };
         let wallet = create_test_wallet_from_mnemonic(
             Arc::clone(&storage),
             &argon_seed,

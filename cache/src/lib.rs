@@ -121,7 +121,6 @@ mod tests_cache {
     use rand::RngExt;
     use std::path::PathBuf;
 
-
     fn setup_test_dir() -> String {
         format!("/tmp/{}", rand::rng().random::<u64>())
     }

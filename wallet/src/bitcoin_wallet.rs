@@ -357,42 +357,42 @@ pub fn build_unsigned_btc_transaction_with_extras(
     let fee_rate = fee_rate_sat_per_vbyte.unwrap_or(DEFAULT_FEE_RATE);
     let estimated_fee = estimated_vsize_with_change * fee_rate;
 
-    let (adjusted_destinations, total_output) =
-        if total_input < original_total_output + estimated_fee {
-            let max_threshold = estimated_fee.saturating_mul(3).max(10000);
-            let is_max_transfer = destinations.len() == 1
-                && original_total_output <= total_input
-                && original_total_output + estimated_fee > total_input
-                && (original_total_output + estimated_fee)
-                    .saturating_sub(total_input)
-                    < max_threshold;
+    let (adjusted_destinations, total_output) = if total_input
+        < original_total_output + estimated_fee
+    {
+        let max_threshold = estimated_fee.saturating_mul(3).max(10000);
+        let is_max_transfer = destinations.len() == 1
+            && original_total_output <= total_input
+            && original_total_output + estimated_fee > total_input
+            && (original_total_output + estimated_fee).saturating_sub(total_input) < max_threshold;
 
-            if is_max_transfer {
-                let adjusted_amount = total_input.saturating_sub(estimated_fee);
-                let dust_limit = get_dust_limit(&destinations[0].0);
+        if is_max_transfer {
+            let adjusted_amount = total_input.saturating_sub(estimated_fee);
+            let dust_limit = get_dust_limit(&destinations[0].0);
 
-                if adjusted_amount < dust_limit {
-                    return Err(WalletErrors::BincodeError(format!(
-                        "Insufficient funds: balance too low after fee (have: {}, fee: {})",
-                        total_input, estimated_fee
-                    )));
-                }
-                let adjusted_dests = vec![(destinations[0].0.clone(), adjusted_amount)];
-                (adjusted_dests, adjusted_amount)
-            } else {
+            if adjusted_amount < dust_limit {
                 return Err(WalletErrors::BincodeError(format!(
-                    "Insufficient funds: have {}, need {} (output: {}, fee: {})",
-                    total_input,
-                    original_total_output + estimated_fee,
-                    original_total_output,
-                    estimated_fee
+                    "Insufficient funds: balance too low after fee (have: {}, fee: {})",
+                    total_input, estimated_fee
                 )));
             }
+            let adjusted_dests = vec![(destinations[0].0.clone(), adjusted_amount)];
+            (adjusted_dests, adjusted_amount)
         } else {
-            (destinations.clone(), original_total_output)
-        };
+            return Err(WalletErrors::BincodeError(format!(
+                "Insufficient funds: have {}, need {} (output: {}, fee: {})",
+                total_input,
+                original_total_output + estimated_fee,
+                original_total_output,
+                estimated_fee
+            )));
+        }
+    } else {
+        (destinations.clone(), original_total_output)
+    };
 
-    let mut outputs: Vec<TxOut> = Vec::with_capacity(adjusted_destinations.len() + 1 + extra_outputs.len());
+    let mut outputs: Vec<TxOut> =
+        Vec::with_capacity(adjusted_destinations.len() + 1 + extra_outputs.len());
     for (dest_addr, amount) in adjusted_destinations {
         let btc_addr = dest_addr
             .to_bitcoin_addr()
@@ -608,16 +608,11 @@ impl BitcoinWallet for Wallet {
                 _ => return Err(WalletErrors::InvalidAccountType),
             };
 
-        for (i, ((secret_key, public_key), addr_type)) in signing_keys.iter().zip(addr_types.iter()).enumerate() {
-            btc_tx::sign_psbt_input(
-                &mut psbt,
-                i,
-                secret_key,
-                public_key,
-                *addr_type,
-                prevouts,
-            )
-            .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
+        for (i, ((secret_key, public_key), addr_type)) in
+            signing_keys.iter().zip(addr_types.iter()).enumerate()
+        {
+            btc_tx::sign_psbt_input(&mut psbt, i, secret_key, public_key, *addr_type, prevouts)
+                .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
         }
 
         for (i, addr_type) in addr_types.iter().enumerate().take(psbt.inputs.len()) {
@@ -986,10 +981,7 @@ impl BitcoinWallet for Wallet {
         }
     }
 
-    fn collect_btc_chains_for_backup(
-        &self,
-        chain_hash: u64,
-    ) -> Result<BtcBackupData> {
+    fn collect_btc_chains_for_backup(&self, chain_hash: u64) -> Result<BtcBackupData> {
         let data = self.get_wallet_data()?;
         let btc_accounts = match data.slip44_accounts.get(&slip44::BITCOIN) {
             Some(m) => m,
@@ -1016,11 +1008,7 @@ impl BitcoinWallet for Wallet {
         Ok(result)
     }
 
-    fn restore_btc_chains_from_backup(
-        &self,
-        chain_hash: u64,
-        backup: BtcBackupData,
-    ) -> Result<()> {
+    fn restore_btc_chains_from_backup(&self, chain_hash: u64, backup: BtcBackupData) -> Result<()> {
         for (idx, raw) in backup {
             self.save_btc_addresses_raw(idx, raw, chain_hash)?;
         }
@@ -1245,13 +1233,10 @@ mod tests_btc_wallet {
             value: bitcoin::Amount::from_sat(1),
             script_pubkey: bitcoin::ScriptBuf::new(),
         }];
-        assert!(super::build_unsigned_btc_transaction_with_extras(
-            &chains,
-            vec![],
-            extra,
-            None,
-        )
-        .is_err());
+        assert!(
+            super::build_unsigned_btc_transaction_with_extras(&chains, vec![], extra, None,)
+                .is_err()
+        );
     }
 
     #[test]

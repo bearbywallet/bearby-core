@@ -124,7 +124,9 @@ impl NetworkProvider {
         urls.shuffle(&mut rand::rng());
 
         for url in urls {
-            let config = ConfigBuilder::new().timeout(Some(std::time::Duration::from_secs(5))).build();
+            let config = ConfigBuilder::new()
+                .timeout(Some(std::time::Duration::from_secs(5)))
+                .build();
 
             match ElectrumClient::from_config(url, config) {
                 Ok(client) => match operation(&client) {

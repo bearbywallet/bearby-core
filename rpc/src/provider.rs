@@ -284,7 +284,9 @@ mod tests {
         }
 
         let url = "ssl://btc-testnet.zilpay.io:60402";
-        let config = ConfigBuilder::new().timeout(Some(std::time::Duration::from_secs(5))).build();
+        let config = ConfigBuilder::new()
+            .timeout(Some(std::time::Duration::from_secs(5)))
+            .build();
 
         match ElectrumClient::from_config(url, config) {
             Ok(client) => {
