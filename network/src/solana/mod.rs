@@ -10,7 +10,7 @@ use errors::network::NetworkErrors;
 use history::status::TransactionStatus;
 use history::transaction::HistoricalTransaction;
 use proto::address::Address;
-use proto::solana_tx::build_sol_transfer_message;
+use proto::solana_tx::{build_sol_transfer_message, build_versioned_message_from_instructions};
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use responses::{
     AccountInfoValue, BlockhashValue, MetaplexMetadata, RawAccountValue, SolanaAccountInfo,
@@ -22,6 +22,9 @@ use rpc::network_config::ChainConfig;
 use rpc::provider::RpcProvider;
 use rpc::zil_interfaces::{ErrorRes, ResultRes};
 use serde_json::{Value, json};
+use solana_address_lookup_table_interface::state::AddressLookupTable;
+use solana_instruction::Instruction;
+use solana_message::AddressLookupTableAccount;
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,6 +37,13 @@ const SOLANA_BLOCK_TIME_SECS: u64 = 1;
 const SOLANA_TX_PENDING_TIMEOUT_SECS: u64 = 600;
 const SOLANA_TOKEN_LOGO_URL: &str =
     "https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet";
+
+#[derive(Debug, Clone, Copy)]
+pub struct SolanaMessageBuild<'a> {
+    pub payer: &'a Pubkey,
+    pub instructions: &'a [Instruction],
+    pub lookup_table_addresses: &'a [Pubkey],
+}
 
 #[async_trait]
 pub trait SolanaOperations {
@@ -59,6 +69,7 @@ pub trait SolanaOperations {
         accounts: &[&Address],
     ) -> Result<()>;
     async fn solana_get_fee_for_message(&self, message: &[u8]) -> Result<u64>;
+    async fn solana_build_message(&self, params: SolanaMessageBuild<'_>) -> Result<Vec<u8>>;
     async fn solana_check_account_health(&self, address: &str) -> Result<(u64, String)>;
     async fn solana_ftoken_meta(&self, contract: Address, accounts: &[&Address]) -> Result<FToken>;
 }
@@ -118,6 +129,30 @@ impl SolanaOperations for NetworkProvider {
         value
             .value
             .ok_or_else(|| NetworkErrors::RPCError("blockhash expired".into()))
+    }
+
+    async fn solana_build_message(&self, params: SolanaMessageBuild<'_>) -> Result<Vec<u8>> {
+        let blockhash_str = self.solana_get_latest_blockhash().await?;
+        let blockhash: [u8; 32] = bs58::decode(&blockhash_str)
+            .into_vec()
+            .map_err(|error| NetworkErrors::RPCError(error.to_string()))?
+            .try_into()
+            .map_err(|_| NetworkErrors::RPCError("blockhash must be 32 bytes".into()))?;
+
+        let lookup_tables = if params.lookup_table_addresses.is_empty() {
+            Vec::with_capacity(0)
+        } else {
+            self.solana_get_lookup_table_accounts(params.lookup_table_addresses)
+                .await?
+        };
+
+        build_versioned_message_from_instructions(
+            params.instructions,
+            params.payer,
+            &blockhash,
+            &lookup_tables,
+        )
+        .map_err(NetworkErrors::RPCError)
     }
 
     async fn solana_check_account_health(&self, address: &str) -> Result<(u64, String)> {
@@ -476,6 +511,53 @@ fn build_get_account_info_base64_req(address_b58: &str) -> Value {
         json!([address_b58, {"encoding": "base64"}]),
         SolanaMethod::GetAccountInfo,
     )
+}
+
+fn parse_lookup_table_account(key: Pubkey, data: &[u8]) -> Result<AddressLookupTableAccount> {
+    let table = AddressLookupTable::deserialize(data)
+        .map_err(|error| NetworkErrors::RPCError(error.to_string()))?;
+    let mut addresses = Vec::with_capacity(table.addresses.len());
+    addresses.extend(table.addresses.iter().copied());
+    Ok(AddressLookupTableAccount { key, addresses })
+}
+
+impl NetworkProvider {
+    async fn solana_get_lookup_table_accounts(
+        &self,
+        addresses: &[Pubkey],
+    ) -> Result<Vec<AddressLookupTableAccount>> {
+        let encoded_addresses: Vec<String> = addresses.iter().map(Pubkey::to_string).collect();
+        let provider: RpcProvider<ChainConfig> = RpcProvider::new(&self.config);
+        let payload = RpcProvider::<ChainConfig>::build_payload(
+            json!([encoded_addresses, {"encoding": "base64"}]),
+            SolanaMethod::GetMultipleAccounts,
+        );
+        let res: ResultRes<SolanaValueResponse<Vec<Option<RawAccountValue>>>> = provider
+            .req(payload)
+            .await
+            .map_err(NetworkErrors::Request)?;
+        let value = res
+            .result
+            .ok_or_else(|| NetworkErrors::RPCError(solana_err_msg(&res.error)))?;
+
+        addresses
+            .iter()
+            .copied()
+            .zip(value.value)
+            .map(|(key, account)| {
+                let account = account.ok_or_else(|| {
+                    NetworkErrors::RPCError(format!("lookup table account not found: {key}"))
+                })?;
+                let data = account.data.first().ok_or_else(|| {
+                    NetworkErrors::RPCError(format!("lookup table account missing data: {key}"))
+                })?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|error| NetworkErrors::RPCError(error.to_string()))?;
+                parse_lookup_table_account(key, &bytes)
+            })
+            .collect()
+    }
 }
 
 fn metaplex_metadata_pda(mint: &Pubkey) -> String {

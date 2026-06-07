@@ -3,7 +3,7 @@ use errors::keypair::KeyPairError;
 use serde::{Deserialize, Serialize};
 use solana_hash::Hash;
 use solana_instruction::Instruction;
-use solana_message::legacy::Message;
+use solana_message::{AddressLookupTableAccount, VersionedMessage, legacy::Message, v0};
 use solana_pubkey::Pubkey;
 use solana_system_interface::instruction::transfer as system_transfer;
 use spl_associated_token_account::get_associated_token_address_with_program_id;
@@ -137,6 +137,23 @@ pub fn build_message_from_instructions(
     let hash = Hash::from(*blockhash);
     let msg = Message::new_with_blockhash(instructions, Some(payer), &hash);
     bincode::serialize(&msg).map_err(|e| e.to_string())
+}
+
+pub fn build_versioned_message_from_instructions(
+    instructions: &[Instruction],
+    payer: &Pubkey,
+    blockhash: &[u8; 32],
+    lookup_tables: &[AddressLookupTableAccount],
+) -> std::result::Result<Vec<u8>, String> {
+    if lookup_tables.is_empty() {
+        return build_message_from_instructions(instructions, payer, blockhash);
+    }
+
+    let hash = Hash::from(*blockhash);
+    let message = v0::Message::try_compile(payer, instructions, lookup_tables, hash)
+        .map_err(|error| error.to_string())?;
+
+    bincode::serialize(&VersionedMessage::V0(message)).map_err(|error| error.to_string())
 }
 
 pub fn build_spl_transfer_message(
