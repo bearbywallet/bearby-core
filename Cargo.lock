@@ -8797,6 +8797,7 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "background",
+ "base64 0.22.1",
  "bitcoin",
  "cache",
  "cipher 0.1.0",
