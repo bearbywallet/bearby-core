@@ -107,6 +107,32 @@ pub fn pick_primary_btc_entry(
     }
 }
 
+pub fn pick_entry_with_most_utxo(
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
+) -> Result<BtcAddressEntry> {
+    chains
+        .values()
+        .flat_map(|chain| chain.external.iter().chain(chain.internal.iter()))
+        .filter(|entry| !entry.utxos.is_empty())
+        .map(|entry| {
+            let total: u64 = entry.utxos.iter().map(|u| u.value).sum();
+            (entry, total)
+        })
+        .fold(None, |best: Option<(&BtcAddressEntry, u64)>, (entry, total)| {
+            match best {
+                None => Some((entry, total)),
+                Some((_, max)) if total > max => Some((entry, total)),
+                _ => best,
+            }
+        })
+        .map(|(entry, _)| entry.clone())
+        .ok_or_else(|| {
+            WalletErrors::BincodeError(
+                "No entries with UTXOs across any address chain".to_string(),
+            )
+        })
+}
+
 pub fn get_dust_limit(addr: &Address) -> u64 {
     match addr.get_bitcoin_address_type() {
         Ok(bitcoin::AddressType::P2wpkh) => 294,
