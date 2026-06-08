@@ -769,6 +769,13 @@ fn contract_value_to_json(
                 "resource": c.resource
             }))
         }
+        "type.googleapis.com/protocol.WithdrawBalanceContract" => {
+            let c = protocol::WithdrawBalanceContract::decode(value)
+                .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
+            Ok(json!({
+                "owner_address": tron_bytes_to_hex(&c.owner_address)
+            }))
+        }
         "type.googleapis.com/protocol.WithdrawExpireUnfreezeContract" => {
             let c = protocol::WithdrawExpireUnfreezeContract::decode(value)
                 .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
@@ -883,6 +890,11 @@ fn extract_owner_from_parameter(
         }
         "type.googleapis.com/protocol.UnfreezeBalanceV2Contract" => {
             let c = protocol::UnfreezeBalanceV2Contract::decode(value)
+                .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
+            Address::from_tron_bytes(&c.owner_address).map_err(TransactionErrors::AddressError)
+        }
+        "type.googleapis.com/protocol.WithdrawBalanceContract" => {
+            let c = protocol::WithdrawBalanceContract::decode(value)
                 .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
             Address::from_tron_bytes(&c.owner_address).map_err(TransactionErrors::AddressError)
         }
