@@ -26,7 +26,8 @@ perf.*
 
 # RustRover
 .idea
-
+.claude
+.rpiv
 
 # Added by cargo
 
