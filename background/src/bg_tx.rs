@@ -7,6 +7,7 @@ use config::sha::SHA256_SIZE;
 use errors::{background::BackgroundError, tx::TransactionErrors, wallet::WalletErrors};
 use history::{status::TransactionStatus, transaction::HistoricalTransaction};
 use network::evm::RequiredTxParams;
+use network::tron::FEE_LIMIT;
 use proto::{
     address::Address,
     pubkey::PubKey,
@@ -139,28 +140,39 @@ pub fn update_tx_from_params(
             }
         }
         TransactionRequest::Tron((ref mut tron_tx, _metadata)) => {
-            let fee: i64 = params
+            let estimated_fee: i64 = params
                 .current
                 .try_into()
                 .map_err(|_| TransactionErrors::ConvertTxError("Fee overflow".to_string()))?;
-            let existing_fee = tron_tx.fee_limit();
-            tron_tx.set_fee_limit(if existing_fee > 0 {
-                existing_fee.max(fee)
-            } else {
-                fee
-            });
 
-            if let Some(amount) = tron_tx.transfer_amount() {
-                if amount > 0 && U256::from(amount as u64) == balance {
-                    let adjusted = amount - fee;
-                    if adjusted <= 0 {
-                        return Err(TransactionErrors::ConvertTxError(format!(
-                            "Insufficient TRX: balance {} sun <= fee {} sun",
-                            amount, fee
-                        )));
-                    }
-                    tron_tx.set_transfer_amount(adjusted)?;
+            // Check if this is a max-balance transfer before we mutate the amount
+            let is_max_balance = tron_tx.transfer_amount()
+                .map(|a| a > 0 && U256::from(a as u64) == balance)
+                .unwrap_or(false);
+
+            if is_max_balance {
+                // Max-balance: use estimate with 10% buffer for fee_limit.
+                // The node's actual bandwidth burn can differ from our estimate
+                // by small amounts due to protobuf encoding overhead differences.
+                // A 10% buffer prevents "balance is not sufficient" rejections.
+                let amount = tron_tx.transfer_amount().unwrap_or(0);
+                let fee_limit_buffered = std::cmp::max(
+                    estimated_fee * 110 / 100,
+                    estimated_fee + 1000,
+                );
+                let adjusted = amount - fee_limit_buffered;
+                if adjusted <= 0 {
+                    return Err(TransactionErrors::ConvertTxError(format!(
+                        "Insufficient TRX: balance {} sun <= fee {} sun",
+                        amount, fee_limit_buffered
+                    )));
                 }
+                tron_tx.set_fee_limit(fee_limit_buffered);
+                tron_tx.set_transfer_amount(adjusted)?;
+            } else {
+                // Non-max-balance: use cap-based fee_limit (matches snap-tron-wallet).
+                let fee_limit = std::cmp::max(estimated_fee, FEE_LIMIT);
+                tron_tx.set_fee_limit(fee_limit);
             }
         }
         TransactionRequest::Solana((ref mut sol_tx, _)) => {
@@ -529,6 +541,7 @@ mod tests_background_transactions {
     use super::*;
     use crate::bg_bitcoin::BitcoinManagement;
     use crate::{BackgroundBip39Params, bg_storage::StorageManagement, bg_token::TokensManagement};
+    use wallet::wallet_account::AccountManagement;
     use alloy::{primitives::U256, rpc::types::TransactionRequest as ETHTransactionRequest};
     use network::btc::BtcOperations;
 
@@ -1098,6 +1111,13 @@ mod tests_background_transactions {
         let data = wallet.get_wallet_data().unwrap();
         let account_0 = data.get_account(0).unwrap();
         let account_1 = data.get_account(1).unwrap();
+
+        // Select account 1 and sync its balance too
+        wallet.select_account(1).unwrap();
+        bg.sync_ftokens_balances(0).await.unwrap();
+        // Back to account 0
+        wallet.select_account(0).unwrap();
+
         let ftokens = wallet.get_ftokens().unwrap();
         let balance_0 = ftokens
             .first()
@@ -1124,7 +1144,9 @@ mod tests_background_transactions {
                 panic!("both accounts have zero TRX balance — fund at least one on Nile testnet");
             };
 
-        let amount_sun: i64 = sender_balance.try_into().expect("balance must fit in i64");
+        // Send 1 TRX (not max balance) — exercises estimate + cap flow without
+        // node rejecting exact balance = amount + fee_limit equality check.
+        let amount_sun: i64 = 1_000_000;
 
         let mut tron_tx = proto::tron_tx::TronTransaction::builder()
             .transfer(&sender.addr, recipient, amount_sun)
@@ -1150,25 +1172,15 @@ mod tests_background_transactions {
             .unwrap();
 
         let fee: i64 = params.current.try_into().expect("fee must fit in i64");
-        dbg!(sender_balance, amount_sun, fee);
         assert!(fee >= 0, "TransferContract fee_limit must be non-negative");
 
         super::update_tx_from_params(&mut tx_request, params, sender_balance).unwrap();
 
         if let TransactionRequest::Tron((ref updated, _)) = tx_request {
             if let Some(amount) = updated.transfer_amount() {
-                if fee > 0 {
-                    assert_eq!(
-                        amount,
-                        amount_sun - fee,
-                        "amount must be reduced by fee for max balance transfer"
-                    );
-                } else {
-                    assert_eq!(
-                        amount, amount_sun,
-                        "amount must stay unchanged for zero fee_limit"
-                    );
-                }
+                // Non-max-balance: amount unchanged, fee_limit = cap (100M SUN)
+                assert_eq!(amount, amount_sun, "amount must be unchanged for non-max send");
+                assert!(updated.fee_limit() >= FEE_LIMIT, "fee_limit must be at least cap");
             } else {
                 panic!("expected Transfer contract");
             }

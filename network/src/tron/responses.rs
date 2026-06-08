@@ -99,3 +99,24 @@ pub struct AccountResourceResponse {
     #[serde(default, rename = "EnergyLimit")]
     pub energy_limit: i64,
 }
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ContractResponse {
+    /// Address of the contract deployer (hex-encoded, e.g. "41...")
+    #[serde(default, rename = "origin_address")]
+    pub origin_address: Option<String>,
+    /// Percentage of energy the user must pay (0-100, default 100 = user pays all)
+    #[serde(default, rename = "consume_user_resource_percent")]
+    pub consume_user_resource_percent: Option<i64>,
+    /// Maximum energy units the deployer will subsidize per transaction
+    #[serde(default, rename = "origin_energy_limit")]
+    pub origin_energy_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AccountResponse {
+    /// Present if the account exists on-chain (activated).
+    /// Absent/None for unactivated accounts (node returns {} with no address field).
+    #[serde(default)]
+    pub address: Option<String>,
+}

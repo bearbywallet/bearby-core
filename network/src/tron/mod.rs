@@ -24,7 +24,25 @@ const TRON_TOTAL_TIMEOUT_SECS: u64 = 60;
 const TRON_MAX_RETRIES: usize = 3;
 const TRON_BLOCK_TIME_SECS: u64 = 3;
 const BLOCK_SAMPLE_SIZE: u64 = 10;
-const TRON_SIGNATURE_SIZE: i64 = 65;
+// Transaction size constants for bandwidth calculation.
+// Matches snap-tron-wallet FeeCalculatorService.ts:43-55 and java-tron's
+// bandwidth formula: raw_data_bytes + signature(65) + result_padding(64) +
+// protobuf_overhead(5).
+const SIGNATURE_SIZE: i64 = 65;
+const MAX_RESULT_SIZE_IN_TX: i64 = 64;
+const PROTOBUF_OVERHEAD: i64 = 5;
+/// Total unsigned transaction overhead in bytes.
+const UNSIGNED_TX_OVERHEAD: i64 = SIGNATURE_SIZE + MAX_RESULT_SIZE_IN_TX + PROTOBUF_OVERHEAD; // 134
+
+// Fee constants (in SUN — 1 TRX = 1_000_000 SUN).
+pub const FEE_LIMIT: i64 = 100_000_000; // 100 TRX — user-controlled cap (snap-tron-wallet default)
+const ACCOUNT_ACTIVATION_FEE_SUN: i64 = 1_000_000; // 1 TRX
+const MEMO_FEE_SUN: i64 = 1_000_000; // 1 TRX
+
+// Default fallback values.
+const DEFAULT_FALLBACK_ENERGY: i64 = 130_000;
+const DEFAULT_ENERGY_FEE: i64 = 420; // SUN per energy unit (Tron mainnet)
+const DEFAULT_TRANSACTION_FEE: i64 = 1000; // SUN per bandwidth byte
 
 macro_rules! tron_retry {
     ($self:expr, $method:expr, |$client:ident| $body:expr) => {{
@@ -177,6 +195,30 @@ impl TronHttpClient {
         });
         self.post("/wallet/getaccountresource", &body).await
     }
+
+    async fn get_contract(
+        &self,
+        address: &Address,
+    ) -> std::result::Result<ContractResponse, NetworkErrors> {
+        let tron_addr = address.auto_format();
+        let body = json!({
+            "value": &tron_addr,
+            "visible": true
+        });
+        self.post("/wallet/getcontract", &body).await
+    }
+
+    async fn get_account(
+        &self,
+        address: &Address,
+    ) -> std::result::Result<AccountResponse, NetworkErrors> {
+        let tron_addr = address.auto_format();
+        let body = json!({
+            "address": &tron_addr,
+            "visible": true
+        });
+        self.post("/wallet/getaccount", &body).await
+    }
 }
 
 impl NetworkProvider {
@@ -265,16 +307,14 @@ impl TronOperations for NetworkProvider {
                 .iter()
                 .find(|p| p.key == "getEnergyFee")
                 .map(|p| p.value as u64)
-                .ok_or_else(|| {
-                    NetworkErrors::RPCError("getEnergyFee not found in chain parameters".into())
-                })?;
+                .unwrap_or(DEFAULT_ENERGY_FEE as u64);
 
             let transaction_fee = chain_params
                 .chain_parameter
                 .iter()
                 .find(|p| p.key == "getTransactionFee")
                 .map(|p| p.value as u64)
-                .unwrap_or(1000);
+                .unwrap_or(DEFAULT_TRANSACTION_FEE as u64);
 
             let fee_estimate = match tx {
                 TransactionRequest::Tron((tron_tx, _)) => {
@@ -284,16 +324,54 @@ impl TronOperations for NetworkProvider {
                             let account_net = client.get_account_net(sender).await?;
 
                             let encoded_size = tron_tx.encode().len() as i64;
-                            let tx_size = encoded_size + TRON_SIGNATURE_SIZE;
+                            let tx_size = encoded_size + UNSIGNED_TX_OVERHEAD;
                             let free_net_available =
                                 account_net.free_net_limit - account_net.free_net_used;
 
-                            if free_net_available >= tx_size {
+                            let bandwidth_fee = if free_net_available >= tx_size {
                                 0u64
                             } else {
                                 let bandwidth_needed = tx_size - free_net_available.max(0);
                                 bandwidth_needed as u64 * transaction_fee
-                            }
+                            };
+
+                            // Account activation: 1 TRX per unactivated recipient
+                            let activation_fee = {
+                                let mut fee: u64 = 0;
+                                for contract in tron_tx.raw().contract.iter() {
+                                    // We're in the TransferContract match arm
+                                    if let Ok(tc) = protocol::TransferContract::decode(
+                                        contract.parameter.as_ref()
+                                            .map(|p| p.value.as_slice())
+                                            .unwrap_or(&[]),
+                                    ) {
+                                        if tc.amount > 0 {
+                                            let recipient = Address::from_tron_bytes(
+                                                &tc.to_address,
+                                            );
+                                            if let Ok(ref addr) = recipient {
+                                                match client.get_account(addr).await {
+                                                    Ok(resp) if resp.address.is_none() => {
+                                                        fee += ACCOUNT_ACTIVATION_FEE_SUN as u64;
+                                                    }
+                                                    Err(_) => {
+                                                        // Assume unactivated on error
+                                                        fee += ACCOUNT_ACTIVATION_FEE_SUN as u64;
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                fee
+                            };
+                            let memo_fee = if tron_tx.raw().data.is_empty() {
+                                0u64
+                            } else {
+                                MEMO_FEE_SUN as u64
+                            };
+                            bandwidth_fee + activation_fee + memo_fee
                         }
                         "TriggerSmartContract" => {
                             let contract_address = tron_tx.to_address()?;
@@ -310,41 +388,80 @@ impl TronOperations for NetworkProvider {
                                 })
                                 .unwrap_or_default();
 
-                            let sim = client
-                                .trigger_constant_contract(
+                            // Energy: simulate + energy sharing with contract deployer
+                            let (sim, contract_info) = tokio::join!(
+                                client.trigger_constant_contract(
                                     sender.to_tron_bytes(),
                                     contract_address.to_tron_bytes(),
-                                    data,
-                                )
-                                .await?;
+                                    data.clone(),
+                                ),
+                                client.get_contract(&contract_address),
+                            );
 
-                            let sim_failed = sim
-                                .result
-                                .as_ref()
-                                .map(|r| r.code.is_some())
-                                .unwrap_or(false);
+                            let energy_to_pay = match sim {
+                                Ok(sim) => {
+                                    let failed = sim.result.as_ref()
+                                        .map(|r| r.code.is_some()).unwrap_or(false);
+                                    if failed || sim.energy_used == 0 {
+                                        DEFAULT_FALLBACK_ENERGY
+                                    } else {
+                                        let total_energy = sim.energy_used;
+                                        let account_resource = client.get_account_resource(sender).await?;
+                                        let free_energy = (account_resource.energy_limit
+                                            - account_resource.energy_used).max(0);
 
-                            if sim_failed || sim.energy_used == 0 {
-                                let msg = sim
-                                    .result
-                                    .as_ref()
-                                    .and_then(|r| r.message.as_ref())
-                                    .cloned()
-                                    .unwrap_or_default();
-                                return Err(NetworkErrors::RPCError(format!(
-                                    "Simulation reverted: {}",
-                                    msg
-                                )));
-                            }
+                                        // Energy sharing: compute user's actual portion
+                                        let user_energy = match &contract_info {
+                                            Ok(info) => {
+                                                let user_pct = info.consume_user_resource_percent.unwrap_or(100);
+                                                let max_subsidy = info.origin_energy_limit.unwrap_or(0);
 
-                            let account_resource = client.get_account_resource(sender).await?;
-                            let free_energy = (account_resource.energy_limit
-                                - account_resource.energy_used)
-                                .max(0);
-                            let energy_needed = sim.energy_used;
-                            let energy_to_pay = (energy_needed - free_energy).max(0);
+                                                if user_pct >= 100 || max_subsidy <= 0 {
+                                                    total_energy
+                                                } else {
+                                                    let deployer_addr = info.origin_address.as_ref()
+                                                        .and_then(|hex_str| {
+                                                            let bytes = alloy::hex::decode(hex_str).ok()?;
+                                                            Address::from_tron_bytes(&bytes).ok()
+                                                        });
+                                                    let deployer_available = match deployer_addr {
+                                                        Some(ref addr) => match client.get_account_resource(addr).await {
+                                                            Ok(ar) => (ar.energy_limit - ar.energy_used).max(0),
+                                                            Err(_) => 0,
+                                                        },
+                                                        None => 0,
+                                                    };
 
-                            energy_to_pay as u64 * energy_fee
+                                                    let user_theoretical = (total_energy * user_pct + 99) / 100;
+                                                    let deployer_theoretical = total_energy - user_theoretical;
+                                                    let deployer_actual = deployer_theoretical
+                                                        .min(max_subsidy)
+                                                        .min(deployer_available);
+
+                                                    (total_energy - deployer_actual).max(0)
+                                                }
+                                            }
+                                            Err(_) => total_energy,
+                                        };
+
+                                        (user_energy - free_energy).max(0)
+                                    }
+                                }
+                                Err(_) => DEFAULT_FALLBACK_ENERGY,
+                            };
+                            let energy_cost = energy_to_pay as u64 * energy_fee;
+
+                            // Bandwidth
+                            let account_net = client.get_account_net(sender).await?;
+                            let tx_size = tron_tx.encode().len() as i64 + UNSIGNED_TX_OVERHEAD;
+                            let free_net = account_net.free_net_limit - account_net.free_net_used;
+                            let bw_cost = if free_net >= tx_size { 0u64 }
+                                else { (tx_size - free_net.max(0)) as u64 * transaction_fee };
+
+                            // Memo
+                            let memo = if tron_tx.raw().data.is_empty() { 0u64 } else { MEMO_FEE_SUN as u64 };
+
+                            energy_cost + bw_cost + memo
                         }
                         _ => 0u64,
                     }
