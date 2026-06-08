@@ -35,17 +35,17 @@ pub trait BitcoinManagement {
         bip86_xpub: &bitcoin::bip32::Xpub,
     ) -> std::result::Result<(), Self::Error>;
 
-    /// Build a native-BTC deposit paying `amount_sat` to `vault` and carrying `memo` in an
-    /// `OP_RETURN` output — the on-chain shape THORChain expects for a BTC-sourced swap.
-    /// `fee_rate` is sats-per-vbyte. Reuses the same UTXO selection / signing-metadata plumbing as a
-    /// plain BTC transfer, adding only the memo output.
+    /// Build a native-BTC deposit paying `amount_sat` to `vault`.
+    /// Pass `Some(memo)` for THORChain-style OP_RETURN; `None` for a plain vault transfer
+    /// (e.g., Relay.link). `fee_rate` is sats-per-vbyte. Reuses the same UTXO selection /
+    /// signing-metadata plumbing as a plain BTC transfer, adding only the optional memo output.
     async fn build_btc_deposit_with_memo(
         &self,
         token: &FToken,
         from: &AccountV2,
         vault: Address,
         amount_sat: u64,
-        memo: &str,
+        memo: Option<&str>,
         fee_rate: Option<u64>,
     ) -> std::result::Result<TransactionRequest, Self::Error>;
 }
@@ -109,7 +109,7 @@ impl BitcoinManagement for Background {
         from: &AccountV2,
         vault: Address,
         amount_sat: u64,
-        memo: &str,
+        memo: Option<&str>,
         fee_rate: Option<u64>,
     ) -> Result<TransactionRequest> {
         let (wallet_ref, account_index) = self
@@ -132,12 +132,16 @@ impl BitcoinManagement for Background {
 
         let wallet_data = wallet_ref.get_wallet_data()?;
         let chains = wallet_ref.get_btc_addresses(account_index, wallet_data.chain_hash)?;
-        let op_return = build_op_return_output(memo.as_bytes())?;
+        let extra_outputs = memo
+            .map(|m| build_op_return_output(m.as_bytes()))
+            .transpose()?
+            .into_iter()
+            .collect::<Vec<_>>();
 
         let (tx, witness_utxos, input_meta) = build_unsigned_btc_transaction_with_extras(
             &chains,
             vec![(vault, amount_sat)],
-            vec![op_return],
+            extra_outputs,
             fee_rate,
         )?;
 
