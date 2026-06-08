@@ -47,6 +47,7 @@ pub struct ChainParamsResponse {
 pub struct TriggerResult {
     #[serde(default)]
     pub code: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub message: Option<String>,
 }
