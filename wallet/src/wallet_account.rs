@@ -126,7 +126,7 @@ impl AccountManagement for Wallet {
         seed_bytes: &Argon2Seed,
         passphrase: &SecretString,
     ) -> Result<()> {
-        let reference: Vec<(usize, String)> = data
+        let reference: Vec<(usize, &str)> = data
             .slip44_accounts
             .values()
             .flat_map(|bip_map| bip_map.values())
@@ -134,22 +134,26 @@ impl AccountManagement for Wallet {
             .map(|accounts| {
                 accounts
                     .iter()
-                    .map(|a| (a.account_type.value(), a.name.clone()))
+                    .map(|a| (a.account_type.value(), a.name.as_str()))
                     .collect()
             })
-            .unwrap_or_else(|| vec![(0, String::new())]);
+            .unwrap_or_else(|| vec![(0, "")]);
 
         let target_bip = DerivationPath::default_bip(target_slip44);
-        let bip_map = data.slip44_accounts.entry(target_slip44).or_default();
 
-        let existing: HashSet<usize> = bip_map
-            .get(&target_bip)
+        let existing: HashSet<usize> = data
+            .slip44_accounts
+            .get(&target_slip44)
+            .and_then(|bip_map| bip_map.get(&target_bip))
             .map(|accounts| accounts.iter().map(|a| a.account_type.value()).collect())
             .unwrap_or_default();
         let missing: Vec<(usize, String)> = reference
             .into_iter()
             .filter(|(idx, _)| !existing.contains(idx))
+            .map(|(idx, name)| (idx, name.to_owned()))
             .collect();
+
+        let bip_map = data.slip44_accounts.entry(target_slip44).or_default();
 
         if missing.is_empty() {
             return Ok(());
@@ -194,7 +198,11 @@ impl AccountManagement for Wallet {
 
                 let accounts = bip_map.entry(target_bip).or_default();
                 for (idx, name) in missing {
-                    let path = DerivationPath::with_index(target_slip44, (0, 0, idx));
+                    let path = if target_slip44 == slip44::BITCOIN {
+                        DerivationPath::with_index(target_slip44, (idx, 0, 0))
+                    } else {
+                        DerivationPath::with_index(target_slip44, (0, 0, idx))
+                    };
                     let account = AccountV2::from_hd(&mnemonic_seed_secret, name, &path, network)?;
                     accounts.push(account);
                 }

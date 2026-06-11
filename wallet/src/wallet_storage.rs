@@ -79,7 +79,7 @@ impl StorageOperations for Wallet {
     }
 
     fn get_wallet_data(&self) -> Result<WalletDataV2> {
-        let data: WalletDataV2 = match self
+        let mut data: WalletDataV2 = match self
             .storage
             .get_versioned::<WalletDataV2>(self.wallet_address.as_slice())
         {
@@ -94,6 +94,16 @@ impl StorageOperations for Wallet {
                 v2
             }
         };
+        // Heal corrupted selected_account once — reset to 0, persist so next load is clean.
+        let count = data
+            .slip44_accounts
+            .get(&data.slip44)
+            .and_then(|m| m.get(&data.bip))
+            .map_or(0, |v| v.len());
+        if count > 0 && data.selected_account >= count {
+            data.selected_account = 0;
+            let _ = self.save_wallet_data(&data);
+        }
         Ok(data)
     }
 
@@ -394,5 +404,47 @@ mod tests_wallet_storage {
 
         let direct: WalletDataV2 = storage.get_versioned(wallet_address.as_slice()).unwrap();
         assert_eq!(direct, v2);
+    }
+
+    #[test]
+    fn test_recovery_selected_account_out_of_bounds() {
+        use crate::{account::AccountV2, account_type::AccountType};
+        use crypto::slip44;
+        use proto::address::Address;
+
+        let (wallet_address, storage) = setup();
+        let wallet = Wallet::init_wallet(wallet_address, storage).unwrap();
+
+        let accounts = HashMap::from([(
+            slip44::BITCOIN,
+            HashMap::from([(
+                DerivationPath::BIP84_PURPOSE,
+                vec![AccountV2 {
+                    account_type: AccountType::Bip39HD(0),
+                    name: "BTC 0".to_string(),
+                    addr: Address::Secp256k1Bitcoin(vec![]),
+                    pub_key: None,
+                }],
+            )]),
+        )]);
+
+        let data = WalletDataV2 {
+            proof_key: 0,
+            wallet_type: WalletTypes::SecretKey,
+            settings: WalletSettings::default(),
+            wallet_name: String::new(),
+            slip44_accounts: accounts,
+            slip44: slip44::BITCOIN,
+            bip: DerivationPath::BIP84_PURPOSE,
+            selected_account: 1, // OOB — only 1 account at index 0
+            biometric_type: AuthMethod::None,
+            chain_hash: 0,
+            bip_preferences: HashMap::new(),
+            derivation_type: 0,
+        };
+
+        wallet.save_wallet_data(&data).unwrap();
+        let recovered = wallet.get_wallet_data().unwrap();
+        assert_eq!(recovered.selected_account, 0);
     }
 }

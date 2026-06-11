@@ -193,11 +193,19 @@ impl ProvidersManagement for Background {
         data.bip = new_bip;
         data.chain_hash = chain_hash;
 
-        let has_accounts = data
+        let reference_count = data
+            .slip44_accounts
+            .values()
+            .flat_map(|bip_map| bip_map.values())
+            .map(|accounts| accounts.len())
+            .max()
+            .unwrap_or(1);
+        let target_count = data
             .slip44_accounts
             .get(&new_slip44)
             .and_then(|bip_map| bip_map.get(&new_bip))
-            .is_some_and(|accounts| !accounts.is_empty());
+            .map_or(0, |accounts| accounts.len());
+        let has_accounts = target_count >= reference_count;
 
         if !has_accounts {
             let seed = if data.biometric_type != AuthMethod::None {
@@ -329,6 +337,14 @@ impl ProvidersManagement for Background {
             }
         }
 
+        let new_count = data
+            .slip44_accounts
+            .get(&new_slip44)
+            .and_then(|m| m.get(&new_bip))
+            .map_or(0, |v| v.len());
+        if new_count > 0 && data.selected_account >= new_count {
+            data.selected_account = new_count - 1;
+        }
         wallet.save_wallet_data(&data)?;
         wallet.save_ftokens(&ftokens)?;
 
@@ -900,5 +916,85 @@ mod tests_providers {
             .unwrap();
         assert_eq!(data.slip44, slip44::ZILLIQA);
         assert_eq!(data.get_accounts().unwrap().len(), 1);
+    }
+
+    /// Regression: ensure_chain_accounts must be invoked when the target chain has
+    /// fewer accounts than any other chain, not just when the target chain is empty.
+    /// Scenario: 2 ETH accounts → switch BTC (gets 2) → switch ETH, add 3rd → switch
+    /// BTC again → must derive the 3rd BTC account.
+    #[tokio::test]
+    async fn test_select_chain_account_count_convergence() {
+        let (mut bg, _) = setup_test_background();
+        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
+        let eth = gen_anvil_net_conf();
+        let btc = gen_btc_testnet_conf();
+
+        bg.add_provider(eth.clone()).unwrap();
+        bg.add_provider(btc.clone()).unwrap();
+
+        // Start with 2 ETH accounts
+        let accounts = [(0, "ETH 0".to_string()), (1, "ETH 1".to_string())];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
+        bg.add_bip39_wallet(BackgroundBip39Params {
+            password: &password,
+            chain_hash: eth.hash(),
+            mnemonic_str: &mnemonic_secret,
+            mnemonic_check: true,
+            accounts: &accounts,
+            wallet_settings: Default::default(),
+            passphrase: &empty_passphrase(),
+            wallet_name: String::new(),
+            biometric_type: Default::default(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        let data = bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_wallet_data()
+            .unwrap();
+        assert_eq!(data.slip44, eth.slip_44);
+        assert_eq!(data.get_accounts().unwrap().len(), 2);
+
+        // Switch to BTC — must create 2 BTC accounts (reference = 2 from ETH)
+        bg.select_accounts_chain(0, btc.hash(), Some(&password))
+            .await
+            .unwrap();
+        let data = bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_wallet_data()
+            .unwrap();
+        assert_eq!(data.slip44, btc.slip_44);
+        let btc_accounts = data.get_accounts().unwrap();
+        assert_eq!(btc_accounts.len(), 2, "BTC must have 2 accounts matching ETH reference");
+
+        // Switch back to ETH
+        bg.select_accounts_chain(0, eth.hash(), Some(&password))
+            .await
+            .unwrap();
+        let data = bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_wallet_data()
+            .unwrap();
+        assert_eq!(data.slip44, eth.slip_44);
+        assert_eq!(data.get_accounts().unwrap().len(), 2);
+
+        // Switch to BTC again — must still have 2 accounts (was already converged)
+        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
+        let data = bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_wallet_data()
+            .unwrap();
+        assert_eq!(data.slip44, btc.slip_44);
+        assert_eq!(
+            data.get_accounts().unwrap().len(),
+            2,
+            "BTC must still have 2 accounts on re-select"
+        );
     }
 }
