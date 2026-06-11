@@ -186,7 +186,7 @@ pub fn derive_sk_btc_address_chains(
     sk_bytes: &[u8; config::key::SECRET_KEY_SIZE],
     network: bitcoin::Network,
 ) -> Result<(HashMap<bitcoin::AddressType, AddressChain>, Address)> {
-    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let secp = &bitcoin::secp256k1::SECP256K1;
     let secret_key = bitcoin::secp256k1::SecretKey::from_slice(sk_bytes)
         .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
     let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
@@ -422,7 +422,7 @@ pub fn build_unsigned_btc_transaction_with_extras(
             )));
         }
     } else {
-        (destinations.clone(), original_total_output)
+        (destinations, original_total_output)
     };
 
     let mut outputs: Vec<TxOut> =
@@ -592,7 +592,7 @@ impl BitcoinWallet for Wallet {
 
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)
             .map_err(|e| WalletErrors::BincodeError(format!("build_psbt: {:?}", e)))?;
-        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let secp = &bitcoin::secp256k1::SECP256K1;
         let prevouts = &witness_utxos;
 
         let addr_types: Vec<bitcoin::AddressType> = input_meta_raw
@@ -812,7 +812,7 @@ impl BitcoinWallet for Wallet {
             build_unsigned_btc_transaction(&chains, destinations, fee_rate_sat_per_vbyte)?;
 
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)?;
-        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let secp = &bitcoin::secp256k1::SECP256K1;
 
         for (i, (addr_type, path)) in input_meta.iter().enumerate().take(psbt.inputs.len()) {
             let sk = proto::bip32::derive_private_key(&seed_secret, &path.get_path())
@@ -898,7 +898,7 @@ impl BitcoinWallet for Wallet {
 
         let mut data = self.get_wallet_data()?;
         data.get_mut_account(account_index)?.addr = new_addr;
-        self.save_wallet_data(data)?;
+        self.save_wallet_data(&data)?;
 
         Ok(())
     }
@@ -1013,7 +1013,7 @@ impl BitcoinWallet for Wallet {
                     }
                 }
 
-                self.save_wallet_data(data)?;
+                self.save_wallet_data(&data)?;
                 self.storage.flush()?;
 
                 Ok(())
@@ -1044,7 +1044,7 @@ impl BitcoinWallet for Wallet {
 
                 self.save_btc_addresses(0, &chains, chain.hash())?;
                 data.get_mut_account(0)?.addr = primary_addr;
-                self.save_wallet_data(data)?;
+                self.save_wallet_data(&data)?;
                 self.storage.flush()?;
 
                 Ok(())

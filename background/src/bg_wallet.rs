@@ -114,7 +114,7 @@ impl WalletManagement for Background {
         }
 
         data.biometric_type = new_biometric_type;
-        wallet.save_wallet_data(data)?;
+        wallet.save_wallet_data(&data)?;
 
         Ok(())
     }
@@ -235,7 +235,7 @@ impl WalletManagement for Background {
             .as_ref()
             .ok_or(AccountErrors::InvalidPubKeyType)?;
         account.addr = pk.get_addr()?;
-        wallet.save_wallet_data(data)?;
+        wallet.save_wallet_data(&data)?;
 
         Ok(())
     }

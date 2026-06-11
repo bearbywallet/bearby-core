@@ -2,7 +2,7 @@ use bitcoin::ecdsa::Signature as BitcoinEcdsaSignature;
 use bitcoin::key::TapTweak;
 use bitcoin::psbt::Psbt;
 use bitcoin::script::Builder;
-use bitcoin::secp256k1::{Keypair, Message, Secp256k1};
+use bitcoin::secp256k1::{Keypair, Message, SECP256K1};
 use bitcoin::sighash::{EcdsaSighashType, Prevouts, SighashCache, TapSighashType};
 use bitcoin::taproot::Signature as TaprootSignature;
 use bitcoin::{
@@ -41,7 +41,7 @@ pub fn sign_psbt_input(
     addr_type: bitcoin::AddressType,
     prevouts: &[TxOut],
 ) -> Result<(), TransactionErrors> {
-    let secp = Secp256k1::new();
+    let secp = &SECP256K1;
 
     if index >= psbt.inputs.len() || index >= prevouts.len() {
         return Err(TransactionErrors::PsbtSigningFailed);
@@ -221,7 +221,7 @@ pub fn sign_psbt(
     network: bitcoin::Network,
     addr_type: bitcoin::AddressType,
 ) -> Result<(), TransactionErrors> {
-    let secp = Secp256k1::new();
+    let secp = &SECP256K1;
     let priv_key = PrivateKey::new(*secret_key, network);
     let dummy_origin = (
         bip32::Fingerprint::default(),

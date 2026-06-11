@@ -27,7 +27,7 @@ pub trait StorageOperations {
         cipher_entropy: &[u8],
         storage: Arc<LocalStorage>,
     ) -> std::result::Result<usize, Self::Error>;
-    fn save_wallet_data(&self, data: WalletDataV2) -> std::result::Result<(), Self::Error>;
+    fn save_wallet_data(&self, data: &WalletDataV2) -> std::result::Result<(), Self::Error>;
     fn save_ftokens(&self, ftokens: &[FToken]) -> std::result::Result<(), Self::Error>;
     fn add_history(
         &self,
@@ -79,21 +79,22 @@ impl StorageOperations for Wallet {
     }
 
     fn get_wallet_data(&self) -> Result<WalletDataV2> {
-        match self
+        let data: WalletDataV2 = match self
             .storage
             .get_versioned::<WalletDataV2>(self.wallet_address.as_slice())
         {
-            Ok(data) => Ok(data),
+            Ok(d) => d,
             Err(_) => {
                 let v1: WalletDataV1 = self
                     .storage
                     .get_versioned(self.wallet_address.as_slice())
                     .map_err(WalletErrors::from)?;
                 let v2: WalletDataV2 = v1.into();
-                self.save_wallet_data(v2.clone())?;
-                Ok(v2)
+                self.save_wallet_data(&v2)?;
+                v2
             }
-        }
+        };
+        Ok(data)
     }
 
     fn try_get_wallet_data(&self) -> Option<WalletDataV2> {
@@ -108,7 +109,7 @@ impl StorageOperations for Wallet {
                     .get_versioned(self.wallet_address.as_slice())
                     .ok()?;
                 let v2: WalletDataV2 = v1.into();
-                self.save_wallet_data(v2.clone()).ok()?;
+                self.save_wallet_data(&v2).ok()?;
                 Some(v2)
             }
         }
@@ -154,8 +155,8 @@ impl StorageOperations for Wallet {
         Ok(cipher_entropy_key)
     }
 
-    fn save_wallet_data(&self, data: WalletDataV2) -> Result<()> {
-        self.storage.set_versioned(&self.wallet_address, &data)?;
+    fn save_wallet_data(&self, data: &WalletDataV2) -> Result<()> {
+        self.storage.set_versioned(&self.wallet_address, data)?;
         self.storage.flush()?;
 
         Ok(())
@@ -270,7 +271,7 @@ mod tests_wallet_storage {
         };
 
         // Test saving wallet data
-        assert!(wallet.save_wallet_data(test_data.clone()).is_ok());
+        assert!(wallet.save_wallet_data(&test_data).is_ok());
 
         // Test retrieving wallet data
         let retrieved_data = wallet.get_wallet_data();

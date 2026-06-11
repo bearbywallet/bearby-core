@@ -20,6 +20,7 @@ k256.workspace = true
 hmac.workspace = true
 tokio.workspace = true
 bitcoin.workspace = true
+secp256k1 = { workspace = true }
 electrum-client.workspace = true
 bincode.workspace = true
 prost.workspace = true

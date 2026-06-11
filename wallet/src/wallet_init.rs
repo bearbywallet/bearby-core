@@ -137,7 +137,7 @@ impl WalletInit for Wallet {
             derivation_type: 0,
         };
 
-        wallet.save_wallet_data(data)?;
+        wallet.save_wallet_data(&data)?;
         wallet.save_ftokens(&ftokens)?;
 
         Ok(wallet)
@@ -218,7 +218,7 @@ impl WalletInit for Wallet {
             wallet_address,
         };
 
-        wallet.save_wallet_data(data)?;
+        wallet.save_wallet_data(&data)?;
         wallet.save_ftokens(&ftokens)?;
 
         if let Some(chains) = btc_chains_to_save {
@@ -319,7 +319,7 @@ impl WalletInit for Wallet {
             derivation_type: 0,
         };
 
-        wallet.save_wallet_data(data)?;
+        wallet.save_wallet_data(&data)?;
         wallet.save_ftokens(&ftokens)?;
         wallet.storage.flush()?;
 

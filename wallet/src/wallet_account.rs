@@ -63,7 +63,7 @@ impl AccountManagement for Wallet {
         data.remove_account(account_index);
         let accounts = data.get_accounts()?;
         data.selected_account = accounts.len() - 1;
-        self.save_wallet_data(data)?;
+        self.save_wallet_data(&data)?;
 
         Ok(())
     }
@@ -113,7 +113,7 @@ impl AccountManagement for Wallet {
 
         data.bip = bip;
 
-        self.save_wallet_data(data)?;
+        self.save_wallet_data(&data)?;
 
         Ok(())
     }
@@ -253,7 +253,7 @@ impl AccountManagement for Wallet {
             .or_default()
             .push(account);
 
-        self.save_wallet_data(data)?;
+        self.save_wallet_data(&data)?;
 
         Ok(())
     }
@@ -307,7 +307,7 @@ impl AccountManagement for Wallet {
                 .push(hd_account);
         }
 
-        self.save_wallet_data(data)?;
+        self.save_wallet_data(&data)?;
 
         Ok(())
     }
@@ -325,7 +325,7 @@ impl AccountManagement for Wallet {
         }
 
         data.selected_account = account_index;
-        self.save_wallet_data(data)?;
+        self.save_wallet_data(&data)?;
 
         Ok(())
     }

@@ -182,7 +182,7 @@ impl ProvidersManagement for Background {
                 t.addr == provider_ftoken.addr && t.chain_hash == provider_ftoken.chain_hash
             });
             if !exists {
-                ftokens.insert(0, provider_ftoken.clone());
+                ftokens.push(provider_ftoken.clone());
             }
         }
 
@@ -329,7 +329,7 @@ impl ProvidersManagement for Background {
             }
         }
 
-        wallet.save_wallet_data(data)?;
+        wallet.save_wallet_data(&data)?;
         wallet.save_ftokens(&ftokens)?;
 
         Ok(())

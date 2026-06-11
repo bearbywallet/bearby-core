@@ -269,7 +269,7 @@ impl StorageManagement for Background {
             session.create_session(secert_bytes).await?;
         }
 
-        wallet.save_wallet_data(keystore.wallet_data)?;
+        wallet.save_wallet_data(&keystore.wallet_data)?;
         wallet.save_ftokens(&keystore.ftokens)?;
         if is_btc {
             wallet.restore_btc_chains_from_backup(chain_hash, keystore.btc_address_chains)?;

@@ -165,9 +165,9 @@ pub fn create_btc_address(
                 .map_err(|_| PubKeyError::InvalidKeyType)?
         }
         bitcoin::AddressType::P2tr => {
-            use bitcoin::secp256k1::{Secp256k1, XOnlyPublicKey};
+            use bitcoin::secp256k1::{SECP256K1, XOnlyPublicKey};
             let x_only_pk = XOnlyPublicKey::from(compressed_pk.0);
-            let secp = Secp256k1::new();
+            let secp = &SECP256K1;
             bitcoin::Address::p2tr(&secp, x_only_pk, None, hrp)
         }
         _ => return Err(PubKeyError::InvalidKeyType),
@@ -183,10 +183,10 @@ impl BtcAccountXpubsInput {
         network: bitcoin::Network,
     ) -> std::result::Result<Self, Bip329Errors> {
         use bitcoin::bip32::{ChildNumber, DerivationPath as BtcPath, Xpriv, Xpub};
-        use bitcoin::secp256k1::Secp256k1;
+        use bitcoin::secp256k1::SECP256K1;
         use secrecy::ExposeSecret;
 
-        let secp = Secp256k1::new();
+        let secp = &SECP256K1;
         let master = Xpriv::new_master(network, seed.expose_secret())
             .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
 
@@ -239,9 +239,9 @@ pub fn derive_btc_chain_from_xpub(
     chain: &mut AddressChain,
 ) -> std::result::Result<(), Bip329Errors> {
     use bitcoin::bip32::ChildNumber;
-    use bitcoin::secp256k1::Secp256k1;
+    use bitcoin::secp256k1::SECP256K1;
 
-    let secp = Secp256k1::new();
+    let secp = &SECP256K1;
     let bip = DerivationPath::bip_from_address_type(addr_type);
     let end = start_index.saturating_add(count);
 
