@@ -313,16 +313,16 @@ impl ProvidersManagement for Background {
         if new_slip44 == slip44::BITCOIN {
             if let Some(network) = provider.config.bitcoin_network() {
                 if let WalletTypes::SecretPhrase(_) = &data.wallet_type {
-                    try_extend_btc_pool_background(
-                        self,
+                    try_extend_btc_pool_background(&PoolExtendCtx {
+                        bg: self,
                         wallet_index,
                         password,
                         wallet,
-                        &data.biometric_type,
-                        data.get_accounts().map_or(0, |a| a.len()),
+                        biometric_type: &data.biometric_type,
+                        account_count: data.get_accounts().map_or(0, |a| a.len()),
                         chain_hash,
                         network,
-                    )
+                    })
                     .await
                     .ok();
                 }
@@ -336,43 +336,45 @@ impl ProvidersManagement for Background {
     }
 }
 
-async fn try_extend_btc_pool_background(
-    bg: &Background,
+struct PoolExtendCtx<'a> {
+    bg: &'a Background,
     wallet_index: usize,
-    password: Option<&SecretString>,
-    wallet: &wallet::Wallet,
-    biometric_type: &AuthMethod,
+    password: Option<&'a SecretString>,
+    wallet: &'a wallet::Wallet,
+    biometric_type: &'a AuthMethod,
     account_count: usize,
     chain_hash: u64,
     network: bitcoin::Network,
-) -> crate::Result<()> {
-    let seed = if *biometric_type != AuthMethod::None {
-        bg.unlock_wallet_with_session(wallet_index).await?
-    } else if let Some(pass) = password {
-        bg.unlock_wallet_with_password(pass, None, wallet_index)
+}
+
+async fn try_extend_btc_pool_background(c: &PoolExtendCtx<'_>) -> crate::Result<()> {
+    let seed = if *c.biometric_type != AuthMethod::None {
+        c.bg.unlock_wallet_with_session(c.wallet_index).await?
+    } else if let Some(pass) = c.password {
+        c.bg.unlock_wallet_with_password(pass, None, c.wallet_index)
             .await?
     } else {
         return Err(BackgroundError::AuthenticationRequired);
     };
-    let mnemonic = wallet.reveal_mnemonic(&seed)?;
+    let mnemonic = c.wallet.reveal_mnemonic(&seed)?;
     let seed_secret = mnemonic
         .to_seed(&wallet::empty_passphrase())
         .map_err(|e| {
             BackgroundError::WalletError(WalletErrors::BincodeError(format!("{e:?}")))
         })?;
-    for account_index in 0..account_count {
-        let mut chains = wallet.get_btc_addresses(account_index, chain_hash)?;
+    for account_index in 0..c.account_count {
+        let mut chains = c.wallet.get_btc_addresses(account_index, c.chain_hash)?;
         if chains.values().any(AddressChain::pool_watermark_reached) {
             let acct_idx = u32::try_from(account_index).map_err(|e| {
                 BackgroundError::WalletError(WalletErrors::BincodeError(e.to_string()))
             })?;
             let map_bip_err =
                 |e| BackgroundError::WalletError(WalletErrors::Bip329Error(e));
-            let xpubs = BtcAccountXpubsInput::from_seed(&seed_secret, acct_idx, network)
+            let xpubs = BtcAccountXpubsInput::from_seed(&seed_secret, acct_idx, c.network)
                 .map_err(map_bip_err)?;
-            extend_address_pool(&mut chains, &xpubs, account_index, network)
+            extend_address_pool(&mut chains, &xpubs, account_index, c.network)
                 .map_err(map_bip_err)?;
-            wallet.save_btc_addresses(account_index, &chains, chain_hash)?;
+            c.wallet.save_btc_addresses(account_index, &chains, c.chain_hash)?;
         }
     }
     Ok(())

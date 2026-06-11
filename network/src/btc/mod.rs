@@ -23,6 +23,11 @@ const BYTES_PER_KB: f64 = 1000.0;
 const DEFAULT_TX_SIZE_BYTES: u64 = 250;
 const HISTORY_BATCH_CHUNK: usize = 25;
 
+type ScriptsAndLayout = (
+    Vec<bitcoin::ScriptBuf>,
+    Vec<(bitcoin::AddressType, usize, usize)>,
+);
+
 fn calculate_tx_vsize(tx: &TransactionRequest) -> u64 {
     match tx {
         TransactionRequest::Bitcoin((btc_tx, metadata, _)) => {
@@ -110,6 +115,36 @@ fn parse_fee_histogram(value: &serde_json::Value) -> Option<(u64, u64, u64)> {
     let fast_rate = (min_fee_rate * 1.15).ceil() as u64;
 
     Some((slow_rate, market_rate, fast_rate))
+}
+
+fn build_scripts_and_layout(
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
+) -> crate::Result<ScriptsAndLayout> {
+    let keys: Vec<bitcoin::AddressType> = {
+        let mut k: Vec<_> = chains.keys().copied().collect();
+        k.sort_by_key(|k| k.to_byte());
+        k
+    };
+    let scripts_capacity: usize = chains
+        .values()
+        .map(|c| c.external.len() + c.internal.len())
+        .sum();
+    let mut scripts = Vec::with_capacity(scripts_capacity);
+    let mut layout = Vec::with_capacity(keys.len());
+    for key in &keys {
+        let chain = chains.get(key).ok_or_else(|| {
+            NetworkErrors::RPCError(format!("Missing chain for {key:?}"))
+        })?;
+        for entry in chain.external.iter().chain(chain.internal.iter()) {
+            let addr = entry
+                .address
+                .to_bitcoin_addr()
+                .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
+            scripts.push(addr.script_pubkey());
+        }
+        layout.push((*key, chain.external.len(), chain.internal.len()));
+    }
+    Ok((scripts, layout))
 }
 
 impl NetworkProvider {
@@ -493,33 +528,7 @@ impl BtcOperations for NetworkProvider {
             return Ok(());
         }
 
-        let mut keys: Vec<bitcoin::AddressType> = chains.keys().copied().collect();
-        keys.sort_by_key(|k| k.to_byte());
-
-        let mut scripts: Vec<bitcoin::ScriptBuf> = Vec::new();
-        let mut layout: Vec<(bitcoin::AddressType, usize, usize)> = Vec::with_capacity(keys.len());
-
-        for key in &keys {
-            let chain = chains.get(key).ok_or_else(|| {
-                NetworkErrors::RPCError(format!("Missing chain for address type {:?}", key))
-            })?;
-            for ext_entry in &chain.external {
-                let ext_addr = ext_entry
-                    .address
-                    .to_bitcoin_addr()
-                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
-                scripts.push(ext_addr.script_pubkey());
-            }
-            for int_entry in &chain.internal {
-                let int_addr = int_entry
-                    .address
-                    .to_bitcoin_addr()
-                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
-                scripts.push(int_addr.script_pubkey());
-            }
-            layout.push((*key, chain.external.len(), chain.internal.len()));
-        }
-
+        let (scripts, layout) = build_scripts_and_layout(chains)?;
         if scripts.is_empty() {
             return Ok(());
         }
@@ -542,15 +551,23 @@ impl BtcOperations for NetworkProvider {
             let chain = chains.get_mut(&addr_type).ok_or_else(|| {
                 NetworkErrors::RPCError(format!("Missing chain for address type {:?}", addr_type))
             })?;
-            for i in 0..ext_n {
-                let ext_history = std::mem::take(&mut results[cursor]);
-                cursor += 1;
-                chain.external[i].history = ext_history.into_iter().map(|h| h.tx_hash).collect();
-            }
-            for i in 0..int_n {
-                let int_history = std::mem::take(&mut results[cursor]);
-                cursor += 1;
-                chain.internal[i].history = int_history.into_iter().map(|h| h.tx_hash).collect();
+            for (count, slice, label) in [
+                (ext_n, chain.external.as_mut_slice(), "ext"),
+                (int_n, chain.internal.as_mut_slice(), "int"),
+            ] {
+                for i in 0..count {
+                    let slot = results.get_mut(cursor).ok_or_else(|| {
+                        NetworkErrors::RPCError(format!("Missing history result at index {cursor}"))
+                    })?;
+                    let history = std::mem::take(slot);
+                    cursor += 1;
+                    let entry = slice.get_mut(i).ok_or_else(|| {
+                        NetworkErrors::RPCError(format!(
+                            "{label} entry {i} missing for {addr_type:?}"
+                        ))
+                    })?;
+                    entry.history = history.into_iter().map(|h| h.tx_hash).collect();
+                }
             }
         }
 
@@ -576,33 +593,7 @@ impl BtcOperations for NetworkProvider {
             return Ok(());
         }
 
-        let mut keys: Vec<bitcoin::AddressType> = chains.keys().copied().collect();
-        keys.sort_by_key(|k| k.to_byte());
-
-        let mut scripts: Vec<bitcoin::ScriptBuf> = Vec::new();
-        let mut layout: Vec<(bitcoin::AddressType, usize, usize)> = Vec::with_capacity(keys.len());
-
-        for key in &keys {
-            let chain = chains.get(key).ok_or_else(|| {
-                NetworkErrors::RPCError(format!("Missing chain for address type {:?}", key))
-            })?;
-            for ext_entry in &chain.external {
-                let ext_addr = ext_entry
-                    .address
-                    .to_bitcoin_addr()
-                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
-                scripts.push(ext_addr.script_pubkey());
-            }
-            for int_entry in &chain.internal {
-                let int_addr = int_entry
-                    .address
-                    .to_bitcoin_addr()
-                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
-                scripts.push(int_addr.script_pubkey());
-            }
-            layout.push((*key, chain.external.len(), chain.internal.len()));
-        }
-
+        let (scripts, layout) = build_scripts_and_layout(chains)?;
         if scripts.is_empty() {
             return Ok(());
         }
@@ -625,33 +616,23 @@ impl BtcOperations for NetworkProvider {
             let chain = chains.get_mut(&addr_type).ok_or_else(|| {
                 NetworkErrors::RPCError(format!("Missing chain for address type {:?}", addr_type))
             })?;
-            for i in 0..ext_n {
-                let slot = results.get_mut(cursor).ok_or_else(|| {
-                    NetworkErrors::RPCError(format!("Missing unspent result at index {}", cursor))
-                })?;
-                let unspents = std::mem::take(slot);
-                cursor += 1;
-                let entry = chain.external.get_mut(i).ok_or_else(|| {
-                    NetworkErrors::RPCError(format!(
-                        "External entry {} missing for {:?}",
-                        i, addr_type
-                    ))
-                })?;
-                entry.utxos = unspents.into_iter().map(Utxo::from).collect();
-            }
-            for i in 0..int_n {
-                let slot = results.get_mut(cursor).ok_or_else(|| {
-                    NetworkErrors::RPCError(format!("Missing unspent result at index {}", cursor))
-                })?;
-                let unspents = std::mem::take(slot);
-                cursor += 1;
-                let entry = chain.internal.get_mut(i).ok_or_else(|| {
-                    NetworkErrors::RPCError(format!(
-                        "Internal entry {} missing for {:?}",
-                        i, addr_type
-                    ))
-                })?;
-                entry.utxos = unspents.into_iter().map(Utxo::from).collect();
+            for (count, slice, label) in [
+                (ext_n, chain.external.as_mut_slice(), "ext"),
+                (int_n, chain.internal.as_mut_slice(), "int"),
+            ] {
+                for i in 0..count {
+                    let slot = results.get_mut(cursor).ok_or_else(|| {
+                        NetworkErrors::RPCError(format!("Missing unspent result at index {cursor}"))
+                    })?;
+                    let unspents = std::mem::take(slot);
+                    cursor += 1;
+                    let entry = slice.get_mut(i).ok_or_else(|| {
+                        NetworkErrors::RPCError(format!(
+                            "{label} entry {i} missing for {addr_type:?}"
+                        ))
+                    })?;
+                    entry.utxos = unspents.into_iter().map(Utxo::from).collect();
+                }
             }
         }
 
@@ -666,8 +647,11 @@ impl BtcOperations for NetworkProvider {
             return Ok(());
         }
 
-        let mut keys: Vec<bitcoin::AddressType> = chains.keys().copied().collect();
-        keys.sort_by_key(|k| k.to_byte());
+        let keys: Vec<bitcoin::AddressType> = {
+            let mut k: Vec<_> = chains.keys().copied().collect();
+            k.sort_by_key(|k| k.to_byte());
+            k
+        };
 
         // Pass 1: collect layout (indices only, exact capacity)
         let mut layout: Vec<(bitcoin::AddressType, Vec<usize>, Vec<usize>)> =

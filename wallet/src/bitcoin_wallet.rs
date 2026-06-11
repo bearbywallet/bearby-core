@@ -69,16 +69,17 @@ pub async fn scan_btc_chains_for_xpubs(
                     break;
                 }
             }
-            Err(_) => break,
+            Err(_e) => {
+                // network unavailable during scan — return partial state
+                break;
+            }
         }
     }
 
     if scan_succeeded {
         provider.batch_btc_list_unspent(&mut master).await.ok();
-        Ok(master)
-    } else {
-        Ok(master)
     }
+    Ok(master)
 }
 
 pub fn pick_primary_btc_entry(
@@ -676,8 +677,12 @@ impl BitcoinWallet for Wallet {
         chain: &ChainConfig,
     ) -> Result<AccountV2> {
         let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
-        let xpubs = BtcAccountXpubsInput::from_seed(seed, account_index as u32, network)
-            .map_err(WalletErrors::Bip329Error)?;
+        let xpubs = {
+            let acct_idx = u32::try_from(account_index)
+                .map_err(|_| WalletErrors::BincodeError("account index overflow".to_string()))?;
+            BtcAccountXpubsInput::from_seed(seed, acct_idx, network)
+                .map_err(WalletErrors::Bip329Error)?
+        };
         let entry = self.generate_wallet(&xpubs, account_index, chain).await?;
         AccountV2::from_hd(seed, name, &entry.path, Some(network)).map_err(Into::into)
     }
@@ -780,9 +785,13 @@ impl BitcoinWallet for Wallet {
             .unwrap_or(true);
 
         if needs_new_change {
-            let xpubs =
-                BtcAccountXpubsInput::from_seed(&seed_secret, account_index as u32, network)
-                    .map_err(WalletErrors::Bip329Error)?;
+            let xpubs = {
+                let acct_idx = u32::try_from(account_index).map_err(|_| {
+                    WalletErrors::BincodeError("account index overflow".to_string())
+                })?;
+                BtcAccountXpubsInput::from_seed(&seed_secret, acct_idx, network)
+                    .map_err(WalletErrors::Bip329Error)?
+            };
             append_new_change_address(
                 &mut chains,
                 &xpubs,
@@ -923,22 +932,26 @@ impl BitcoinWallet for Wallet {
             }
         }
 
+        let output_scripts: HashSet<&bitcoin::ScriptBuf> = signed_tx
+            .output
+            .iter()
+            .map(|o| &o.script_pubkey)
+            .collect();
+
         for primary_type in [bitcoin::AddressType::P2wpkh, bitcoin::AddressType::P2tr] {
             let Some(primary_chain) = chains.get_mut(&primary_type) else {
                 continue;
             };
-            for output in &signed_tx.output {
-                for entry in primary_chain.internal.iter_mut() {
-                    let entry_script = entry
-                        .address
-                        .to_bitcoin_addr()
-                        .map_err(|e| WalletErrors::BincodeError(e.to_string()))?
-                        .script_pubkey();
-                    if entry_script == output.script_pubkey
-                        && !entry.history.contains(&broadcast_txid)
-                    {
-                        entry.history.push(broadcast_txid);
-                    }
+            for entry in primary_chain.internal.iter_mut() {
+                let entry_script = entry
+                    .address
+                    .to_bitcoin_addr()
+                    .map_err(|e| WalletErrors::BincodeError(e.to_string()))?
+                    .script_pubkey();
+                if output_scripts.contains(&entry_script)
+                    && !entry.history.contains(&broadcast_txid)
+                {
+                    entry.history.push(broadcast_txid);
                 }
             }
         }

@@ -340,7 +340,9 @@ pub fn derive_btc_addresses_from_xpubs(
     for addr_type in TYPES {
         let xpub = xpubs
             .xpub_for(addr_type)
-            .expect("BtcAccountXpubsInput covers all four BIP purposes");
+            .ok_or_else(|| {
+                Bip329Errors::InvalidKey(format!("no xpub for {addr_type:?}"))
+            })?;
         let chain = chains.entry(addr_type).or_insert_with(|| AddressChain {
             external: Vec::new(),
             internal: Vec::new(),
