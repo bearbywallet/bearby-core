@@ -186,8 +186,8 @@ impl WalletInit for Wallet {
                     crate::bitcoin_wallet::derive_sk_btc_address_chains(&sk_bytes, network)
                 })
                 .transpose()?
-                .map(|(chains, p2tr_addr)| {
-                    account.addr = p2tr_addr;
+                .map(|(chains, primary_addr)| {
+                    account.addr = primary_addr;
                     chains
                 })
         } else {

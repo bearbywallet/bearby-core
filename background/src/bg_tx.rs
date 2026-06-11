@@ -547,6 +547,7 @@ mod tests_background_transactions {
 
     use proto::{
         address::Address,
+        btc_utils::BtcAccountXpubsInput,
         tx::{TransactionMetadata, TransactionRequest},
     };
     use rand::RngExt;
@@ -1061,14 +1062,17 @@ mod tests_background_transactions {
         let new_account = data.get_accounts().unwrap().first().unwrap();
 
         assert_eq!(new_account.addr, account.addr);
-        let bip86_xpub = test_data::derive_bip86_xpub(
-            &wallet.reveal_mnemonic(&argon_seed).unwrap(),
+        let mnemonic = wallet.reveal_mnemonic(&argon_seed).unwrap();
+        let seed = mnemonic.to_seed(&empty_passphrase()).unwrap();
+        let xpubs = BtcAccountXpubsInput::from_seed(
+            &seed,
             account.account_type.value() as u32,
             net_config
                 .bitcoin_network()
                 .unwrap_or(bitcoin::Network::Bitcoin),
-        );
-        bg.rotate_btc_account(0, 0, &bip86_xpub).await.unwrap();
+        )
+        .unwrap();
+        bg.rotate_btc_account(0, 0, &xpubs).await.unwrap();
         let data = wallet.get_wallet_data().unwrap();
         let new_account = data.get_accounts().unwrap().first().unwrap();
 

@@ -365,7 +365,7 @@ mod tests_wallet_crypto {
     }
 
     #[tokio::test]
-    async fn test_reveal_keypair_bitcoin_bip86_p2tr() {
+    async fn test_reveal_keypair_bitcoin_bip84_p2wpkh() {
         let (storage, _dir) = setup_test_storage();
         let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
 
@@ -395,9 +395,9 @@ mod tests_wallet_crypto {
 
         assert!(matches!(keypair_addr, Address::Secp256k1Bitcoin(_)));
 
-        // Verify it's using P2tr (Taproot address starting with bc1p)
+        // Verify it's using P2WPKH (Native SegWit address starting with bc1q)
         let addr_str = keypair_addr.auto_format();
-        assert!(addr_str.starts_with("bc1p"));
+        assert!(addr_str.starts_with("bc1q"));
     }
 
     #[tokio::test]
@@ -532,6 +532,6 @@ mod tests_wallet_crypto {
         assert_eq!(account_addr, &keypair_addr);
 
         let addr_str = keypair_addr.auto_format();
-        assert!(addr_str.starts_with("tb1p"));
+        assert!(addr_str.starts_with("tb1q"));
     }
 }

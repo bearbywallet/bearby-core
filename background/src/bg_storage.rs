@@ -820,7 +820,7 @@ mod tests_background_storage {
         let data = wallet.get_wallet_data().unwrap();
 
         assert_eq!(data.slip44, BITCOIN);
-        assert_eq!(data.bip, DerivationPath::BIP86_PURPOSE);
+        assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
         assert_eq!(data.selected_account, 0);
         assert_eq!(data.chain_hash, btc.hash());
         assert_eq!(data.get_accounts().unwrap().len(), 2);
@@ -834,14 +834,14 @@ mod tests_background_storage {
 
         let btc = &data.slip44_accounts[&0];
         assert_eq!(btc.len(), 1);
-        assert!(btc.contains_key(&86));
+        assert!(btc.contains_key(&84));
 
-        let bip86_btc = &btc[&86];
-        assert_eq!(bip86_btc.len(), 2);
-        check_account(&bip86_btc[0], "acc 0", 0, "bcrt1");
-        check_account(&bip86_btc[1], "acc 1", 1, "bcrt1");
-        assert!(bip86_btc[0].pub_key.is_none());
-        assert!(bip86_btc[1].pub_key.is_none());
+        let bip84_btc = &btc[&84];
+        assert_eq!(bip84_btc.len(), 2);
+        check_account(&bip84_btc[0], "acc 0", 0, "bcrt1q");
+        check_account(&bip84_btc[1], "acc 1", 1, "bcrt1q");
+        assert!(bip84_btc[0].pub_key.is_none());
+        assert!(bip84_btc[1].pub_key.is_none());
 
         let eth = &data.slip44_accounts.get(&ETHEREUM).unwrap();
         assert_eq!(eth.len(), 1);
@@ -927,7 +927,7 @@ mod tests_background_storage {
         assert!(data.get_accounts().is_err());
 
         data.slip44 = 0;
-        data.bip = DerivationPath::BIP86_PURPOSE;
+        data.bip = DerivationPath::BIP84_PURPOSE;
         data.remove_account(1);
         for bip_map in data.slip44_accounts.values() {
             for accounts in bip_map.values() {

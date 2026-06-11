@@ -615,8 +615,8 @@ mod tests_background_wallet {
 
         let addr_str = account.addr.auto_format();
         assert!(
-            addr_str.starts_with("bcrt1p"),
-            "expected default P2tr regtest address, got: {}",
+            addr_str.starts_with("bcrt1q"),
+            "expected default P2WPKH regtest address, got: {}",
             addr_str
         );
 
@@ -635,8 +635,8 @@ mod tests_background_wallet {
             assert_eq!(chain.external.len(), 1, "{:?} external", addr_type);
             assert!(chain.internal.is_empty(), "{:?} internal", addr_type);
         }
-        let p2tr = chains.get(&bitcoin::AddressType::P2tr).unwrap();
-        assert_eq!(p2tr.external[0].address, account.addr);
+        let p2wpkh = chains.get(&bitcoin::AddressType::P2wpkh).unwrap();
+        assert_eq!(p2wpkh.external[0].address, account.addr);
 
         bg.sync_ftokens_balances(0).await.unwrap();
 

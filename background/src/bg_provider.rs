@@ -5,6 +5,7 @@ use crypto::{bip49::DerivationPath, slip44};
 use errors::{background::BackgroundError, wallet::WalletErrors};
 use network::{btc::BtcOperations, common::Provider, provider::NetworkProvider};
 use proto::address::Address;
+use proto::btc_utils::{AddressChain, BtcAccountXpubsInput, extend_address_pool};
 use rpc::network_config::ChainConfig;
 use secrecy::SecretString;
 use std::sync::Arc;
@@ -309,11 +310,72 @@ impl ProvidersManagement for Background {
             }
         }
 
+        if new_slip44 == slip44::BITCOIN {
+            if let Some(network) = provider.config.bitcoin_network() {
+                if let WalletTypes::SecretPhrase(_) = &data.wallet_type {
+                    try_extend_btc_pool_background(
+                        self,
+                        wallet_index,
+                        password,
+                        wallet,
+                        &data.biometric_type,
+                        data.get_accounts().map_or(0, |a| a.len()),
+                        chain_hash,
+                        network,
+                    )
+                    .await
+                    .ok();
+                }
+            }
+        }
+
         wallet.save_wallet_data(data)?;
         wallet.save_ftokens(&ftokens)?;
 
         Ok(())
     }
+}
+
+async fn try_extend_btc_pool_background(
+    bg: &Background,
+    wallet_index: usize,
+    password: Option<&SecretString>,
+    wallet: &wallet::Wallet,
+    biometric_type: &AuthMethod,
+    account_count: usize,
+    chain_hash: u64,
+    network: bitcoin::Network,
+) -> crate::Result<()> {
+    let seed = if *biometric_type != AuthMethod::None {
+        bg.unlock_wallet_with_session(wallet_index).await?
+    } else if let Some(pass) = password {
+        bg.unlock_wallet_with_password(pass, None, wallet_index)
+            .await?
+    } else {
+        return Err(BackgroundError::AuthenticationRequired);
+    };
+    let mnemonic = wallet.reveal_mnemonic(&seed)?;
+    let seed_secret = mnemonic
+        .to_seed(&wallet::empty_passphrase())
+        .map_err(|e| {
+            BackgroundError::WalletError(WalletErrors::BincodeError(format!("{e:?}")))
+        })?;
+    for account_index in 0..account_count {
+        let mut chains = wallet.get_btc_addresses(account_index, chain_hash)?;
+        if chains.values().any(AddressChain::pool_watermark_reached) {
+            let acct_idx = u32::try_from(account_index).map_err(|e| {
+                BackgroundError::WalletError(WalletErrors::BincodeError(e.to_string()))
+            })?;
+            let map_bip_err =
+                |e| BackgroundError::WalletError(WalletErrors::Bip329Error(e));
+            let xpubs = BtcAccountXpubsInput::from_seed(&seed_secret, acct_idx, network)
+                .map_err(map_bip_err)?;
+            extend_address_pool(&mut chains, &xpubs, account_index, network)
+                .map_err(map_bip_err)?;
+            wallet.save_btc_addresses(account_index, &chains, chain_hash)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -634,7 +696,7 @@ mod tests_providers {
         let data = wallet.get_wallet_data().unwrap();
         assert_eq!(data.slip44, btc.slip_44);
         assert_eq!(data.chain_hash, btc.hash());
-        assert_eq!(data.bip, DerivationPath::BIP86_PURPOSE);
+        assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
 
         let btc_accounts = data.get_accounts().unwrap();
         assert_eq!(btc_accounts.len(), 2);
@@ -685,7 +747,7 @@ mod tests_providers {
             .unwrap()
             .get_wallet_data()
             .unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP86_PURPOSE);
+        assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
 
         bg.select_accounts_chain(0, eth.hash(), Some(&password))
             .await
@@ -703,7 +765,7 @@ mod tests_providers {
             .unwrap()
             .get_wallet_data()
             .unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP86_PURPOSE);
+        assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
     }
 
     #[tokio::test]
@@ -742,7 +804,7 @@ mod tests_providers {
             .unwrap()
             .get_wallet_data()
             .unwrap();
-        assert_eq!(data.bip, DerivationPath::BIP86_PURPOSE);
+        assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
     }
 
     #[tokio::test]
@@ -823,7 +885,7 @@ mod tests_providers {
             .unwrap();
         assert_eq!(data.slip44, slip44::BITCOIN);
         assert_eq!(data.chain_hash, btc.hash());
-        assert_eq!(data.bip, DerivationPath::BIP86_PURPOSE);
+        assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
         assert!(data.slip44_accounts.contains_key(&slip44::BITCOIN));
         assert_eq!(data.get_accounts().unwrap().len(), 1);
 

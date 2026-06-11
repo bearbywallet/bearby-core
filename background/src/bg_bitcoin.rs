@@ -32,7 +32,7 @@ pub trait BitcoinManagement {
         &self,
         wallet_index: usize,
         account_index: usize,
-        bip86_xpub: &bitcoin::bip32::Xpub,
+        xpubs: &BtcAccountXpubsInput,
     ) -> std::result::Result<(), Self::Error>;
 
     /// Build a native-BTC deposit paying `amount_sat` to `vault`.
@@ -70,7 +70,7 @@ impl BitcoinManagement for Background {
         &self,
         wallet_index: usize,
         account_index: usize,
-        bip86_xpub: &bitcoin::bip32::Xpub,
+        xpubs: &BtcAccountXpubsInput,
     ) -> Result<()> {
         let wallet = self.get_wallet_by_index(wallet_index)?;
         let data = wallet.get_wallet_data()?;
@@ -85,7 +85,7 @@ impl BitcoinManagement for Background {
             .unwrap_or(U256::ZERO);
 
         wallet
-            .rotate_account(bip86_xpub, account_index, &provider.config)
+            .rotate_account(xpubs, account_index, &provider.config)
             .await?;
 
         let data = wallet.get_wallet_data()?;
@@ -249,8 +249,8 @@ mod tests_bg_bitcoin {
             let entry = pick_primary_btc_entry(&chains).unwrap();
             let addr_str = entry.address.auto_format();
             assert!(
-                addr_str.starts_with("bcrt1p") || addr_str.starts_with("tb1p"),
-                "expected P2TR address for ledger_index {}, got: {}",
+                addr_str.starts_with("bcrt1q") || addr_str.starts_with("tb1q"),
+                "expected P2WPKH address for ledger_index {}, got: {}",
                 li,
                 addr_str,
             );
@@ -295,8 +295,8 @@ mod tests_bg_bitcoin {
 
             let addr_str = acc.addr.auto_format();
             assert!(
-                addr_str.starts_with("bcrt1p") || addr_str.starts_with("tb1p"),
-                "pos={}: expected P2TR addr, got {}",
+                addr_str.starts_with("bcrt1q") || addr_str.starts_with("tb1q"),
+                "pos={}: expected P2WPKH addr, got {}",
                 pos,
                 addr_str,
             );
@@ -311,20 +311,20 @@ mod tests_bg_bitcoin {
                 pos,
             );
 
-            let p2tr = stored_chains.get(&bitcoin::AddressType::P2tr).unwrap();
+            let p2wpkh = stored_chains.get(&bitcoin::AddressType::P2wpkh).unwrap();
             assert!(
-                !p2tr.external.is_empty(),
-                "pos={} P2TR external chain must not be empty",
+                !p2wpkh.external.is_empty(),
+                "pos={} P2WPKH external chain must not be empty",
                 pos,
             );
 
             assert_eq!(
-                acc.addr, p2tr.external[0].address,
-                "pos={}: account addr must match first P2TR external entry",
+                acc.addr, p2wpkh.external[0].address,
+                "pos={}: account addr must match first P2WPKH external entry",
                 pos,
             );
 
-            for entry in p2tr.external.iter().chain(p2tr.internal.iter()) {
+            for entry in p2wpkh.external.iter().chain(p2wpkh.internal.iter()) {
                 let path_account = entry.path.get_account_index();
                 assert_eq!(
                     path_account, li as usize,
@@ -370,8 +370,8 @@ mod tests_bg_bitcoin {
             .get_btc_addresses(3, offline_btc_conf.hash())
             .unwrap();
         assert_eq!(stored_new.len(), 4);
-        let stored_p2tr = stored_new.get(&bitcoin::AddressType::P2tr).unwrap();
-        assert_eq!(stored_p2tr.external[0].address, appended.addr);
+        let stored_p2wpkh = stored_new.get(&bitcoin::AddressType::P2wpkh).unwrap();
+        assert_eq!(stored_p2wpkh.external[0].address, appended.addr);
 
         let eth_conf = gen_eth_mainnet_conf();
         let kp = KeyPair::gen_keccak256().unwrap();

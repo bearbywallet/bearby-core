@@ -20,6 +20,7 @@ use proto::{
     btc_utils::{
         create_btc_address, derive_btc_addresses_from_xpubs, derive_btc_chain_from_xpub,
         AddressChain, BtcAccountXpubsInput, BtcAddressEntry, ByteCodec, GAP_LIMIT,
+        POOL_SIZE_EXTERNAL,
     },
     secret_key::SecretKey,
     tx::{TransactionMetadata, TransactionReceipt},
@@ -41,31 +42,29 @@ pub async fn scan_btc_chains_for_xpubs(
     let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
     let provider = NetworkProvider::new(chain.clone());
 
-    let mut master: HashMap<bitcoin::AddressType, AddressChain> = HashMap::new();
+    let mut master: HashMap<bitcoin::AddressType, AddressChain> = HashMap::with_capacity(4);
     let mut next_start: u32 = 0;
     let mut scan_succeeded = false;
-    let mut last_scan_view: Option<HashMap<bitcoin::AddressType, AddressChain>> = None;
 
     for _ in 0..MAX_GAP_EXTENSIONS {
+        let window = if next_start == 0 { POOL_SIZE_EXTERNAL } else { GAP_LIMIT };
         derive_btc_addresses_from_xpubs(
             xpubs,
             account_index,
             network,
             next_start,
-            GAP_LIMIT,
+            window,
             &mut master,
         )
         .map_err(WalletErrors::Bip329Error)?;
-        next_start = next_start.saturating_add(GAP_LIMIT);
+        next_start = next_start.saturating_add(window);
 
-        let mut scan_view = master.clone();
-        match provider.batch_script_get_history(&mut scan_view).await {
+        match provider.batch_script_get_history(&mut master).await {
             Ok(()) => {
                 scan_succeeded = true;
-                let done = scan_view
+                let done = master
                     .values()
                     .all(|c| c.get_external().is_ok() && c.get_internal().is_ok());
-                last_scan_view = Some(scan_view);
                 if done {
                     break;
                 }
@@ -75,9 +74,8 @@ pub async fn scan_btc_chains_for_xpubs(
     }
 
     if scan_succeeded {
-        let mut result = last_scan_view.unwrap_or(master);
-        provider.batch_btc_list_unspent(&mut result).await.ok();
-        Ok(result)
+        provider.batch_btc_list_unspent(&mut master).await.ok();
+        Ok(master)
     } else {
         Ok(master)
     }
@@ -86,24 +84,26 @@ pub async fn scan_btc_chains_for_xpubs(
 pub fn pick_primary_btc_entry(
     chains: &HashMap<bitcoin::AddressType, AddressChain>,
 ) -> Result<BtcAddressEntry> {
-    let preferred_type = bitcoin::AddressType::P2tr;
+    let preferred_type = bitcoin::AddressType::P2wpkh;
 
-    let p2tr_fallback = || {
+    let segwit_fallback = || {
         chains
             .get(&preferred_type)
-            .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?
+            .ok_or_else(|| WalletErrors::BincodeError("P2WPKH chain missing".to_string()))?
             .external
             .first()
             .cloned()
-            .ok_or_else(|| WalletErrors::BincodeError("P2TR external chain is empty".to_string()))
+            .ok_or_else(|| {
+                WalletErrors::BincodeError("P2WPKH external chain is empty".to_string())
+            })
     };
 
     match chains.get(&preferred_type) {
         Some(chain) => match chain.get_external() {
             Ok(e) => Ok(e.clone()),
-            Err(_) => p2tr_fallback(),
+            Err(_) => segwit_fallback(),
         },
-        None => p2tr_fallback(),
+        None => segwit_fallback(),
     }
 }
 
@@ -200,7 +200,7 @@ pub fn derive_sk_btc_address_chains(
 
     let mut chains: HashMap<bitcoin::AddressType, AddressChain> =
         HashMap::with_capacity(FORMATS.len());
-    let mut p2tr_address: Option<Address> = None;
+    let mut primary_address: Option<Address> = None;
 
     for (addr_type, bip) in FORMATS {
         let btc_addr = create_btc_address(&pk_bytes, network, addr_type)
@@ -211,8 +211,8 @@ pub fn derive_sk_btc_address_chains(
             crypto::bip49::DerivationType::AddressIndex(0, 0, 0),
             bip,
         );
-        if addr_type == bitcoin::AddressType::P2tr {
-            p2tr_address = Some(address.clone());
+        if addr_type == bitcoin::AddressType::P2wpkh {
+            primary_address = Some(address.clone());
         }
         chains.insert(
             addr_type,
@@ -228,33 +228,31 @@ pub fn derive_sk_btc_address_chains(
         );
     }
 
-    let p2tr_address = p2tr_address.ok_or_else(|| {
-        WalletErrors::BincodeError("P2tr address missing after SK chain derivation".to_string())
+    let p2wpkh_address = primary_address.ok_or_else(|| {
+        WalletErrors::BincodeError("P2WPKH address missing after SK chain derivation".to_string())
     })?;
-    Ok((chains, p2tr_address))
+    Ok((chains, p2wpkh_address))
 }
 
-fn append_new_p2tr_address(
+fn append_new_change_address(
     chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
-    bip86_xpub: &bitcoin::bip32::Xpub,
+    xpubs: &BtcAccountXpubsInput,
     account_index: usize,
     network: bitcoin::Network,
+    addr_type: bitcoin::AddressType,
 ) -> Result<()> {
-    let p2tr = chains
-        .get_mut(&bitcoin::AddressType::P2tr)
-        .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?;
-    let next_index = p2tr.external.len() as u32;
-    derive_btc_chain_from_xpub(
-        bip86_xpub,
-        account_index,
-        bitcoin::AddressType::P2tr,
-        network,
-        next_index,
-        1,
-        p2tr,
-    )
-    .map_err(WalletErrors::Bip329Error)?;
-    Ok(())
+    let chain = chains
+        .get_mut(&addr_type)
+        .ok_or_else(|| {
+            WalletErrors::BincodeError(format!("{addr_type:?} chain missing"))
+        })?;
+    let next_index = u32::try_from(chain.internal.len())
+        .map_err(|_| WalletErrors::BincodeError("internal chain index overflow".to_string()))?;
+    let xpub = xpubs.xpub_for(addr_type).ok_or_else(|| {
+        WalletErrors::BincodeError(format!("no xpub for {addr_type:?}"))
+    })?;
+    derive_btc_chain_from_xpub(xpub, account_index, addr_type, network, next_index, 1, chain)
+        .map_err(WalletErrors::Bip329Error)
 }
 
 type BtcTransactionParts = (
@@ -338,16 +336,19 @@ pub fn build_unsigned_btc_transaction_with_extras(
         ));
     }
 
-    let p2tr_chain = chains
-        .get(&bitcoin::AddressType::P2tr)
-        .ok_or_else(|| WalletErrors::BincodeError("P2TR chain missing".to_string()))?;
+    let segwit_chain = chains
+        .get(&bitcoin::AddressType::P2wpkh)
+        .ok_or_else(|| WalletErrors::BincodeError("P2WPKH chain missing".to_string()))?;
 
-    let change_entry = match p2tr_chain.get_internal() {
+    let change_entry = match segwit_chain.get_internal() {
         Ok(entry) => entry,
-        Err(_) if p2tr_chain.external.len() == 1 && p2tr_chain.internal.is_empty() => {
-            &p2tr_chain.external[0]
-        }
-        Err(e) => return Err(e.into()),
+        Err(e) => match (segwit_chain.external.len(), segwit_chain.internal.is_empty()) {
+            (1, true) => segwit_chain
+                .external
+                .first()
+                .ok_or_else(|| WalletErrors::BincodeError("external chain empty".to_string()))?,
+            _ => return Err(e.into()),
+        },
     };
     let change_address = change_entry.address.clone();
     let change_script = change_address
@@ -374,7 +375,7 @@ pub fn build_unsigned_btc_transaction_with_extras(
         })
         .sum();
 
-    let change_output_vsize = output_vsize_for(bitcoin::AddressType::P2tr);
+    let change_output_vsize = output_vsize_for(bitcoin::AddressType::P2wpkh);
     let estimated_vsize_with_change = (input_vsize_sum
         + dest_output_vsize_sum
         + extras_vsize
@@ -525,7 +526,7 @@ pub trait BitcoinWallet {
 
     async fn rotate_account(
         &self,
-        bip86_xpub: &bitcoin::bip32::Xpub,
+        xpubs: &BtcAccountXpubsInput,
         account_index: usize,
         chain: &ChainConfig,
     ) -> std::result::Result<(), Self::Error>;
@@ -774,7 +775,7 @@ impl BitcoinWallet for Wallet {
         })?;
 
         let needs_new_change = chains
-            .get(&bitcoin::AddressType::P2tr)
+            .get(&bitcoin::AddressType::P2wpkh)
             .map(|c| c.get_internal().is_err())
             .unwrap_or(true);
 
@@ -782,7 +783,13 @@ impl BitcoinWallet for Wallet {
             let xpubs =
                 BtcAccountXpubsInput::from_seed(&seed_secret, account_index as u32, network)
                     .map_err(WalletErrors::Bip329Error)?;
-            append_new_p2tr_address(&mut chains, &xpubs.bip86_xpub, account_index, network)?;
+            append_new_change_address(
+                &mut chains,
+                &xpubs,
+                account_index,
+                network,
+                bitcoin::AddressType::P2wpkh,
+            )?;
             self.save_btc_addresses(account_index, &chains, data.chain_hash)?;
         }
 
@@ -839,23 +846,42 @@ impl BitcoinWallet for Wallet {
 
     async fn rotate_account(
         &self,
-        bip86_xpub: &bitcoin::bip32::Xpub,
+        xpubs: &BtcAccountXpubsInput,
         account_index: usize,
         chain: &ChainConfig,
     ) -> Result<()> {
         let mut chains = self.get_btc_addresses(account_index, chain.hash())?;
         let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
+        let primary_type = bitcoin::AddressType::P2wpkh;
 
-        append_new_p2tr_address(&mut chains, bip86_xpub, account_index, network)?;
-        self.save_btc_addresses(account_index, &chains, chain.hash())?;
-
-        let new_addr = chains
-            .get(&bitcoin::AddressType::P2tr)
-            .and_then(|c| c.external.last())
-            .map(|e| e.address.clone())
-            .ok_or_else(|| {
-                WalletErrors::BincodeError("P2TR external address missing".to_string())
+        let p2wpkh = chains
+            .get_mut(&primary_type)
+            .ok_or_else(|| WalletErrors::BincodeError("P2WPKH chain missing".to_string()))?;
+        let next_index = u32::try_from(p2wpkh.external.len())
+            .map_err(|_| {
+                WalletErrors::BincodeError("external chain index overflow".to_string())
             })?;
+        let xpub = xpubs.xpub_for(primary_type).ok_or_else(|| {
+            WalletErrors::BincodeError("no xpub for P2WPKH".to_string())
+        })?;
+        derive_btc_chain_from_xpub(
+            xpub,
+            account_index,
+            primary_type,
+            network,
+            next_index,
+            1,
+            p2wpkh,
+        )
+        .map_err(WalletErrors::Bip329Error)?;
+
+        let new_addr = p2wpkh
+            .external
+            .last()
+            .ok_or_else(|| WalletErrors::BincodeError("P2WPKH external empty".to_string()))?
+            .address
+            .clone();
+        self.save_btc_addresses(account_index, &chains, chain.hash())?;
 
         let mut data = self.get_wallet_data()?;
         data.get_mut_account(account_index)?.addr = new_addr;
@@ -897,9 +923,12 @@ impl BitcoinWallet for Wallet {
             }
         }
 
-        if let Some(p2tr) = chains.get_mut(&bitcoin::AddressType::P2tr) {
+        for primary_type in [bitcoin::AddressType::P2wpkh, bitcoin::AddressType::P2tr] {
+            let Some(primary_chain) = chains.get_mut(&primary_type) else {
+                continue;
+            };
             for output in &signed_tx.output {
-                for entry in p2tr.internal.iter_mut() {
+                for entry in primary_chain.internal.iter_mut() {
                     let entry_script = entry
                         .address
                         .to_bitcoin_addr()
@@ -991,13 +1020,13 @@ impl BitcoinWallet for Wallet {
                     _ => return Ok(()),
                 };
 
-                let (mut chains, p2tr_addr) = derive_sk_btc_address_chains(&sk_bytes, network)?;
+                let (mut chains, primary_addr) = derive_sk_btc_address_chains(&sk_bytes, network)?;
 
                 let provider = NetworkProvider::new(chain.clone());
                 provider.batch_script_get_history(&mut chains).await.ok();
 
                 self.save_btc_addresses(0, &chains, chain.hash())?;
-                data.get_mut_account(0)?.addr = p2tr_addr;
+                data.get_mut_account(0)?.addr = primary_addr;
                 self.save_wallet_data(data)?;
                 self.storage.flush()?;
 

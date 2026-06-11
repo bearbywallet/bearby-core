@@ -12,6 +12,8 @@ use crate::address::Address;
 type Result<T> = std::result::Result<T, PubKeyError>;
 
 pub const GAP_LIMIT: u32 = 20;
+pub const POOL_SIZE_EXTERNAL: u32 = 100;
+const POOL_LOW_WATERMARK: usize = GAP_LIMIT as usize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BtcAccountXpubsInput {
@@ -55,6 +57,22 @@ pub struct AddressChain {
 }
 
 impl AddressChain {
+    #[must_use]
+    pub fn unused_external_count(&self) -> usize {
+        self.external.iter().filter(|e| e.history.is_empty()).count()
+    }
+
+    #[must_use]
+    pub fn unused_internal_count(&self) -> usize {
+        self.internal.iter().filter(|e| e.history.is_empty()).count()
+    }
+
+    #[must_use]
+    pub fn pool_watermark_reached(&self) -> bool {
+        self.unused_external_count() < POOL_LOW_WATERMARK
+            || self.unused_internal_count() < POOL_LOW_WATERMARK / 2
+    }
+
     pub fn get_external(&self) -> Result<&BtcAddressEntry> {
         self.external
             .iter()
@@ -263,6 +281,43 @@ pub fn derive_btc_chain_from_xpub(
     for idx in start_index..end {
         chain.external.push(make_entry(&external_xpub, 0, idx)?);
         chain.internal.push(make_entry(&internal_xpub, 1, idx)?);
+    }
+    Ok(())
+}
+
+pub fn extend_address_pool(
+    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    xpubs: &BtcAccountXpubsInput,
+    account_index: usize,
+    network: bitcoin::Network,
+) -> std::result::Result<(), Bip329Errors> {
+    const TYPES: [bitcoin::AddressType; 4] = [
+        bitcoin::AddressType::P2pkh,
+        bitcoin::AddressType::P2sh,
+        bitcoin::AddressType::P2wpkh,
+        bitcoin::AddressType::P2tr,
+    ];
+
+    for addr_type in TYPES {
+        let Some(chain) = chains.get_mut(&addr_type) else {
+            continue;
+        };
+        let start_index = u32::try_from(chain.external.len())
+            .map_err(|_| Bip329Errors::InvalidKey("address pool overflow".to_string()))?;
+        let xpub = xpubs
+            .xpub_for(addr_type)
+            .ok_or_else(|| {
+                Bip329Errors::InvalidKey(format!("no xpub for {addr_type:?}"))
+            })?;
+        derive_btc_chain_from_xpub(
+            xpub,
+            account_index,
+            addr_type,
+            network,
+            start_index,
+            POOL_SIZE_EXTERNAL,
+            chain,
+        )?;
     }
     Ok(())
 }

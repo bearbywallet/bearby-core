@@ -10,7 +10,7 @@ use errors::tx::TransactionErrors;
 use history::status::TransactionStatus;
 use history::transaction::HistoricalTransaction;
 use proto::address::Address;
-use proto::btc_utils::{AddressChain, ByteCodec, Utxo};
+use proto::btc_utils::{AddressChain, BtcAddressEntry, ByteCodec, Utxo};
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use rand::seq::SliceRandom;
 use rpc::common::NetworkConfigTrait;
@@ -176,6 +176,10 @@ pub trait BtcOperations {
         chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
     ) -> Result<()>;
     async fn batch_btc_list_unspent(
+        &self,
+        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    ) -> Result<()>;
+    async fn refresh_frontier_history(
         &self,
         chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
     ) -> Result<()>;
@@ -440,6 +444,8 @@ impl BtcOperations for NetworkProvider {
 
         if no_recorded_balance && no_history {
             self.batch_script_get_history(chains).await?;
+        } else {
+            self.refresh_frontier_history(chains).await?;
         }
 
         self.batch_btc_list_unspent(chains).await?;
@@ -549,7 +555,10 @@ impl BtcOperations for NetworkProvider {
         }
 
         chains.retain(|addr_type, chain| {
-            if *addr_type == bitcoin::AddressType::P2tr {
+            if matches!(
+                *addr_type,
+                bitcoin::AddressType::P2tr | bitcoin::AddressType::P2wpkh
+            ) {
                 return true;
             }
             chain.external.iter().any(|e| !e.history.is_empty())
@@ -644,6 +653,116 @@ impl BtcOperations for NetworkProvider {
                 })?;
                 entry.utxos = unspents.into_iter().map(Utxo::from).collect();
             }
+        }
+
+        Ok(())
+    }
+
+    async fn refresh_frontier_history(
+        &self,
+        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    ) -> Result<()> {
+        if chains.is_empty() {
+            return Ok(());
+        }
+
+        let mut keys: Vec<bitcoin::AddressType> = chains.keys().copied().collect();
+        keys.sort_by_key(|k| k.to_byte());
+
+        // Pass 1: collect layout (indices only, exact capacity)
+        let mut layout: Vec<(bitcoin::AddressType, Vec<usize>, Vec<usize>)> =
+            Vec::with_capacity(keys.len());
+        for &key in &keys {
+            let Some(chain) = chains.get(&key) else {
+                continue;
+            };
+            let mut ext_idx = Vec::with_capacity(chain.external.len());
+            ext_idx.extend(
+                chain
+                    .external
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| e.history.is_empty().then_some(i)),
+            );
+            let mut int_idx = Vec::with_capacity(chain.internal.len());
+            int_idx.extend(
+                chain
+                    .internal
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| e.history.is_empty().then_some(i)),
+            );
+            layout.push((key, ext_idx, int_idx));
+        }
+
+        let scripts_capacity: usize = layout.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+        if scripts_capacity == 0 {
+            return Ok(());
+        }
+
+        // Pass 2: build scripts from layout
+        let mut scripts: Vec<bitcoin::ScriptBuf> = Vec::with_capacity(scripts_capacity);
+        let mut push_scripts = |slice: &[BtcAddressEntry], indices: &[usize]| -> Result<()> {
+            for &i in indices {
+                let Some(entry) = slice.get(i) else {
+                    continue;
+                };
+                let addr = entry
+                    .address
+                    .to_bitcoin_addr()
+                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
+                scripts.push(addr.script_pubkey());
+            }
+            Ok(())
+        };
+        for (key, ext_idx, int_idx) in &layout {
+            let Some(chain) = chains.get(key) else {
+                continue;
+            };
+            push_scripts(&chain.external, ext_idx)?;
+            push_scripts(&chain.internal, int_idx)?;
+        }
+
+        let script_refs: Vec<&bitcoin::Script> = scripts.iter().map(|s| s.as_ref()).collect();
+        let mut results = self.with_electrum_client(|client| {
+            let mut all: Vec<Vec<electrum_client::GetHistoryRes>> =
+                Vec::with_capacity(script_refs.len());
+            for chunk in script_refs.chunks(HISTORY_BATCH_CHUNK) {
+                let batch = client.batch_script_get_history(chunk).map_err(|e| {
+                    NetworkErrors::RPCError(format!("frontier history: {e}"))
+                })?;
+                all.extend(batch);
+            }
+            Ok(all)
+        })?;
+
+        let mut cursor = 0usize;
+        for (addr_type, ext_idx, int_idx) in &layout {
+            let Some(chain) = chains.get_mut(addr_type) else {
+                continue;
+            };
+            let mut apply_history = |slice: &mut [BtcAddressEntry], indices: &[usize],
+                                     label: &str|
+             -> Result<()> {
+                for &i in indices {
+                    let Some(slot) = results.get_mut(cursor) else {
+                        return Err(NetworkErrors::RPCError(format!(
+                            "results/scripts length mismatch in {label}_idx"
+                        )));
+                    };
+                    let history = std::mem::take(slot);
+                    cursor += 1;
+                    if !history.is_empty() {
+                        if let Some(entry) = slice.get_mut(i) {
+                            entry.history =
+                                history.into_iter().map(|h| h.tx_hash).collect();
+                        }
+                    }
+                }
+                Ok(())
+            };
+            apply_history(&mut chain.external, ext_idx, "ext")?;
+            apply_history(&mut chain.internal, int_idx, "int")?;
         }
 
         Ok(())

@@ -70,7 +70,7 @@ impl DerivationPath {
             _ => DerivationType::AddressIndex(params.0, params.1, params.2),
         };
         let bip = match slip44 {
-            super::slip44::BITCOIN => Self::BIP86_PURPOSE,
+            super::slip44::BITCOIN => Self::BIP84_PURPOSE,
             _ => Self::BIP44_PURPOSE,
         };
 
@@ -142,7 +142,7 @@ impl DerivationPath {
 
     pub fn default_bip(slip44: u32) -> u32 {
         match slip44 {
-            super::slip44::BITCOIN => Self::BIP86_PURPOSE,
+            super::slip44::BITCOIN => Self::BIP84_PURPOSE,
             _ => Self::BIP44_PURPOSE,
         }
     }

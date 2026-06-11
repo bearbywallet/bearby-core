@@ -428,6 +428,7 @@ mod tests_background_tokens {
 
     use history::status::TransactionStatus;
     use network::btc::BtcOperations;
+    use proto::btc_utils::BtcAccountXpubsInput;
     use rand::RngExt;
     use secrecy::SecretString;
     use serde_json::Value;
@@ -805,14 +806,17 @@ mod tests_background_tokens {
         let rotated_account = data.get_accounts().unwrap().get(from_index).unwrap();
         assert_eq!(rotated_account.addr, from_account.addr);
 
-        let bip86_xpub = test_data::derive_bip86_xpub(
-            &wallet_check.reveal_mnemonic(&argon_seed).unwrap(),
+        let mnemonic = wallet_check.reveal_mnemonic(&argon_seed).unwrap();
+        let seed = mnemonic.to_seed(&empty_passphrase()).unwrap();
+        let xpubs = BtcAccountXpubsInput::from_seed(
+            &seed,
             from_account.account_type.value() as u32,
             net_config
                 .bitcoin_network()
                 .unwrap_or(bitcoin::Network::Bitcoin),
-        );
-        bg.rotate_btc_account(0, from_index, &bip86_xpub)
+        )
+        .unwrap();
+        bg.rotate_btc_account(0, from_index, &xpubs)
             .await
             .unwrap();
 
