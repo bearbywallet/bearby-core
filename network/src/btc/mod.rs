@@ -117,14 +117,18 @@ fn parse_fee_histogram(value: &serde_json::Value) -> Option<(u64, u64, u64)> {
     Some((slow_rate, market_rate, fast_rate))
 }
 
+fn sorted_chain_keys(
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
+) -> Vec<bitcoin::AddressType> {
+    let mut keys: Vec<_> = chains.keys().copied().collect();
+    keys.sort_by_key(|k| k.to_byte());
+    keys
+}
+
 fn build_scripts_and_layout(
     chains: &HashMap<bitcoin::AddressType, AddressChain>,
 ) -> crate::Result<ScriptsAndLayout> {
-    let keys: Vec<bitcoin::AddressType> = {
-        let mut k: Vec<_> = chains.keys().copied().collect();
-        k.sort_by_key(|k| k.to_byte());
-        k
-    };
+    let keys = sorted_chain_keys(chains);
     let scripts_capacity: usize = chains
         .values()
         .map(|c| c.external.len() + c.internal.len())
@@ -647,35 +651,27 @@ impl BtcOperations for NetworkProvider {
             return Ok(());
         }
 
-        let keys: Vec<bitcoin::AddressType> = {
-            let mut k: Vec<_> = chains.keys().copied().collect();
-            k.sort_by_key(|k| k.to_byte());
-            k
-        };
+        let keys = sorted_chain_keys(chains);
 
         // Pass 1: collect layout (indices only, exact capacity)
+        let frontier_indices = |entries: &[BtcAddressEntry]| -> Vec<usize> {
+            let mut idx = Vec::with_capacity(entries.len());
+            idx.extend(
+                entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| e.history.is_empty().then_some(i)),
+            );
+            idx
+        };
         let mut layout: Vec<(bitcoin::AddressType, Vec<usize>, Vec<usize>)> =
             Vec::with_capacity(keys.len());
         for &key in &keys {
             let Some(chain) = chains.get(&key) else {
                 continue;
             };
-            let mut ext_idx = Vec::with_capacity(chain.external.len());
-            ext_idx.extend(
-                chain
-                    .external
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, e)| e.history.is_empty().then_some(i)),
-            );
-            let mut int_idx = Vec::with_capacity(chain.internal.len());
-            int_idx.extend(
-                chain
-                    .internal
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, e)| e.history.is_empty().then_some(i)),
-            );
+            let ext_idx = frontier_indices(&chain.external);
+            let int_idx = frontier_indices(&chain.internal);
             layout.push((key, ext_idx, int_idx));
         }
 

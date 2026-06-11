@@ -35,9 +35,9 @@ impl From<electrum_client::ListUnspentRes> for Utxo {
     fn from(res: electrum_client::ListUnspentRes) -> Self {
         Self {
             txid: res.tx_hash,
-            vout: res.tx_pos as u32,
+            vout: u32::try_from(res.tx_pos).unwrap_or(u32::MAX),
             value: res.value,
-            height: res.height as u32,
+            height: u32::try_from(res.height).unwrap_or(0),
         }
     }
 }
