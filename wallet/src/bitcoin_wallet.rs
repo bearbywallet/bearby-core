@@ -293,9 +293,15 @@ pub fn build_unsigned_btc_transaction_with_extras(
     let mut sorted_entries: Vec<(&bitcoin::AddressType, &AddressChain)> = chains.iter().collect();
     sorted_entries.sort_by_key(|(k, _)| k.to_byte());
 
-    let mut inputs: Vec<TxIn> = Vec::new();
-    let mut witness_utxos: Vec<TxOut> = Vec::new();
-    let mut input_meta: Vec<(bitcoin::AddressType, DerivationPath)> = Vec::new();
+    let total_utxos: usize = sorted_entries
+        .iter()
+        .flat_map(|(_, chain)| chain.external.iter().chain(chain.internal.iter()))
+        .map(|e| e.utxos.len())
+        .sum();
+
+    let mut inputs: Vec<TxIn> = Vec::with_capacity(total_utxos);
+    let mut witness_utxos: Vec<TxOut> = Vec::with_capacity(total_utxos);
+    let mut input_meta: Vec<(bitcoin::AddressType, DerivationPath)> = Vec::with_capacity(total_utxos);
     let mut total_input: u64 = 0;
     let mut input_vsize_sum: usize = 0;
 
@@ -808,8 +814,6 @@ impl BitcoinWallet for Wallet {
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)?;
         let secp = bitcoin::secp256k1::Secp256k1::new();
 
-        let prevouts: Vec<bitcoin::TxOut> = witness_utxos.clone();
-
         for (i, (addr_type, path)) in input_meta.iter().enumerate().take(psbt.inputs.len()) {
             let sk = proto::bip32::derive_private_key(&seed_secret, &path.get_path())
                 .map_err(WalletErrors::Bip329Error)?;
@@ -823,7 +827,7 @@ impl BitcoinWallet for Wallet {
                 &secret_key,
                 &public_key,
                 *addr_type,
-                &prevouts,
+                &witness_utxos,
             )
             .map_err(|e| WalletErrors::BincodeError(format!("sign input {}: {:?}", i, e)))?;
         }

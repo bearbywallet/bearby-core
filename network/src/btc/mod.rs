@@ -47,11 +47,15 @@ fn calculate_tx_vsize(tx: &TransactionRequest) -> u64 {
     }
 }
 
+fn f64_to_sat(v: f64) -> u64 {
+    v.max(0.0).min(u64::MAX as f64).ceil() as u64
+}
+
 fn btc_fee_rate_to_sat_per_byte(fee_btc: f64) -> u64 {
     if fee_btc < 0.0 {
-        (DEFAULT_FEE_RATE_BTC * SATOSHIS_PER_BTC / BYTES_PER_KB) as u64
+        f64_to_sat(DEFAULT_FEE_RATE_BTC * SATOSHIS_PER_BTC / BYTES_PER_KB)
     } else {
-        (fee_btc * SATOSHIS_PER_BTC / BYTES_PER_KB) as u64
+        f64_to_sat(fee_btc * SATOSHIS_PER_BTC / BYTES_PER_KB)
     }
 }
 
@@ -110,9 +114,9 @@ fn parse_fee_histogram(value: &serde_json::Value) -> Option<(u64, u64, u64)> {
         min_fee_rate = 1.0;
     }
 
-    let slow_rate = min_fee_rate.max(1.0).ceil() as u64;
-    let market_rate = (min_fee_rate * 1.10).ceil() as u64;
-    let fast_rate = (min_fee_rate * 1.15).ceil() as u64;
+    let slow_rate = f64_to_sat(min_fee_rate.max(1.0));
+    let market_rate = f64_to_sat(min_fee_rate * 1.10);
+    let fast_rate = f64_to_sat(min_fee_rate * 1.15);
 
     Some((slow_rate, market_rate, fast_rate))
 }
