@@ -7,7 +7,7 @@ use crate::argon2::ArgonParams;
 pub enum TokenQuotesAPIOptions {
     None,
     #[default]
-    CryptoCompare,
+    BearbyRates,
     Coingecko,
 }
 
@@ -60,7 +60,7 @@ impl TokenQuotesAPIOptions {
     pub fn from_code(value: u8) -> Self {
         match value {
             0 => Self::None,
-            1 => Self::CryptoCompare,
+            1 => Self::BearbyRates,
             2 => Self::Coingecko,
             _ => Self::None,
         }
@@ -69,7 +69,7 @@ impl TokenQuotesAPIOptions {
     pub fn code(&self) -> u8 {
         match self {
             Self::None => 0,
-            Self::CryptoCompare => 1,
+            Self::BearbyRates => 1,
             Self::Coingecko => 1,
         }
     }
@@ -80,7 +80,7 @@ impl std::fmt::Display for TokenQuotesAPIOptions {
         match self {
             TokenQuotesAPIOptions::None => write!(f, "None"),
             TokenQuotesAPIOptions::Coingecko => write!(f, "Coingecko"),
-            TokenQuotesAPIOptions::CryptoCompare => write!(f, "CryptoCompare"),
+            TokenQuotesAPIOptions::BearbyRates => write!(f, "CryptoCompare"),
         }
     }
 }
