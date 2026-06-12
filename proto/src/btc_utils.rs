@@ -59,12 +59,18 @@ pub struct AddressChain {
 impl AddressChain {
     #[must_use]
     pub fn unused_external_count(&self) -> usize {
-        self.external.iter().filter(|e| e.history.is_empty()).count()
+        self.external
+            .iter()
+            .filter(|e| e.history.is_empty())
+            .count()
     }
 
     #[must_use]
     pub fn unused_internal_count(&self) -> usize {
-        self.internal.iter().filter(|e| e.history.is_empty()).count()
+        self.internal
+            .iter()
+            .filter(|e| e.history.is_empty())
+            .count()
     }
 
     #[must_use]
@@ -88,6 +94,34 @@ impl AddressChain {
             .min_by_key(|e| e.path.get_address_index())
             .ok_or(PubKeyError::NoUnusedAddress)
     }
+}
+
+fn last_used_index(entries: &[BtcAddressEntry]) -> Option<usize> {
+    entries.iter().rposition(|e| !e.history.is_empty())
+}
+
+/// Unused entries inside the BIP44 gap window, including holes before the
+/// last used index. The wallet hands out the lowest-index unused address, so
+/// sparse history means deposits can still land below `last_used + GAP_LIMIT`.
+#[must_use]
+pub fn gap_window_indices(entries: &[BtcAddressEntry]) -> Vec<usize> {
+    let end = entries.len().min(
+        last_used_index(entries)
+            .map_or(0, |i| i.saturating_add(1))
+            .saturating_add(GAP_LIMIT as usize),
+    );
+    (0..end)
+        .filter(|&i| entries.get(i).is_some_and(|e| e.history.is_empty()))
+        .collect()
+}
+
+#[must_use]
+pub fn used_indices(entries: &[BtcAddressEntry]) -> Vec<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| (!e.history.is_empty()).then_some(i))
+        .collect()
 }
 
 pub trait ByteCodec: Sized {
@@ -165,7 +199,7 @@ pub fn create_btc_address(
                 .map_err(|_| PubKeyError::InvalidKeyType)?
         }
         bitcoin::AddressType::P2tr => {
-            use bitcoin::secp256k1::{SECP256K1, XOnlyPublicKey};
+            use bitcoin::secp256k1::{XOnlyPublicKey, SECP256K1};
             let x_only_pk = XOnlyPublicKey::from(compressed_pk.0);
             let secp = &SECP256K1;
             bitcoin::Address::p2tr(secp, x_only_pk, None, hrp)
@@ -306,9 +340,7 @@ pub fn extend_address_pool(
             .map_err(|_| Bip329Errors::InvalidKey("address pool overflow".to_string()))?;
         let xpub = xpubs
             .xpub_for(addr_type)
-            .ok_or_else(|| {
-                Bip329Errors::InvalidKey(format!("no xpub for {addr_type:?}"))
-            })?;
+            .ok_or_else(|| Bip329Errors::InvalidKey(format!("no xpub for {addr_type:?}")))?;
         derive_btc_chain_from_xpub(
             xpub,
             account_index,
@@ -340,9 +372,7 @@ pub fn derive_btc_addresses_from_xpubs(
     for addr_type in TYPES {
         let xpub = xpubs
             .xpub_for(addr_type)
-            .ok_or_else(|| {
-                Bip329Errors::InvalidKey(format!("no xpub for {addr_type:?}"))
-            })?;
+            .ok_or_else(|| Bip329Errors::InvalidKey(format!("no xpub for {addr_type:?}")))?;
         let chain = chains.entry(addr_type).or_insert_with(|| AddressChain {
             external: Vec::new(),
             internal: Vec::new(),
@@ -523,6 +553,75 @@ mod tests {
     fn dummy_txid() -> bitcoin::Txid {
         bitcoin::Txid::from_str("76464c2b9e2af4d63ef38a77964b3b77e629dddefc5cb9eb1a3645b1608b790f")
             .unwrap()
+    }
+
+    #[test]
+    fn test_gap_window_indices_starts_after_last_used_index() {
+        let (xpubs, _) = test_xpubs();
+        let mut map =
+            generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, POOL_SIZE_EXTERNAL);
+        let Some(chain) = map.get_mut(&bitcoin::AddressType::P2wpkh) else {
+            panic!("missing P2WPKH chain");
+        };
+        let txid = dummy_txid();
+        for index in [2usize, 7usize] {
+            if let Some(entry) = chain.external.get_mut(index) {
+                entry.history = vec![txid];
+            }
+        }
+
+        let indices = gap_window_indices(&chain.external);
+        let mut expected = Vec::with_capacity(26);
+        expected.extend([0usize, 1, 3, 4, 5, 6]);
+        expected.extend(8..28);
+        assert_eq!(indices, expected);
+    }
+
+    #[test]
+    fn test_gap_window_indices_caps_at_pool_end() {
+        let (xpubs, _) = test_xpubs();
+        let mut map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 25);
+        let Some(chain) = map.get_mut(&bitcoin::AddressType::P2wpkh) else {
+            panic!("missing P2WPKH chain");
+        };
+        if let Some(entry) = chain.external.get_mut(23) {
+            entry.history = vec![dummy_txid()];
+        }
+
+        let mut expected: Vec<usize> = (0..23).collect();
+        expected.push(24);
+        assert_eq!(gap_window_indices(&chain.external), expected);
+    }
+
+    #[test]
+    fn test_gap_window_indices_full_window_when_chain_unused() {
+        let (xpubs, _) = test_xpubs();
+        let map =
+            generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, POOL_SIZE_EXTERNAL);
+        let Some(chain) = map.get(&bitcoin::AddressType::P2wpkh) else {
+            panic!("missing P2WPKH chain");
+        };
+
+        let indices = gap_window_indices(&chain.external);
+        let expected: Vec<usize> = (0..GAP_LIMIT as usize).collect();
+        assert_eq!(indices, expected);
+    }
+
+    #[test]
+    fn test_used_indices_returns_only_entries_with_history() {
+        let (xpubs, _) = test_xpubs();
+        let mut map = generate_test_addresses(&xpubs, 0, bitcoin::Network::Bitcoin, 0, 5);
+        let Some(chain) = map.get_mut(&bitcoin::AddressType::P2wpkh) else {
+            panic!("missing P2WPKH chain");
+        };
+        let txid = dummy_txid();
+        for index in [1usize, 3usize] {
+            if let Some(entry) = chain.external.get_mut(index) {
+                entry.history = vec![txid];
+            }
+        }
+
+        assert_eq!(used_indices(&chain.external), vec![1, 3]);
     }
 
     #[test]

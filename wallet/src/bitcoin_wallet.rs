@@ -47,7 +47,11 @@ pub async fn scan_btc_chains_for_xpubs(
     let mut scan_succeeded = false;
 
     for _ in 0..MAX_GAP_EXTENSIONS {
-        let window = if next_start == 0 { POOL_SIZE_EXTERNAL } else { GAP_LIMIT };
+        let window = if next_start == 0 {
+            POOL_SIZE_EXTERNAL
+        } else {
+            GAP_LIMIT
+        };
         derive_btc_addresses_from_xpubs(
             xpubs,
             account_index,
@@ -113,18 +117,17 @@ pub fn pick_entry_with_most_utxo(
             let total: u64 = entry.utxos.iter().map(|u| u.value).sum();
             (entry, total)
         })
-        .fold(None, |best: Option<(&BtcAddressEntry, u64)>, (entry, total)| {
-            match best {
+        .fold(
+            None,
+            |best: Option<(&BtcAddressEntry, u64)>, (entry, total)| match best {
                 None => Some((entry, total)),
                 Some((_, max)) if total > max => Some((entry, total)),
                 _ => best,
-            }
-        })
+            },
+        )
         .map(|(entry, _)| entry.clone())
         .ok_or_else(|| {
-            WalletErrors::BincodeError(
-                "No entries with UTXOs across any address chain".to_string(),
-            )
+            WalletErrors::BincodeError("No entries with UTXOs across any address chain".to_string())
         })
 }
 
@@ -245,11 +248,19 @@ pub fn append_new_change_address(
     });
     let next_index = u32::try_from(chain.internal.len())
         .map_err(|_| WalletErrors::BincodeError("internal chain index overflow".to_string()))?;
-    let xpub = xpubs.xpub_for(addr_type).ok_or_else(|| {
-        WalletErrors::BincodeError(format!("no xpub for {addr_type:?}"))
-    })?;
-    derive_btc_chain_from_xpub(xpub, account_index, addr_type, network, next_index, 1, chain)
-        .map_err(WalletErrors::Bip329Error)
+    let xpub = xpubs
+        .xpub_for(addr_type)
+        .ok_or_else(|| WalletErrors::BincodeError(format!("no xpub for {addr_type:?}")))?;
+    derive_btc_chain_from_xpub(
+        xpub,
+        account_index,
+        addr_type,
+        network,
+        next_index,
+        1,
+        chain,
+    )
+    .map_err(WalletErrors::Bip329Error)
 }
 
 type BtcTransactionParts = (
@@ -279,6 +290,13 @@ pub fn build_unsigned_btc_transaction_with_extras(
         Transaction, TxIn, TxOut, Witness,
     };
 
+    struct UtxoCandidate<'a> {
+        utxo: &'a proto::btc_utils::Utxo,
+        addr_type: bitcoin::AddressType,
+        path: DerivationPath,
+        script: bitcoin::ScriptBuf,
+    }
+
     if let Some(bad) = extra_outputs.iter().find(|o| o.value.to_sat() != 0) {
         return Err(WalletErrors::BincodeError(format!(
             "extra_outputs must be zero-value (got {} sats)",
@@ -295,45 +313,29 @@ pub fn build_unsigned_btc_transaction_with_extras(
         .map(|e| e.utxos.len())
         .sum();
 
-    let mut inputs: Vec<TxIn> = Vec::with_capacity(total_utxos);
-    let mut witness_utxos: Vec<TxOut> = Vec::with_capacity(total_utxos);
-    let mut input_meta: Vec<(bitcoin::AddressType, DerivationPath)> = Vec::with_capacity(total_utxos);
-    let mut total_input: u64 = 0;
-    let mut input_vsize_sum: usize = 0;
-
+    let mut candidates: Vec<UtxoCandidate<'_>> = Vec::with_capacity(total_utxos);
     for (addr_type, chain) in sorted_entries {
         for entry in chain.external.iter().chain(chain.internal.iter()) {
             if entry.utxos.is_empty() {
                 continue;
             }
-            let script_pubkey = entry
+            let script = entry
                 .address
                 .to_bitcoin_addr()
                 .map_err(|e| WalletErrors::BincodeError(e.to_string()))?
                 .script_pubkey();
-            let in_vs = input_vsize_for(*addr_type);
             for utxo in &entry.utxos {
-                inputs.push(TxIn {
-                    previous_output: OutPoint {
-                        txid: utxo.txid,
-                        vout: utxo.vout,
-                    },
-                    script_sig: ScriptBuf::new(),
-                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                    witness: Witness::new(),
+                candidates.push(UtxoCandidate {
+                    utxo,
+                    addr_type: *addr_type,
+                    path: entry.path,
+                    script: script.clone(),
                 });
-                witness_utxos.push(TxOut {
-                    value: Amount::from_sat(utxo.value),
-                    script_pubkey: script_pubkey.clone(),
-                });
-                input_meta.push((*addr_type, entry.path));
-                total_input = total_input.saturating_add(utxo.value);
-                input_vsize_sum = input_vsize_sum.saturating_add(in_vs);
             }
         }
     }
 
-    if inputs.is_empty() {
+    if candidates.is_empty() {
         return Err(WalletErrors::BincodeError(
             "No UTXOs available across address chains".to_string(),
         ));
@@ -360,12 +362,16 @@ pub fn build_unsigned_btc_transaction_with_extras(
             eprintln!("[btc-deposit] change type={change_type:?} source=internal");
             entry
         }
-        Err(e) => match (change_chain.external.len(), change_chain.internal.is_empty()) {
+        Err(e) => match (
+            change_chain.external.len(),
+            change_chain.internal.is_empty(),
+        ) {
             (1, true) => {
                 eprintln!("[btc-deposit] change type={change_type:?} source=external-fallback");
-                change_chain.external.first().ok_or_else(|| {
-                    WalletErrors::BincodeError("external chain empty".to_string())
-                })?
+                change_chain
+                    .external
+                    .first()
+                    .ok_or_else(|| WalletErrors::BincodeError("external chain empty".to_string()))?
             }
             _ => {
                 eprintln!(
@@ -377,12 +383,12 @@ pub fn build_unsigned_btc_transaction_with_extras(
             }
         },
     };
-    let change_address = change_entry.address.clone();
-    let change_script = change_address
+    let change_script = change_entry
+        .address
         .to_bitcoin_addr()
         .map_err(|e| WalletErrors::BincodeError(e.to_string()))?
         .script_pubkey();
-    let change_dust = get_dust_limit(&change_address);
+    let change_dust = get_dust_limit(&change_entry.address);
 
     let original_total_output: u64 = destinations.iter().map(|(_, a)| a).sum();
 
@@ -403,47 +409,97 @@ pub fn build_unsigned_btc_transaction_with_extras(
         .sum();
 
     let change_output_vsize = output_vsize_for(change_type);
-    let estimated_vsize_with_change = (input_vsize_sum
-        + dest_output_vsize_sum
-        + extras_vsize
-        + change_output_vsize
-        + TX_OVERHEAD_VSIZE) as u64;
+    let fixed_vsize = dest_output_vsize_sum
+        .saturating_add(extras_vsize)
+        .saturating_add(change_output_vsize)
+        .saturating_add(TX_OVERHEAD_VSIZE);
     let fee_rate = fee_rate_sat_per_vbyte.unwrap_or(DEFAULT_FEE_RATE);
-    let estimated_fee = estimated_vsize_with_change * fee_rate;
 
-    let (adjusted_destinations, total_output) = if total_input
-        < original_total_output + estimated_fee
-    {
-        let max_threshold = estimated_fee.saturating_mul(3).max(10000);
-        let is_max_transfer = destinations.len() == 1
-            && original_total_output <= total_input
-            && original_total_output + estimated_fee > total_input
-            && (original_total_output + estimated_fee).saturating_sub(total_input) < max_threshold;
+    candidates.sort_by_key(|c| (c.utxo.height == 0, std::cmp::Reverse(c.utxo.value)));
 
-        if is_max_transfer {
-            let adjusted_amount = total_input.saturating_sub(estimated_fee);
-            let dust_limit = get_dust_limit(&destinations[0].0);
+    let mut selected = 0usize;
+    let mut total_input = 0u64;
+    let mut input_vsize_sum = 0usize;
+    for candidate in &candidates {
+        let estimated_fee = (input_vsize_sum.saturating_add(fixed_vsize)) as u64 * fee_rate;
+        if selected > 0 && total_input >= original_total_output.saturating_add(estimated_fee) {
+            break;
+        }
+        total_input = total_input.saturating_add(candidate.utxo.value);
+        input_vsize_sum = input_vsize_sum.saturating_add(input_vsize_for(candidate.addr_type));
+        selected = selected.saturating_add(1);
+    }
 
-            if adjusted_amount < dust_limit {
+    let selected_candidates = candidates.get(..selected).ok_or_else(|| {
+        WalletErrors::BincodeError(format!(
+            "selected BTC input count {selected} exceeds available {}",
+            candidates.len()
+        ))
+    })?;
+    let mut inputs: Vec<TxIn> = Vec::with_capacity(selected);
+    let mut witness_utxos: Vec<TxOut> = Vec::with_capacity(selected);
+    let mut input_meta: Vec<(bitcoin::AddressType, DerivationPath)> = Vec::with_capacity(selected);
+
+    for candidate in selected_candidates {
+        inputs.push(TxIn {
+            previous_output: OutPoint {
+                txid: candidate.utxo.txid,
+                vout: candidate.utxo.vout,
+            },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        });
+        witness_utxos.push(TxOut {
+            value: Amount::from_sat(candidate.utxo.value),
+            script_pubkey: candidate.script.clone(),
+        });
+        input_meta.push((candidate.addr_type, candidate.path));
+    }
+
+    let estimated_vsize_with_change = input_vsize_sum.saturating_add(fixed_vsize) as u64;
+    let estimated_fee = estimated_vsize_with_change.saturating_mul(fee_rate);
+
+    let (adjusted_destinations, total_output) =
+        if total_input < original_total_output.saturating_add(estimated_fee) {
+            let max_threshold = estimated_fee.saturating_mul(3).max(10000);
+            let is_max_transfer = destinations.len() == 1
+                && original_total_output <= total_input
+                && original_total_output.saturating_add(estimated_fee) > total_input
+                && original_total_output
+                    .saturating_add(estimated_fee)
+                    .saturating_sub(total_input)
+                    < max_threshold;
+
+            if is_max_transfer {
+                let adjusted_amount = total_input.saturating_sub(estimated_fee);
+                let Some((dest_addr, _)) = destinations.first() else {
+                    return Err(WalletErrors::BincodeError(
+                        "max-transfer requires one destination".to_string(),
+                    ));
+                };
+                let dust_limit = get_dust_limit(dest_addr);
+
+                if adjusted_amount < dust_limit {
+                    return Err(WalletErrors::BincodeError(format!(
+                        "Insufficient funds: balance too low after fee (have: {}, fee: {})",
+                        total_input, estimated_fee
+                    )));
+                }
+                let adjusted_dests = vec![(dest_addr.clone(), adjusted_amount)];
+                (adjusted_dests, adjusted_amount)
+            } else {
                 return Err(WalletErrors::BincodeError(format!(
-                    "Insufficient funds: balance too low after fee (have: {}, fee: {})",
-                    total_input, estimated_fee
+                    "Insufficient funds: have {}, need {} (output: {}, fee: {})",
+                    total_input,
+                    original_total_output.saturating_add(estimated_fee),
+                    original_total_output,
+                    estimated_fee
                 )));
             }
-            let adjusted_dests = vec![(destinations[0].0.clone(), adjusted_amount)];
-            (adjusted_dests, adjusted_amount)
         } else {
-            return Err(WalletErrors::BincodeError(format!(
-                "Insufficient funds: have {}, need {} (output: {}, fee: {})",
-                total_input,
-                original_total_output + estimated_fee,
-                original_total_output,
-                estimated_fee
-            )));
-        }
-    } else {
-        (destinations, original_total_output)
-    };
+            (destinations, original_total_output)
+        };
 
     let mut outputs: Vec<TxOut> =
         Vec::with_capacity(adjusted_destinations.len() + 1 + extra_outputs.len());
@@ -889,19 +945,15 @@ impl BitcoinWallet for Wallet {
 
         // Bootstrap an empty chain if the wallet predates P2WPKH inclusion;
         // derive_btc_chain_from_xpub will populate it, and save_btc_addresses will persist it.
-        let p2wpkh = chains
-            .entry(primary_type)
-            .or_insert_with(|| AddressChain {
-                external: Vec::with_capacity(1),
-                internal: Vec::with_capacity(0),
-            });
+        let p2wpkh = chains.entry(primary_type).or_insert_with(|| AddressChain {
+            external: Vec::with_capacity(1),
+            internal: Vec::with_capacity(0),
+        });
         let next_index = u32::try_from(p2wpkh.external.len())
-            .map_err(|_| {
-                WalletErrors::BincodeError("external chain index overflow".to_string())
-            })?;
-        let xpub = xpubs.xpub_for(primary_type).ok_or_else(|| {
-            WalletErrors::BincodeError("no xpub for P2WPKH".to_string())
-        })?;
+            .map_err(|_| WalletErrors::BincodeError("external chain index overflow".to_string()))?;
+        let xpub = xpubs
+            .xpub_for(primary_type)
+            .ok_or_else(|| WalletErrors::BincodeError("no xpub for P2WPKH".to_string()))?;
         derive_btc_chain_from_xpub(
             xpub,
             account_index,
@@ -961,17 +1013,11 @@ impl BitcoinWallet for Wallet {
             }
         }
 
-        let output_scripts: HashSet<&bitcoin::ScriptBuf> = signed_tx
-            .output
-            .iter()
-            .map(|o| &o.script_pubkey)
-            .collect();
+        let output_scripts: HashSet<&bitcoin::ScriptBuf> =
+            signed_tx.output.iter().map(|o| &o.script_pubkey).collect();
 
-        for primary_type in [bitcoin::AddressType::P2wpkh, bitcoin::AddressType::P2tr] {
-            let Some(primary_chain) = chains.get_mut(&primary_type) else {
-                continue;
-            };
-            for entry in primary_chain.internal.iter_mut() {
+        for chain in chains.values_mut() {
+            for entry in chain.external.iter_mut().chain(chain.internal.iter_mut()) {
                 let entry_script = entry
                     .address
                     .to_bitcoin_addr()
@@ -1123,9 +1169,15 @@ mod tests_btc_wallet {
         keychain::KeyChain,
     };
     use config::{bip39::EN_WORDS, cipher::PROOF_SIZE, session::AuthMethod};
+    use errors::wallet::WalletErrors;
     use history::{status::TransactionStatus, transaction::HistoricalTransaction};
     use pqbip39::mnemonic::Mnemonic;
-    use proto::{btc_tx::BitcoinMetadata, btc_utils::Utxo, tx::TransactionMetadata};
+    use proto::{
+        address::Address,
+        btc_tx::BitcoinMetadata,
+        btc_utils::{AddressChain, Utxo},
+        tx::TransactionMetadata,
+    };
     use rand::RngExt;
     use rpc::network_config::ChainConfig;
     use secrecy::SecretString;
@@ -1141,6 +1193,40 @@ mod tests_btc_wallet {
         let dir = format!("/tmp/{}", rng.random::<u64>());
         let storage = LocalStorage::from(&dir).unwrap();
         (Arc::new(storage), dir)
+    }
+
+    fn test_txid(byte: u8) -> bitcoin::Txid {
+        use bitcoin::hashes::{sha256d, Hash};
+
+        bitcoin::Txid::from_raw_hash(sha256d::Hash::from_byte_array([byte; 32]))
+    }
+
+    fn sk_chains_with_p2wpkh_utxos(
+        values: &[(u8, u64, u32)],
+    ) -> crate::Result<(
+        std::collections::HashMap<bitcoin::AddressType, AddressChain>,
+        Address,
+    )> {
+        let sk_bytes = [0x01; 32];
+        let (mut chains, address) =
+            super::derive_sk_btc_address_chains(&sk_bytes, bitcoin::Network::Regtest)?;
+        let chain = chains
+            .get_mut(&bitcoin::AddressType::P2wpkh)
+            .ok_or_else(|| WalletErrors::BincodeError("missing P2WPKH chain".to_string()))?;
+        let entry = chain
+            .external
+            .first_mut()
+            .ok_or_else(|| WalletErrors::BincodeError("missing P2WPKH entry".to_string()))?;
+        entry.utxos.reserve(values.len());
+        entry
+            .utxos
+            .extend(values.iter().map(|(id, value, height)| Utxo {
+                txid: test_txid(*id),
+                vout: u32::from(*id),
+                value: *value,
+                height: *height,
+            }));
+        Ok((chains, address))
     }
 
     #[tokio::test]
@@ -1321,6 +1407,73 @@ mod tests_btc_wallet {
     fn test_build_op_return_output_rejects_oversized_memo() {
         let memo = vec![0xAA; 81];
         assert!(super::build_op_return_output(&memo).is_err());
+    }
+
+    #[test]
+    fn test_build_unsigned_btc_transaction_prefers_confirmed_utxo() -> crate::Result<()> {
+        let (chains, dest_addr) =
+            sk_chains_with_p2wpkh_utxos(&[(1, 200_000, 100), (2, 1_000_000, 0)])?;
+
+        let (tx, witness_utxos, input_meta) =
+            super::build_unsigned_btc_transaction(&chains, vec![(dest_addr, 100_000)], Some(1))?;
+
+        assert_eq!(tx.input.len(), 1);
+        assert_eq!(witness_utxos.len(), 1);
+        assert_eq!(input_meta.len(), 1);
+        let Some(input) = tx.input.first() else {
+            panic!("missing selected input");
+        };
+        assert_eq!(input.previous_output.txid, test_txid(1));
+        let Some(witness) = witness_utxos.first() else {
+            panic!("missing selected witness UTXO");
+        };
+        assert_eq!(witness.value.to_sat(), 200_000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_unsigned_btc_transaction_uses_minimal_input_count() -> crate::Result<()> {
+        let (chains, dest_addr) =
+            sk_chains_with_p2wpkh_utxos(&[(1, 150_000, 100), (2, 80_000, 100)])?;
+
+        let (tx, witness_utxos, input_meta) =
+            super::build_unsigned_btc_transaction(&chains, vec![(dest_addr, 100_000)], Some(1))?;
+
+        assert_eq!(tx.input.len(), 1);
+        assert_eq!(witness_utxos.len(), 1);
+        assert_eq!(input_meta.len(), 1);
+        let Some(input) = tx.input.first() else {
+            panic!("missing selected input");
+        };
+        assert_eq!(input.previous_output.txid, test_txid(1));
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_unsigned_btc_transaction_max_transfer_fallback_sweeps() -> crate::Result<()> {
+        let (chains, dest_addr) =
+            sk_chains_with_p2wpkh_utxos(&[(1, 60_000, 100), (2, 40_000, 100)])?;
+
+        let (tx, witness_utxos, input_meta) =
+            super::build_unsigned_btc_transaction(&chains, vec![(dest_addr, 99_500)], Some(10))?;
+
+        assert_eq!(tx.input.len(), 2);
+        assert_eq!(witness_utxos.len(), 2);
+        assert_eq!(input_meta.len(), 2);
+        let Some(output) = tx.output.first() else {
+            panic!("missing adjusted destination output");
+        };
+        let selected_input_vsize = tx
+            .input
+            .len()
+            .saturating_mul(super::input_vsize_for(bitcoin::AddressType::P2wpkh));
+        let fixed_vsize = super::output_vsize_for(bitcoin::AddressType::P2wpkh)
+            .saturating_add(super::output_vsize_for(bitcoin::AddressType::P2wpkh))
+            .saturating_add(super::TX_OVERHEAD_VSIZE);
+        let expected_fee =
+            (selected_input_vsize.saturating_add(fixed_vsize) as u64).saturating_mul(10);
+        assert_eq!(output.value.to_sat().saturating_add(expected_fee), 100_000);
+        Ok(())
     }
 
     #[test]

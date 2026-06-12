@@ -1,6 +1,6 @@
+use crate::Result;
 use crate::evm::RequiredTxParams;
 use crate::provider::NetworkProvider;
-use crate::Result;
 use alloy::primitives::U256;
 use async_trait::async_trait;
 use electrum_client::{Batch, Client as ElectrumClient, ConfigBuilder, ElectrumApi, Param};
@@ -10,7 +10,9 @@ use errors::tx::TransactionErrors;
 use history::status::TransactionStatus;
 use history::transaction::HistoricalTransaction;
 use proto::address::Address;
-use proto::btc_utils::{AddressChain, BtcAddressEntry, ByteCodec, Utxo};
+use proto::btc_utils::{
+    AddressChain, BtcAddressEntry, ByteCodec, Utxo, gap_window_indices, used_indices,
+};
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use rand::seq::SliceRandom;
 use rpc::common::NetworkConfigTrait;
@@ -21,12 +23,9 @@ const DEFAULT_FEE_RATE_BTC: f64 = 0.00001;
 const SATOSHIS_PER_BTC: f64 = 100_000_000.0;
 const BYTES_PER_KB: f64 = 1000.0;
 const DEFAULT_TX_SIZE_BYTES: u64 = 250;
-const HISTORY_BATCH_CHUNK: usize = 25;
+const HISTORY_BATCH_CHUNK: usize = 50;
 
-type ScriptsAndLayout = (
-    Vec<bitcoin::ScriptBuf>,
-    Vec<(bitcoin::AddressType, usize, usize)>,
-);
+type ChainLayout = Vec<(bitcoin::AddressType, Vec<usize>, Vec<usize>)>;
 
 fn calculate_tx_vsize(tx: &TransactionRequest) -> u64 {
     match tx {
@@ -129,30 +128,164 @@ fn sorted_chain_keys(
     keys
 }
 
-fn build_scripts_and_layout(
-    chains: &HashMap<bitcoin::AddressType, AddressChain>,
-) -> crate::Result<ScriptsAndLayout> {
+fn build_layout<F>(chains: &HashMap<bitcoin::AddressType, AddressChain>, select: F) -> ChainLayout
+where
+    F: Fn(&[BtcAddressEntry]) -> Vec<usize>,
+{
     let keys = sorted_chain_keys(chains);
-    let scripts_capacity: usize = chains
-        .values()
-        .map(|c| c.external.len() + c.internal.len())
-        .sum();
-    let mut scripts = Vec::with_capacity(scripts_capacity);
     let mut layout = Vec::with_capacity(keys.len());
-    for key in &keys {
-        let chain = chains.get(key).ok_or_else(|| {
-            NetworkErrors::RPCError(format!("Missing chain for {key:?}"))
-        })?;
-        for entry in chain.external.iter().chain(chain.internal.iter()) {
-            let addr = entry
-                .address
-                .to_bitcoin_addr()
-                .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
-            scripts.push(addr.script_pubkey());
+    for key in keys {
+        if let Some(chain) = chains.get(&key) {
+            layout.push((key, select(&chain.external), select(&chain.internal)));
         }
-        layout.push((*key, chain.external.len(), chain.internal.len()));
     }
-    Ok((scripts, layout))
+    layout
+}
+
+fn layout_is_empty(layout: &ChainLayout) -> bool {
+    layout
+        .iter()
+        .all(|(_, external, internal)| external.is_empty() && internal.is_empty())
+}
+
+fn prune_unused_btc_chains(chains: &mut HashMap<bitcoin::AddressType, AddressChain>) {
+    chains.retain(|addr_type, chain| {
+        if matches!(
+            *addr_type,
+            bitcoin::AddressType::P2tr | bitcoin::AddressType::P2wpkh
+        ) {
+            return true;
+        }
+        chain.external.iter().any(|e| !e.history.is_empty())
+            || chain.internal.iter().any(|e| !e.history.is_empty())
+    });
+}
+
+fn scripts_for_layout(
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
+    layout: &ChainLayout,
+) -> Result<Vec<bitcoin::ScriptBuf>> {
+    let capacity = layout.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+    let mut scripts = Vec::with_capacity(capacity);
+    for (key, ext_idx, int_idx) in layout {
+        let Some(chain) = chains.get(key) else {
+            continue;
+        };
+        for (slice, indices) in [(&chain.external, ext_idx), (&chain.internal, int_idx)] {
+            for &i in indices {
+                let entry = slice.get(i).ok_or_else(|| {
+                    NetworkErrors::RPCError(format!("entry {i} missing for {key:?}"))
+                })?;
+                let addr = entry
+                    .address
+                    .to_bitcoin_addr()
+                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
+                scripts.push(addr.script_pubkey());
+            }
+        }
+    }
+    Ok(scripts)
+}
+
+fn apply_results<T>(
+    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    layout: &ChainLayout,
+    mut results: Vec<Vec<T>>,
+    mut apply: impl FnMut(&mut BtcAddressEntry, Vec<T>),
+) -> Result<()> {
+    let mut cursor = 0usize;
+    for (key, ext_idx, int_idx) in layout {
+        let Some(chain) = chains.get_mut(key) else {
+            continue;
+        };
+        for (slice, indices) in [
+            (chain.external.as_mut_slice(), ext_idx),
+            (chain.internal.as_mut_slice(), int_idx),
+        ] {
+            for &i in indices {
+                let slot = results.get_mut(cursor).ok_or_else(|| {
+                    NetworkErrors::RPCError(format!("missing batch result at {cursor}"))
+                })?;
+                let taken = std::mem::take(slot);
+                cursor = cursor.saturating_add(1);
+                let entry = slice.get_mut(i).ok_or_else(|| {
+                    NetworkErrors::RPCError(format!("entry {i} missing for {key:?}"))
+                })?;
+                apply(entry, taken);
+            }
+        }
+    }
+    if cursor != results.len() {
+        return Err(NetworkErrors::RPCError(format!(
+            "batch returned {} results for {cursor} scripts",
+            results.len()
+        )));
+    }
+    Ok(())
+}
+
+fn fetch_history_with_apply(
+    client: &ElectrumClient,
+    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    layout: &ChainLayout,
+    apply: impl FnMut(&mut BtcAddressEntry, Vec<electrum_client::GetHistoryRes>),
+) -> Result<()> {
+    let scripts = scripts_for_layout(chains, layout)?;
+    if scripts.is_empty() {
+        return Ok(());
+    }
+    let mut all = Vec::with_capacity(scripts.len());
+    for chunk in scripts.chunks(HISTORY_BATCH_CHUNK) {
+        let refs: Vec<&bitcoin::Script> = chunk.iter().map(|s| s.as_ref()).collect();
+        all.extend(client.batch_script_get_history(&refs).map_err(|e| {
+            NetworkErrors::RPCError(format!("Failed to batch script history: {e}"))
+        })?);
+    }
+    apply_results(chains, layout, all, apply)
+}
+
+fn fetch_history_sync(
+    client: &ElectrumClient,
+    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    layout: &ChainLayout,
+) -> Result<()> {
+    fetch_history_with_apply(client, chains, layout, |entry, history| {
+        if !history.is_empty() {
+            entry.history = history.into_iter().map(|h| h.tx_hash).collect();
+        }
+    })
+}
+
+fn fetch_unspent_sync(
+    client: &ElectrumClient,
+    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+    layout: &ChainLayout,
+) -> Result<()> {
+    let scripts = scripts_for_layout(chains, layout)?;
+    if scripts.is_empty() {
+        return Ok(());
+    }
+    let mut all = Vec::with_capacity(scripts.len());
+    for chunk in scripts.chunks(HISTORY_BATCH_CHUNK) {
+        let refs: Vec<&bitcoin::Script> = chunk.iter().map(|s| s.as_ref()).collect();
+        all.extend(client.batch_script_list_unspent(&refs).map_err(|e| {
+            NetworkErrors::RPCError(format!("Failed to batch script list unspent: {e}"))
+        })?);
+    }
+    apply_results(chains, layout, all, |entry, unspents| {
+        entry.utxos = unspents.into_iter().map(Utxo::from).collect();
+    })
+}
+
+fn fetch_frontier_history_sync(
+    client: &ElectrumClient,
+    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+) -> Result<()> {
+    let frontier = build_layout(chains, gap_window_indices);
+    if layout_is_empty(&frontier) {
+        return Ok(());
+    }
+    fetch_history_sync(client, chains, &frontier)
 }
 
 impl NetworkProvider {
@@ -219,10 +352,6 @@ pub trait BtcOperations {
         chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
     ) -> Result<()>;
     async fn batch_btc_list_unspent(
-        &self,
-        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
-    ) -> Result<()>;
-    async fn refresh_frontier_history(
         &self,
         chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
     ) -> Result<()>;
@@ -348,8 +477,8 @@ impl BtcOperations for NetworkProvider {
         }
 
         self.with_electrum_client(|client| {
-            use bitcoin::consensus::encode::deserialize_hex;
             use bitcoin::Txid;
+            use bitcoin::consensus::encode::deserialize_hex;
             use std::collections::HashMap;
             use std::str::FromStr;
 
@@ -486,12 +615,29 @@ impl BtcOperations for NetworkProvider {
         });
 
         if no_recorded_balance && no_history {
-            self.batch_script_get_history(chains).await?;
+            let full = build_layout(chains, |entries| (0..entries.len()).collect());
+            if !layout_is_empty(&full) {
+                self.with_electrum_client(|client| {
+                    fetch_history_with_apply(client, chains, &full, |entry, history| {
+                        entry.history = history.into_iter().map(|h| h.tx_hash).collect();
+                    })?;
+                    prune_unused_btc_chains(chains);
+                    let used = build_layout(chains, used_indices);
+                    fetch_unspent_sync(client, chains, &used)
+                })?;
+            }
         } else {
-            self.refresh_frontier_history(chains).await?;
+            let frontier = build_layout(chains, gap_window_indices);
+            let used = build_layout(chains, used_indices);
+            if !layout_is_empty(&frontier) || !layout_is_empty(&used) {
+                // The retry closure may run on multiple Electrum nodes; keep applies idempotent overwrites.
+                self.with_electrum_client(|client| {
+                    fetch_frontier_history_sync(client, chains)?;
+                    let used = build_layout(chains, used_indices);
+                    fetch_unspent_sync(client, chains, &used)
+                })?;
+            }
         }
-
-        self.batch_btc_list_unspent(chains).await?;
 
         let total: u64 = chains
             .values()
@@ -536,59 +682,17 @@ impl BtcOperations for NetworkProvider {
             return Ok(());
         }
 
-        let (scripts, layout) = build_scripts_and_layout(chains)?;
-        if scripts.is_empty() {
+        let layout = build_layout(chains, |entries| (0..entries.len()).collect());
+        if layout_is_empty(&layout) {
             return Ok(());
         }
-
-        let script_refs: Vec<&bitcoin::Script> = scripts.iter().map(|s| s.as_ref()).collect();
-        let mut results = self.with_electrum_client(|client| {
-            let mut all: Vec<Vec<electrum_client::GetHistoryRes>> =
-                Vec::with_capacity(script_refs.len());
-            for chunk in script_refs.chunks(HISTORY_BATCH_CHUNK) {
-                let chunk_results = client.batch_script_get_history(chunk).map_err(|e| {
-                    NetworkErrors::RPCError(format!("Failed to batch script history: {}", e))
-                })?;
-                all.extend(chunk_results);
-            }
-            Ok(all)
+        self.with_electrum_client(|client| {
+            fetch_history_with_apply(client, chains, &layout, |entry, history| {
+                entry.history = history.into_iter().map(|h| h.tx_hash).collect();
+            })
         })?;
 
-        let mut cursor = 0usize;
-        for (addr_type, ext_n, int_n) in layout {
-            let chain = chains.get_mut(&addr_type).ok_or_else(|| {
-                NetworkErrors::RPCError(format!("Missing chain for address type {:?}", addr_type))
-            })?;
-            for (count, slice, label) in [
-                (ext_n, chain.external.as_mut_slice(), "ext"),
-                (int_n, chain.internal.as_mut_slice(), "int"),
-            ] {
-                for i in 0..count {
-                    let slot = results.get_mut(cursor).ok_or_else(|| {
-                        NetworkErrors::RPCError(format!("Missing history result at index {cursor}"))
-                    })?;
-                    let history = std::mem::take(slot);
-                    cursor += 1;
-                    let entry = slice.get_mut(i).ok_or_else(|| {
-                        NetworkErrors::RPCError(format!(
-                            "{label} entry {i} missing for {addr_type:?}"
-                        ))
-                    })?;
-                    entry.history = history.into_iter().map(|h| h.tx_hash).collect();
-                }
-            }
-        }
-
-        chains.retain(|addr_type, chain| {
-            if matches!(
-                *addr_type,
-                bitcoin::AddressType::P2tr | bitcoin::AddressType::P2wpkh
-            ) {
-                return true;
-            }
-            chain.external.iter().any(|e| !e.history.is_empty())
-                || chain.internal.iter().any(|e| !e.history.is_empty())
-        });
+        prune_unused_btc_chains(chains);
 
         Ok(())
     }
@@ -601,155 +705,11 @@ impl BtcOperations for NetworkProvider {
             return Ok(());
         }
 
-        let (scripts, layout) = build_scripts_and_layout(chains)?;
-        if scripts.is_empty() {
+        let layout = build_layout(chains, used_indices);
+        if layout_is_empty(&layout) {
             return Ok(());
         }
-
-        let script_refs: Vec<&bitcoin::Script> = scripts.iter().map(|s| s.as_ref()).collect();
-        let mut results = self.with_electrum_client(|client| {
-            let mut all: Vec<Vec<electrum_client::ListUnspentRes>> =
-                Vec::with_capacity(script_refs.len());
-            for chunk in script_refs.chunks(HISTORY_BATCH_CHUNK) {
-                let chunk_results = client.batch_script_list_unspent(chunk).map_err(|e| {
-                    NetworkErrors::RPCError(format!("Failed to batch script list unspent: {}", e))
-                })?;
-                all.extend(chunk_results);
-            }
-            Ok(all)
-        })?;
-
-        let mut cursor = 0usize;
-        for (addr_type, ext_n, int_n) in layout {
-            let chain = chains.get_mut(&addr_type).ok_or_else(|| {
-                NetworkErrors::RPCError(format!("Missing chain for address type {:?}", addr_type))
-            })?;
-            for (count, slice, label) in [
-                (ext_n, chain.external.as_mut_slice(), "ext"),
-                (int_n, chain.internal.as_mut_slice(), "int"),
-            ] {
-                for i in 0..count {
-                    let slot = results.get_mut(cursor).ok_or_else(|| {
-                        NetworkErrors::RPCError(format!("Missing unspent result at index {cursor}"))
-                    })?;
-                    let unspents = std::mem::take(slot);
-                    cursor += 1;
-                    let entry = slice.get_mut(i).ok_or_else(|| {
-                        NetworkErrors::RPCError(format!(
-                            "{label} entry {i} missing for {addr_type:?}"
-                        ))
-                    })?;
-                    entry.utxos = unspents.into_iter().map(Utxo::from).collect();
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn refresh_frontier_history(
-        &self,
-        chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
-    ) -> Result<()> {
-        if chains.is_empty() {
-            return Ok(());
-        }
-
-        let keys = sorted_chain_keys(chains);
-
-        // Pass 1: collect layout (indices only, exact capacity)
-        let frontier_indices = |entries: &[BtcAddressEntry]| -> Vec<usize> {
-            let mut idx = Vec::with_capacity(entries.len());
-            idx.extend(
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, e)| e.history.is_empty().then_some(i)),
-            );
-            idx
-        };
-        let mut layout: Vec<(bitcoin::AddressType, Vec<usize>, Vec<usize>)> =
-            Vec::with_capacity(keys.len());
-        for &key in &keys {
-            let Some(chain) = chains.get(&key) else {
-                continue;
-            };
-            let ext_idx = frontier_indices(&chain.external);
-            let int_idx = frontier_indices(&chain.internal);
-            layout.push((key, ext_idx, int_idx));
-        }
-
-        let scripts_capacity: usize = layout.iter().map(|(_, e, i)| e.len() + i.len()).sum();
-        if scripts_capacity == 0 {
-            return Ok(());
-        }
-
-        // Pass 2: build scripts from layout
-        let mut scripts: Vec<bitcoin::ScriptBuf> = Vec::with_capacity(scripts_capacity);
-        let mut push_scripts = |slice: &[BtcAddressEntry], indices: &[usize]| -> Result<()> {
-            for &i in indices {
-                let Some(entry) = slice.get(i) else {
-                    continue;
-                };
-                let addr = entry
-                    .address
-                    .to_bitcoin_addr()
-                    .map_err(|e| NetworkErrors::RPCError(e.to_string()))?;
-                scripts.push(addr.script_pubkey());
-            }
-            Ok(())
-        };
-        for (key, ext_idx, int_idx) in &layout {
-            let Some(chain) = chains.get(key) else {
-                continue;
-            };
-            push_scripts(&chain.external, ext_idx)?;
-            push_scripts(&chain.internal, int_idx)?;
-        }
-
-        let script_refs: Vec<&bitcoin::Script> = scripts.iter().map(|s| s.as_ref()).collect();
-        let mut results = self.with_electrum_client(|client| {
-            let mut all: Vec<Vec<electrum_client::GetHistoryRes>> =
-                Vec::with_capacity(script_refs.len());
-            for chunk in script_refs.chunks(HISTORY_BATCH_CHUNK) {
-                let batch = client.batch_script_get_history(chunk).map_err(|e| {
-                    NetworkErrors::RPCError(format!("frontier history: {e}"))
-                })?;
-                all.extend(batch);
-            }
-            Ok(all)
-        })?;
-
-        let mut cursor = 0usize;
-        for (addr_type, ext_idx, int_idx) in &layout {
-            let Some(chain) = chains.get_mut(addr_type) else {
-                continue;
-            };
-            let mut apply_history = |slice: &mut [BtcAddressEntry], indices: &[usize],
-                                     label: &str|
-             -> Result<()> {
-                for &i in indices {
-                    let Some(slot) = results.get_mut(cursor) else {
-                        return Err(NetworkErrors::RPCError(format!(
-                            "results/scripts length mismatch in {label}_idx"
-                        )));
-                    };
-                    let history = std::mem::take(slot);
-                    cursor += 1;
-                    if !history.is_empty() {
-                        if let Some(entry) = slice.get_mut(i) {
-                            entry.history =
-                                history.into_iter().map(|h| h.tx_hash).collect();
-                        }
-                    }
-                }
-                Ok(())
-            };
-            apply_history(&mut chain.external, ext_idx, "ext")?;
-            apply_history(&mut chain.internal, int_idx, "int")?;
-        }
-
-        Ok(())
+        self.with_electrum_client(|client| fetch_unspent_sync(client, chains, &layout))
     }
 }
 
@@ -939,8 +899,8 @@ mod tests {
 
     #[test]
     fn print_get_history_payloads() {
-        use bitcoin::hashes::{sha256, Hash};
-        use proto::btc_utils::{derive_btc_addresses_from_xpubs, BtcAccountXpubsInput, GAP_LIMIT};
+        use bitcoin::hashes::{Hash, sha256};
+        use proto::btc_utils::{BtcAccountXpubsInput, GAP_LIMIT, derive_btc_addresses_from_xpubs};
 
         let seed = anvil_seed();
         let xpubs = BtcAccountXpubsInput::from_seed(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
@@ -1012,7 +972,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_script_get_history_account_zero() {
-        use proto::btc_utils::{derive_btc_addresses_from_xpubs, BtcAccountXpubsInput, GAP_LIMIT};
+        use proto::btc_utils::{BtcAccountXpubsInput, GAP_LIMIT, derive_btc_addresses_from_xpubs};
         use test_data::gen_btc_regtest_conf;
 
         let provider = NetworkProvider::new(gen_btc_regtest_conf());
