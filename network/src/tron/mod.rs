@@ -341,14 +341,15 @@ impl TronOperations for NetworkProvider {
                                 for contract in tron_tx.raw().contract.iter() {
                                     // We're in the TransferContract match arm
                                     if let Ok(tc) = protocol::TransferContract::decode(
-                                        contract.parameter.as_ref()
+                                        contract
+                                            .parameter
+                                            .as_ref()
                                             .map(|p| p.value.as_slice())
                                             .unwrap_or(&[]),
                                     ) {
                                         if tc.amount > 0 {
-                                            let recipient = Address::from_tron_bytes(
-                                                &tc.to_address,
-                                            );
+                                            let recipient =
+                                                Address::from_tron_bytes(&tc.to_address);
                                             if let Ok(ref addr) = recipient {
                                                 match client.get_account(addr).await {
                                                     Ok(resp) if resp.address.is_none() => {
@@ -400,40 +401,58 @@ impl TronOperations for NetworkProvider {
 
                             let energy_to_pay = match sim {
                                 Ok(sim) => {
-                                    let failed = sim.result.as_ref()
-                                        .map(|r| r.code.is_some()).unwrap_or(false);
+                                    let failed = sim
+                                        .result
+                                        .as_ref()
+                                        .map(|r| r.code.is_some())
+                                        .unwrap_or(false);
                                     if failed || sim.energy_used == 0 {
                                         DEFAULT_FALLBACK_ENERGY
                                     } else {
                                         let total_energy = sim.energy_used;
-                                        let account_resource = client.get_account_resource(sender).await?;
+                                        let account_resource =
+                                            client.get_account_resource(sender).await?;
                                         let free_energy = (account_resource.energy_limit
-                                            - account_resource.energy_used).max(0);
+                                            - account_resource.energy_used)
+                                            .max(0);
 
                                         // Energy sharing: compute user's actual portion
                                         let user_energy = match &contract_info {
                                             Ok(info) => {
-                                                let user_pct = info.consume_user_resource_percent.unwrap_or(100);
-                                                let max_subsidy = info.origin_energy_limit.unwrap_or(0);
+                                                let user_pct = info
+                                                    .consume_user_resource_percent
+                                                    .unwrap_or(100);
+                                                let max_subsidy =
+                                                    info.origin_energy_limit.unwrap_or(0);
 
                                                 if user_pct >= 100 || max_subsidy <= 0 {
                                                     total_energy
                                                 } else {
-                                                    let deployer_addr = info.origin_address.as_ref()
+                                                    let deployer_addr = info
+                                                        .origin_address
+                                                        .as_ref()
                                                         .and_then(|hex_str| {
-                                                            let bytes = alloy::hex::decode(hex_str).ok()?;
+                                                            let bytes =
+                                                                alloy::hex::decode(hex_str).ok()?;
                                                             Address::from_tron_bytes(&bytes).ok()
                                                         });
                                                     let deployer_available = match deployer_addr {
-                                                        Some(ref addr) => match client.get_account_resource(addr).await {
-                                                            Ok(ar) => (ar.energy_limit - ar.energy_used).max(0),
+                                                        Some(ref addr) => match client
+                                                            .get_account_resource(addr)
+                                                            .await
+                                                        {
+                                                            Ok(ar) => (ar.energy_limit
+                                                                - ar.energy_used)
+                                                                .max(0),
                                                             Err(_) => 0,
                                                         },
                                                         None => 0,
                                                     };
 
-                                                    let user_theoretical = (total_energy * user_pct + 99) / 100;
-                                                    let deployer_theoretical = total_energy - user_theoretical;
+                                                    let user_theoretical =
+                                                        (total_energy * user_pct + 99) / 100;
+                                                    let deployer_theoretical =
+                                                        total_energy - user_theoretical;
                                                     let deployer_actual = deployer_theoretical
                                                         .min(max_subsidy)
                                                         .min(deployer_available);
@@ -455,11 +474,18 @@ impl TronOperations for NetworkProvider {
                             let account_net = client.get_account_net(sender).await?;
                             let tx_size = tron_tx.encode().len() as i64 + UNSIGNED_TX_OVERHEAD;
                             let free_net = account_net.free_net_limit - account_net.free_net_used;
-                            let bw_cost = if free_net >= tx_size { 0u64 }
-                                else { (tx_size - free_net.max(0)) as u64 * transaction_fee };
+                            let bw_cost = if free_net >= tx_size {
+                                0u64
+                            } else {
+                                (tx_size - free_net.max(0)) as u64 * transaction_fee
+                            };
 
                             // Memo
-                            let memo = if tron_tx.raw().data.is_empty() { 0u64 } else { MEMO_FEE_SUN as u64 };
+                            let memo = if tron_tx.raw().data.is_empty() {
+                                0u64
+                            } else {
+                                MEMO_FEE_SUN as u64
+                            };
 
                             energy_cost + bw_cost + memo
                         }

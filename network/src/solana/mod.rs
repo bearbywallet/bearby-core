@@ -1,8 +1,8 @@
 mod responses;
 
-use crate::Result;
 use crate::evm::{GasFeeHistory, RequiredTxParams};
 use crate::provider::NetworkProvider;
+use crate::Result;
 use alloy::primitives::U256;
 use async_trait::async_trait;
 use base64::Engine;
@@ -13,15 +13,16 @@ use proto::address::Address;
 use proto::solana_tx::{build_sol_transfer_message, build_versioned_message_from_instructions};
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use responses::{
-    AccountInfoValue, BlockhashValue, MetaplexMetadata, RawAccountValue, SolanaAccountInfo,
-    SolanaGetTransactionResult, SolanaValueResponse, TokenAccountEntry, extract_token2022_metadata,
+    extract_token2022_metadata, AccountInfoValue, BlockhashValue, MetaplexMetadata,
+    RawAccountValue, SolanaAccountInfo, SolanaGetTransactionResult, SolanaValueResponse,
+    TokenAccountEntry,
 };
 use rpc::common::JsonRPC;
 use rpc::methods::SolanaMethod;
 use rpc::network_config::ChainConfig;
 use rpc::provider::RpcProvider;
 use rpc::zil_interfaces::{ErrorRes, ResultRes};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use solana_address_lookup_table_interface::state::AddressLookupTable;
 use solana_instruction::Instruction;
 use solana_message::AddressLookupTableAccount;

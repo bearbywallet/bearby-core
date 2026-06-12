@@ -1,4 +1,4 @@
-use crate::{Background, Result, bg_provider::ProvidersManagement, bg_wallet::WalletManagement};
+use crate::{bg_provider::ProvidersManagement, bg_wallet::WalletManagement, Background, Result};
 use alloy::{primitives::U256, rpc::types::TransactionInput};
 use async_trait::async_trait;
 use config::sha::SHA256_SIZE;
@@ -8,7 +8,7 @@ use network::{btc::BtcOperations, evm::generate_erc20_transfer_data, solana::Sol
 use proto::{
     address::Address,
     btc_tx::BitcoinMetadata,
-    solana_tx::{SolanaTransaction, build_sol_transfer_message, build_spl_transfer_message},
+    solana_tx::{build_sol_transfer_message, build_spl_transfer_message, SolanaTransaction},
     tron_tx::TronTransaction,
     tx::{ETHTransactionRequest, TransactionMetadata, TransactionRequest},
     zil_tx::ZILTransactionRequest,
@@ -420,7 +420,7 @@ mod tests_background_tokens {
     use crate::bg_bitcoin::BitcoinManagement;
     use crate::bg_tx::update_tx_from_params;
     use crate::{
-        BackgroundBip39Params, bg_crypto::CryptoOperations, bg_storage::StorageManagement,
+        bg_crypto::CryptoOperations, bg_storage::StorageManagement, BackgroundBip39Params,
     };
     use crate::{bg_tx::TransactionsManagement, bg_wallet::WalletManagement};
     use rpc::network_config::ChainConfig;
@@ -436,12 +436,13 @@ mod tests_background_tokens {
     use std::thread::sleep;
     use std::time::Duration;
     use test_data::{
-        ANVIL_MNEMONIC, anvil_accounts, empty_passphrase, gen_anvil_net_conf, gen_anvil_token,
+        anvil_accounts, empty_passphrase, gen_anvil_net_conf, gen_anvil_token,
         gen_btc_regtest_conf, gen_eth_mainnet_conf, gen_sol_devnet_conf, gen_sol_token,
+        ANVIL_MNEMONIC,
     };
     use test_data::{
-        TEST_PASSWORD, gen_eth_account, gen_tron_account, gen_tron_testnet_conf, gen_tron_token,
-        gen_zil_account, gen_zil_testnet_conf, tron_addresses,
+        gen_eth_account, gen_tron_account, gen_tron_testnet_conf, gen_tron_token, gen_zil_account,
+        gen_zil_testnet_conf, tron_addresses, TEST_PASSWORD,
     };
     use tokio;
     use wallet::wallet_crypto::WalletCrypto;
@@ -816,9 +817,7 @@ mod tests_background_tokens {
                 .unwrap_or(bitcoin::Network::Bitcoin),
         )
         .unwrap();
-        bg.rotate_btc_account(0, from_index, &xpubs)
-            .await
-            .unwrap();
+        bg.rotate_btc_account(0, from_index, &xpubs).await.unwrap();
 
         let data = wallet_check.get_wallet_data().unwrap();
         let rotated_account = data.get_accounts().unwrap().get(from_index).unwrap();
@@ -1164,11 +1163,9 @@ mod tests_background_tokens {
         assert_eq!(btt_meta.chain_hash, net_config.hash());
         assert!(!btt_meta.native);
         assert!(!btt_meta.default);
-        assert!(
-            btt_meta
-                .balances
-                .contains_key(&data.get_accounts().unwrap()[0].addr.to_hash())
-        );
+        assert!(btt_meta
+            .balances
+            .contains_key(&data.get_accounts().unwrap()[0].addr.to_hash()));
 
         bg.wallets
             .first_mut()
@@ -1186,11 +1183,9 @@ mod tests_background_tokens {
         assert_eq!(usdt_meta.chain_hash, net_config.hash());
         assert!(!usdt_meta.native);
         assert!(!usdt_meta.default);
-        assert!(
-            usdt_meta
-                .balances
-                .contains_key(&data.get_accounts().unwrap()[0].addr.to_hash())
-        );
+        assert!(usdt_meta
+            .balances
+            .contains_key(&data.get_accounts().unwrap()[0].addr.to_hash()));
 
         bg.wallets
             .first_mut()

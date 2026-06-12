@@ -1,6 +1,6 @@
-use crate::Result;
 use crate::evm::RequiredTxParams;
 use crate::provider::NetworkProvider;
+use crate::Result;
 use alloy::primitives::U256;
 use async_trait::async_trait;
 use electrum_client::{Batch, Client as ElectrumClient, ConfigBuilder, ElectrumApi, Param};
@@ -11,7 +11,7 @@ use history::status::TransactionStatus;
 use history::transaction::HistoricalTransaction;
 use proto::address::Address;
 use proto::btc_utils::{
-    AddressChain, BtcAddressEntry, ByteCodec, Utxo, gap_window_indices, used_indices,
+    gap_window_indices, used_indices, AddressChain, BtcAddressEntry, ByteCodec, Utxo,
 };
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use rand::seq::SliceRandom;
@@ -477,8 +477,8 @@ impl BtcOperations for NetworkProvider {
         }
 
         self.with_electrum_client(|client| {
-            use bitcoin::Txid;
             use bitcoin::consensus::encode::deserialize_hex;
+            use bitcoin::Txid;
             use std::collections::HashMap;
             use std::str::FromStr;
 
@@ -899,8 +899,8 @@ mod tests {
 
     #[test]
     fn print_get_history_payloads() {
-        use bitcoin::hashes::{Hash, sha256};
-        use proto::btc_utils::{BtcAccountXpubsInput, GAP_LIMIT, derive_btc_addresses_from_xpubs};
+        use bitcoin::hashes::{sha256, Hash};
+        use proto::btc_utils::{derive_btc_addresses_from_xpubs, BtcAccountXpubsInput, GAP_LIMIT};
 
         let seed = anvil_seed();
         let xpubs = BtcAccountXpubsInput::from_seed(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
@@ -972,7 +972,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_script_get_history_account_zero() {
-        use proto::btc_utils::{BtcAccountXpubsInput, GAP_LIMIT, derive_btc_addresses_from_xpubs};
+        use proto::btc_utils::{derive_btc_addresses_from_xpubs, BtcAccountXpubsInput, GAP_LIMIT};
         use test_data::gen_btc_regtest_conf;
 
         let provider = NetworkProvider::new(gen_btc_regtest_conf());

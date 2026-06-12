@@ -3,7 +3,7 @@ use errors::keypair::KeyPairError;
 use serde::{Deserialize, Serialize};
 use solana_hash::Hash;
 use solana_instruction::Instruction;
-use solana_message::{AddressLookupTableAccount, VersionedMessage, legacy::Message, v0};
+use solana_message::{legacy::Message, v0, AddressLookupTableAccount, VersionedMessage};
 use solana_pubkey::Pubkey;
 use solana_system_interface::instruction::transfer as system_transfer;
 use spl_associated_token_account::get_associated_token_address_with_program_id;

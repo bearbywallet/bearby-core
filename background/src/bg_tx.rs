@@ -1,4 +1,4 @@
-use crate::{Result, bg_provider::ProvidersManagement, bg_wallet::WalletManagement};
+use crate::{bg_provider::ProvidersManagement, bg_wallet::WalletManagement, Result};
 use alloy::primitives::U256;
 use alloy::{dyn_abi::TypedData, primitives::keccak256};
 use async_trait::async_trait;
@@ -146,7 +146,8 @@ pub fn update_tx_from_params(
                 .map_err(|_| TransactionErrors::ConvertTxError("Fee overflow".to_string()))?;
 
             // Check if this is a max-balance transfer before we mutate the amount
-            let is_max_balance = tron_tx.transfer_amount()
+            let is_max_balance = tron_tx
+                .transfer_amount()
                 .map(|a| a > 0 && U256::from(a as u64) == balance)
                 .unwrap_or(false);
 
@@ -156,10 +157,8 @@ pub fn update_tx_from_params(
                 // by small amounts due to protobuf encoding overhead differences.
                 // A 10% buffer prevents "balance is not sufficient" rejections.
                 let amount = tron_tx.transfer_amount().unwrap_or(0);
-                let fee_limit_buffered = std::cmp::max(
-                    estimated_fee * 110 / 100,
-                    estimated_fee + 1000,
-                );
+                let fee_limit_buffered =
+                    std::cmp::max(estimated_fee * 110 / 100, estimated_fee + 1000);
                 let adjusted = amount - fee_limit_buffered;
                 if adjusted <= 0 {
                     return Err(TransactionErrors::ConvertTxError(format!(
@@ -540,10 +539,10 @@ impl TransactionsManagement for Background {
 mod tests_background_transactions {
     use super::*;
     use crate::bg_bitcoin::BitcoinManagement;
-    use crate::{BackgroundBip39Params, bg_storage::StorageManagement, bg_token::TokensManagement};
-    use wallet::wallet_account::AccountManagement;
+    use crate::{bg_storage::StorageManagement, bg_token::TokensManagement, BackgroundBip39Params};
     use alloy::{primitives::U256, rpc::types::TransactionRequest as ETHTransactionRequest};
     use network::btc::BtcOperations;
+    use wallet::wallet_account::AccountManagement;
 
     use proto::{
         address::Address,
@@ -553,9 +552,9 @@ mod tests_background_transactions {
     use rand::RngExt;
     use secrecy::{ExposeSecret, SecretString};
     use test_data::{
-        ANVIL_MNEMONIC, TEST_PASSWORD, empty_passphrase, gen_anvil_net_conf, gen_anvil_token,
-        gen_btc_regtest_conf, gen_eth_account, gen_zil_account, gen_zil_testnet_conf,
-        gen_zil_token,
+        empty_passphrase, gen_anvil_net_conf, gen_anvil_token, gen_btc_regtest_conf,
+        gen_eth_account, gen_zil_account, gen_zil_testnet_conf, gen_zil_token, ANVIL_MNEMONIC,
+        TEST_PASSWORD,
     };
     use token::ft::FToken;
     use tokio;
@@ -735,7 +734,7 @@ mod tests_background_transactions {
     #[tokio::test]
     async fn test_update_history_evm() {
         use test_data::anvil_accounts;
-        use tokio::time::{Duration, sleep};
+        use tokio::time::{sleep, Duration};
 
         let (mut bg, _dir) = setup_test_background();
         let net_config = gen_anvil_net_conf();
@@ -1183,8 +1182,14 @@ mod tests_background_transactions {
         if let TransactionRequest::Tron((ref updated, _)) = tx_request {
             if let Some(amount) = updated.transfer_amount() {
                 // Non-max-balance: amount unchanged, fee_limit = cap (100M SUN)
-                assert_eq!(amount, amount_sun, "amount must be unchanged for non-max send");
-                assert!(updated.fee_limit() >= FEE_LIMIT, "fee_limit must be at least cap");
+                assert_eq!(
+                    amount, amount_sun,
+                    "amount must be unchanged for non-max send"
+                );
+                assert!(
+                    updated.fee_limit() >= FEE_LIMIT,
+                    "fee_limit must be at least cap"
+                );
             } else {
                 panic!("expected Transfer contract");
             }

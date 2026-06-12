@@ -5,7 +5,7 @@ use crypto::{bip49::DerivationPath, slip44};
 use errors::{background::BackgroundError, wallet::WalletErrors};
 use network::{btc::BtcOperations, common::Provider, provider::NetworkProvider};
 use proto::address::Address;
-use proto::btc_utils::{AddressChain, BtcAccountXpubsInput, extend_address_pool};
+use proto::btc_utils::{extend_address_pool, AddressChain, BtcAccountXpubsInput};
 use rpc::network_config::ChainConfig;
 use secrecy::SecretString;
 use std::sync::Arc;
@@ -375,22 +375,20 @@ async fn try_extend_btc_pool_background(c: &PoolExtendCtx<'_>) -> crate::Result<
     let mnemonic = c.wallet.reveal_mnemonic(&seed)?;
     let seed_secret = mnemonic
         .to_seed(&wallet::empty_passphrase())
-        .map_err(|e| {
-            BackgroundError::WalletError(WalletErrors::BincodeError(format!("{e:?}")))
-        })?;
+        .map_err(|e| BackgroundError::WalletError(WalletErrors::BincodeError(format!("{e:?}"))))?;
     for account_index in 0..c.account_count {
         let mut chains = c.wallet.get_btc_addresses(account_index, c.chain_hash)?;
         if chains.values().any(AddressChain::pool_watermark_reached) {
             let acct_idx = u32::try_from(account_index).map_err(|e| {
                 BackgroundError::WalletError(WalletErrors::BincodeError(e.to_string()))
             })?;
-            let map_bip_err =
-                |e| BackgroundError::WalletError(WalletErrors::Bip329Error(e));
+            let map_bip_err = |e| BackgroundError::WalletError(WalletErrors::Bip329Error(e));
             let xpubs = BtcAccountXpubsInput::from_seed(&seed_secret, acct_idx, c.network)
                 .map_err(map_bip_err)?;
             extend_address_pool(&mut chains, &xpubs, account_index, c.network)
                 .map_err(map_bip_err)?;
-            c.wallet.save_btc_addresses(account_index, &chains, c.chain_hash)?;
+            c.wallet
+                .save_btc_addresses(account_index, &chains, c.chain_hash)?;
         }
     }
     Ok(())
@@ -969,7 +967,11 @@ mod tests_providers {
             .unwrap();
         assert_eq!(data.slip44, btc.slip_44);
         let btc_accounts = data.get_accounts().unwrap();
-        assert_eq!(btc_accounts.len(), 2, "BTC must have 2 accounts matching ETH reference");
+        assert_eq!(
+            btc_accounts.len(),
+            2,
+            "BTC must have 2 accounts matching ETH reference"
+        );
 
         // Switch back to ETH
         bg.select_accounts_chain(0, eth.hash(), Some(&password))

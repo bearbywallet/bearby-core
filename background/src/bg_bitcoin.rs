@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use token::ft::FToken;
 use wallet::account::AccountV2;
 use wallet::bitcoin_wallet::{
-    append_new_change_address, build_op_return_output,
-    build_unsigned_btc_transaction_with_extras, scan_btc_chains_for_xpubs, BitcoinWallet,
+    append_new_change_address, build_op_return_output, build_unsigned_btc_transaction_with_extras,
+    scan_btc_chains_for_xpubs, BitcoinWallet,
 };
 use wallet::wallet_storage::StorageOperations;
 
