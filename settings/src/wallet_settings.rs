@@ -7,6 +7,7 @@ use crate::argon2::ArgonParams;
 pub enum TokenQuotesAPIOptions {
     None,
     #[default]
+    #[serde(rename = "CryptoCompare", alias = "BearbyRates")]
     BearbyRates,
     Coingecko,
 }
@@ -70,7 +71,7 @@ impl TokenQuotesAPIOptions {
         match self {
             Self::None => 0,
             Self::BearbyRates => 1,
-            Self::Coingecko => 1,
+            Self::Coingecko => 2,
         }
     }
 }
@@ -80,7 +81,7 @@ impl std::fmt::Display for TokenQuotesAPIOptions {
         match self {
             TokenQuotesAPIOptions::None => write!(f, "None"),
             TokenQuotesAPIOptions::Coingecko => write!(f, "Coingecko"),
-            TokenQuotesAPIOptions::BearbyRates => write!(f, "CryptoCompare"),
+            TokenQuotesAPIOptions::BearbyRates => write!(f, "BearbyRates"),
         }
     }
 }
@@ -213,6 +214,48 @@ mod wallet_settings_tests {
 
         settings3.network.max_connections = 10;
         assert_ne!(settings1, settings3);
+    }
+
+    #[test]
+    fn test_token_quotes_api_options_deserializes_legacy_crypto_compare(
+    ) -> Result<(), serde_json::Error> {
+        let option = serde_json::from_str::<TokenQuotesAPIOptions>("\"CryptoCompare\"")?;
+
+        assert_eq!(option, TokenQuotesAPIOptions::BearbyRates);
+        Ok(())
+    }
+
+    #[test]
+    fn test_token_quotes_api_options_deserializes_bearby_rates_alias(
+    ) -> Result<(), serde_json::Error> {
+        let option = serde_json::from_str::<TokenQuotesAPIOptions>("\"BearbyRates\"")?;
+
+        assert_eq!(option, TokenQuotesAPIOptions::BearbyRates);
+        Ok(())
+    }
+
+    #[test]
+    fn test_token_quotes_api_options_serializes_legacy_storage_name(
+    ) -> Result<(), serde_json::Error> {
+        let option = serde_json::to_string(&TokenQuotesAPIOptions::BearbyRates)?;
+
+        assert_eq!(option, "\"CryptoCompare\"");
+        Ok(())
+    }
+
+    #[test]
+    fn test_wallet_settings_deserializes_legacy_crypto_compare() -> Result<(), serde_json::Error> {
+        let settings = serde_json::from_str::<WalletSettings>(
+            r#"{
+                "rates_api_options": "CryptoCompare"
+            }"#,
+        )?;
+
+        assert_eq!(
+            settings.rates_api_options,
+            TokenQuotesAPIOptions::BearbyRates
+        );
+        Ok(())
     }
 
     #[test]

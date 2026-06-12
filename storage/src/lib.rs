@@ -119,6 +119,18 @@ impl LocalStorage {
         Ok(())
     }
 
+    pub fn keys(&self) -> Result<Vec<Vec<u8>>> {
+        self.tree
+            .iter()
+            .keys()
+            .map(|result| {
+                result
+                    .map(|key| key.to_vec())
+                    .map_err(|e| LocalStorageError::StorageAccessError(e.to_string()))
+            })
+            .collect()
+    }
+
     pub fn get_versioned<T: DeserializeOwned>(&self, key: &[u8]) -> Result<T> {
         let some_value = self
             .tree

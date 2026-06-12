@@ -1,9 +1,9 @@
-use crate::{bg_provider::ProvidersManagement, bg_wallet::WalletManagement, Result};
+use crate::{Result, bg_provider::ProvidersManagement, bg_wallet::WalletManagement};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use cipher::{
-    argon2::{self, Argon2Seed, ARGON2_DEFAULT_CONFIG},
+    argon2::{self, ARGON2_DEFAULT_CONFIG, Argon2Seed},
     keychain::KeyChain,
     options::CipherOrders,
 };
@@ -23,10 +23,11 @@ use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Serialize};
 use session::management::{SessionManagement, SessionManager};
 use settings::common_settings::CommonSettings;
-use storage::codec;
 use storage::LocalStorage;
+use storage::codec;
 use token::ft::FToken;
 use wallet::{
+    Wallet, WalletAddrType,
     account_type::AccountType,
     bitcoin_wallet::BitcoinWallet,
     wallet_crypto::WalletCrypto,
@@ -34,7 +35,6 @@ use wallet::{
     wallet_init::WalletInit,
     wallet_storage::StorageOperations,
     wallet_types::WalletTypes,
-    Wallet, WalletAddrType,
 };
 
 use crate::Background;
@@ -368,20 +368,44 @@ impl StorageManagement for Background {
         let indicators = Self::get_indicators(Arc::clone(&storage));
         let mut wallets = Vec::with_capacity(indicators.len());
         let mut valid_indicators = Vec::with_capacity(indicators.len());
+        let mut next_indicators = indicators.clone();
 
         for addr in &indicators {
-            let w = Wallet::init_wallet(*addr, Arc::clone(&storage))?;
+            let wallet = Wallet::init_wallet(*addr, Arc::clone(&storage))?;
 
-            if w.try_get_wallet_data().is_some() {
-                wallets.push(w);
+            if wallet.get_wallet_data().is_ok() {
+                wallets.push(wallet);
                 valid_indicators.push(*addr);
             }
         }
 
-        if valid_indicators.len() != indicators.len() {
-            let bytes: Vec<u8> = valid_indicators
+        let keys = storage.keys()?;
+
+        for key in keys.iter().filter(|key| key.len() == SHA256_SIZE) {
+            let Ok(addr) = <[u8; SHA256_SIZE]>::try_from(key.as_slice()) else {
+                continue;
+            };
+
+            if valid_indicators.contains(&addr) {
+                continue;
+            }
+
+            let wallet = Wallet::init_wallet(addr, Arc::clone(&storage))?;
+
+            if wallet.get_wallet_data().is_ok() {
+                wallets.push(wallet);
+                valid_indicators.push(addr);
+
+                if !next_indicators.contains(&addr) {
+                    next_indicators.push(addr);
+                }
+            }
+        }
+
+        if next_indicators.len() != indicators.len() {
+            let bytes: Vec<u8> = next_indicators
                 .iter()
-                .flat_map(|array| array.iter().cloned())
+                .flat_map(|array| array.iter().copied())
                 .collect();
             storage.set(INDICATORS_DB_KEY_V1, &bytes)?;
             storage.flush()?;
@@ -415,8 +439,8 @@ impl StorageManagement for Background {
 mod tests_background_storage {
     use super::*;
     use crate::{
-        bg_crypto::CryptoOperations, bg_provider::ProvidersManagement, bg_wallet::WalletManagement,
-        BackgroundBip39Params, BackgroundSKParams,
+        BackgroundBip39Params, BackgroundSKParams, bg_crypto::CryptoOperations,
+        bg_provider::ProvidersManagement, bg_wallet::WalletManagement,
     };
     use crypto::{
         bip49::DerivationPath,
@@ -430,8 +454,8 @@ mod tests_background_storage {
     use wallet::wallet_data::WalletDataV1;
 
     use test_data::{
-        empty_passphrase, gen_anvil_net_conf, gen_btc_regtest_conf, gen_zil_mainnet_conf,
-        ANVIL_MNEMONIC, TEST_PASSWORD,
+        ANVIL_MNEMONIC, TEST_PASSWORD, empty_passphrase, gen_anvil_net_conf, gen_btc_regtest_conf,
+        gen_zil_mainnet_conf,
     };
 
     fn setup_test_background() -> (Background, String) {
