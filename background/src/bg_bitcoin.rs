@@ -3,6 +3,7 @@ use crate::{bg_provider::ProvidersManagement, Background, Result};
 use async_trait::async_trait;
 use errors::background::BackgroundError;
 use errors::wallet::WalletErrors;
+use network::btc::BtcOperations;
 use proto::address::Address;
 use proto::btc_tx::BitcoinMetadata;
 use proto::btc_utils::{AddressChain, BtcAccountXpubsInput, ByteCodec};
@@ -12,8 +13,8 @@ use std::collections::HashMap;
 use token::ft::FToken;
 use wallet::account::AccountV2;
 use wallet::bitcoin_wallet::{
-    build_op_return_output, build_unsigned_btc_transaction_with_extras, scan_btc_chains_for_xpubs,
-    BitcoinWallet,
+    append_new_change_address, build_op_return_output,
+    build_unsigned_btc_transaction_with_extras, scan_btc_chains_for_xpubs, BitcoinWallet,
 };
 use wallet::wallet_storage::StorageOperations;
 
@@ -39,6 +40,9 @@ pub trait BitcoinManagement {
     /// Pass `Some(memo)` for THORChain-style OP_RETURN; `None` for a plain vault transfer
     /// (e.g., Relay.link). `fee_rate` is sats-per-vbyte. Reuses the same UTXO selection /
     /// signing-metadata plumbing as a plain BTC transfer, adding only the optional memo output.
+    /// `xpubs` (HD wallets) lets the builder bootstrap a fresh P2WPKH change address when the
+    /// stored chain has no unused internal entry, mirroring `prepare_and_sign_btc_transaction`.
+    #[allow(clippy::too_many_arguments)]
     async fn build_btc_deposit_with_memo(
         &self,
         token: &FToken,
@@ -47,6 +51,7 @@ pub trait BitcoinManagement {
         amount_sat: u64,
         memo: Option<&str>,
         fee_rate: Option<u64>,
+        xpubs: Option<&BtcAccountXpubsInput>,
     ) -> std::result::Result<TransactionRequest, Self::Error>;
 }
 
@@ -111,6 +116,7 @@ impl BitcoinManagement for Background {
         amount_sat: u64,
         memo: Option<&str>,
         fee_rate: Option<u64>,
+        xpubs: Option<&BtcAccountXpubsInput>,
     ) -> Result<TransactionRequest> {
         let (wallet_ref, account_index) = self
             .wallets
@@ -131,7 +137,61 @@ impl BitcoinManagement for Background {
             })?;
 
         let wallet_data = wallet_ref.get_wallet_data()?;
-        let chains = wallet_ref.get_btc_addresses(account_index, wallet_data.chain_hash)?;
+        let mut chains = wallet_ref.get_btc_addresses(account_index, wallet_data.chain_hash)?;
+        let provider = self.get_provider(wallet_data.chain_hash)?;
+
+        let mut appended_change = false;
+        if let Some(xpubs) = xpubs {
+            let needs_new_change = chains
+                .get(&bitcoin::AddressType::P2wpkh)
+                .map(|c| c.get_internal().is_err())
+                .unwrap_or(true);
+            if needs_new_change {
+                let network = provider
+                    .config
+                    .bitcoin_network()
+                    .unwrap_or(bitcoin::Network::Bitcoin);
+                eprintln!("[btc-deposit] appending new P2WPKH change address");
+                append_new_change_address(
+                    &mut chains,
+                    xpubs,
+                    account_index,
+                    network,
+                    bitcoin::AddressType::P2wpkh,
+                )
+                .map_err(BackgroundError::WalletError)?;
+                appended_change = true;
+            }
+        }
+
+        // Refresh UTXOs from electrum before building: stored state goes stale
+        // after a broadcast (spent inputs are cleared but change is not credited),
+        // and listunspent also surfaces mempool change from a prior swap.
+        let refreshed = match provider.batch_btc_list_unspent(&mut chains).await {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("[btc-deposit] utxo refresh failed, using stored state: {e}");
+                false
+            }
+        };
+        if refreshed || appended_change {
+            wallet_ref.save_btc_addresses(account_index, &chains, wallet_data.chain_hash)?;
+        }
+
+        for (addr_type, chain) in &chains {
+            let utxo_sat: u64 = chain
+                .external
+                .iter()
+                .chain(chain.internal.iter())
+                .flat_map(|e| e.utxos.iter())
+                .map(|u| u.value)
+                .sum();
+            eprintln!(
+                "[btc-deposit] type={addr_type:?} ext={} int={} utxo_sat={utxo_sat} refreshed={refreshed}",
+                chain.external.len(),
+                chain.internal.len(),
+            );
+        }
         let extra_outputs = memo
             .map(|m| build_op_return_output(m.as_bytes()))
             .transpose()?

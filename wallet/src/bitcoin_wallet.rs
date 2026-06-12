@@ -85,27 +85,21 @@ pub async fn scan_btc_chains_for_xpubs(
 pub fn pick_primary_btc_entry(
     chains: &HashMap<bitcoin::AddressType, AddressChain>,
 ) -> Result<BtcAddressEntry> {
-    let preferred_type = bitcoin::AddressType::P2wpkh;
-
-    let segwit_fallback = || {
-        chains
-            .get(&preferred_type)
-            .ok_or_else(|| WalletErrors::BincodeError("P2WPKH chain missing".to_string()))?
-            .external
-            .first()
-            .cloned()
-            .ok_or_else(|| {
-                WalletErrors::BincodeError("P2WPKH external chain is empty".to_string())
-            })
-    };
-
-    match chains.get(&preferred_type) {
-        Some(chain) => match chain.get_external() {
-            Ok(e) => Ok(e.clone()),
-            Err(_) => segwit_fallback(),
-        },
-        None => segwit_fallback(),
-    }
+    const PREF: [bitcoin::AddressType; 4] = [
+        bitcoin::AddressType::P2wpkh,
+        bitcoin::AddressType::P2tr,
+        bitcoin::AddressType::P2sh,
+        bitcoin::AddressType::P2pkh,
+    ];
+    PREF.iter()
+        .copied()
+        .find_map(|t| {
+            chains
+                .get(&t)
+                .and_then(|chain| chain.get_external().ok().or_else(|| chain.external.first()))
+        })
+        .cloned()
+        .ok_or_else(|| WalletErrors::BincodeError("no BTC address chain available".to_string()))
 }
 
 pub fn pick_entry_with_most_utxo(
@@ -189,7 +183,7 @@ pub fn derive_sk_btc_address_chains(
     let secp = &bitcoin::secp256k1::SECP256K1;
     let secret_key = bitcoin::secp256k1::SecretKey::from_slice(sk_bytes)
         .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
-    let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+    let pk = bitcoin::secp256k1::PublicKey::from_secret_key(secp, &secret_key);
     let pk_bytes = pk.serialize();
 
     const FORMATS: [(bitcoin::AddressType, u32); 4] = [
@@ -235,18 +229,20 @@ pub fn derive_sk_btc_address_chains(
     Ok((chains, p2wpkh_address))
 }
 
-fn append_new_change_address(
+pub fn append_new_change_address(
     chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
     xpubs: &BtcAccountXpubsInput,
     account_index: usize,
     network: bitcoin::Network,
     addr_type: bitcoin::AddressType,
 ) -> Result<()> {
-    let chain = chains
-        .get_mut(&addr_type)
-        .ok_or_else(|| {
-            WalletErrors::BincodeError(format!("{addr_type:?} chain missing"))
-        })?;
+    // Bootstrap an empty chain for wallets that predate this address type in
+    // the persisted set (same as `rotate_account`); derive_btc_chain_from_xpub
+    // will populate it below.
+    let chain = chains.entry(addr_type).or_insert_with(|| AddressChain {
+        external: Vec::with_capacity(1),
+        internal: Vec::with_capacity(1),
+    });
     let next_index = u32::try_from(chain.internal.len())
         .map_err(|_| WalletErrors::BincodeError("internal chain index overflow".to_string()))?;
     let xpub = xpubs.xpub_for(addr_type).ok_or_else(|| {
@@ -343,18 +339,42 @@ pub fn build_unsigned_btc_transaction_with_extras(
         ));
     }
 
-    let segwit_chain = chains
-        .get(&bitcoin::AddressType::P2wpkh)
-        .ok_or_else(|| WalletErrors::BincodeError("P2WPKH chain missing".to_string()))?;
+    // Prefer P2WPKH for change; fall back to P2TR / P2SH / P2PKH for wallets
+    // created before P2WPKH was included in the persisted chain set.
+    const CHANGE_PREF: [bitcoin::AddressType; 4] = [
+        bitcoin::AddressType::P2wpkh,
+        bitcoin::AddressType::P2tr,
+        bitcoin::AddressType::P2sh,
+        bitcoin::AddressType::P2pkh,
+    ];
+    let (change_type, change_chain) = CHANGE_PREF
+        .iter()
+        .copied()
+        .find_map(|t| chains.get(&t).map(|c| (t, c)))
+        .ok_or_else(|| {
+            WalletErrors::BincodeError("no change address chain available".to_string())
+        })?;
 
-    let change_entry = match segwit_chain.get_internal() {
-        Ok(entry) => entry,
-        Err(e) => match (segwit_chain.external.len(), segwit_chain.internal.is_empty()) {
-            (1, true) => segwit_chain
-                .external
-                .first()
-                .ok_or_else(|| WalletErrors::BincodeError("external chain empty".to_string()))?,
-            _ => return Err(e.into()),
+    let change_entry = match change_chain.get_internal() {
+        Ok(entry) => {
+            eprintln!("[btc-deposit] change type={change_type:?} source=internal");
+            entry
+        }
+        Err(e) => match (change_chain.external.len(), change_chain.internal.is_empty()) {
+            (1, true) => {
+                eprintln!("[btc-deposit] change type={change_type:?} source=external-fallback");
+                change_chain.external.first().ok_or_else(|| {
+                    WalletErrors::BincodeError("external chain empty".to_string())
+                })?
+            }
+            _ => {
+                eprintln!(
+                    "[btc-deposit] change selection failed type={change_type:?} ext={} int={}: {e:?}",
+                    change_chain.external.len(),
+                    change_chain.internal.len(),
+                );
+                return Err(e.into());
+            }
         },
     };
     let change_address = change_entry.address.clone();
@@ -382,7 +402,7 @@ pub fn build_unsigned_btc_transaction_with_extras(
         })
         .sum();
 
-    let change_output_vsize = output_vsize_for(bitcoin::AddressType::P2wpkh);
+    let change_output_vsize = output_vsize_for(change_type);
     let estimated_vsize_with_change = (input_vsize_sum
         + dest_output_vsize_sum
         + extras_vsize
@@ -625,7 +645,7 @@ impl BitcoinWallet for Wallet {
                                 bitcoin::secp256k1::SecretKey::from_slice(&sk.to_bytes())
                                     .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
                             let public_key =
-                                bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+                                bitcoin::secp256k1::PublicKey::from_secret_key(secp, &secret_key);
                             Ok((secret_key, public_key))
                         })
                         .collect::<Result<Vec<_>>>()?
@@ -636,7 +656,7 @@ impl BitcoinWallet for Wallet {
                     let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&sk_bytes)
                         .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
                     let public_key =
-                        bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+                        bitcoin::secp256k1::PublicKey::from_secret_key(secp, &secret_key);
                     vec![(secret_key, public_key); psbt.inputs.len()]
                 }
                 _ => return Err(WalletErrors::InvalidAccountType),
@@ -819,7 +839,7 @@ impl BitcoinWallet for Wallet {
                 .map_err(WalletErrors::Bip329Error)?;
             let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&sk.to_bytes())
                 .map_err(|e| WalletErrors::BincodeError(e.to_string()))?;
-            let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+            let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(secp, &secret_key);
 
             btc_tx::sign_psbt_input(
                 &mut psbt,
@@ -867,9 +887,14 @@ impl BitcoinWallet for Wallet {
         let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
         let primary_type = bitcoin::AddressType::P2wpkh;
 
+        // Bootstrap an empty chain if the wallet predates P2WPKH inclusion;
+        // derive_btc_chain_from_xpub will populate it, and save_btc_addresses will persist it.
         let p2wpkh = chains
-            .get_mut(&primary_type)
-            .ok_or_else(|| WalletErrors::BincodeError("P2WPKH chain missing".to_string()))?;
+            .entry(primary_type)
+            .or_insert_with(|| AddressChain {
+                external: Vec::with_capacity(1),
+                internal: Vec::with_capacity(0),
+            });
         let next_index = u32::try_from(p2wpkh.external.len())
             .map_err(|_| {
                 WalletErrors::BincodeError("external chain index overflow".to_string())

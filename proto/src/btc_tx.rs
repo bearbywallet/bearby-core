@@ -61,8 +61,8 @@ pub fn sign_psbt_input(
                 .map_err(|_| TransactionErrors::SighashComputationFailed)?;
             let message = Message::from_digest(*sighash.as_ref());
 
-            let keypair = Keypair::from_secret_key(&secp, secret_key);
-            let tweaked = keypair.tap_tweak(&secp, None);
+            let keypair = Keypair::from_secret_key(secp, secret_key);
+            let tweaked = keypair.tap_tweak(secp, None);
             let sig = secp.sign_schnorr_no_aux_rand(&message, &tweaked.to_keypair());
 
             let input = &mut psbt.inputs[index];
@@ -240,7 +240,7 @@ pub fn sign_psbt(
             }
 
             let key_map = BTreeMap::from([(xonly, priv_key)]);
-            psbt.sign(&key_map, &secp)
+            psbt.sign(&key_map, secp)
                 .map_err(|_| TransactionErrors::PsbtSigningFailed)?;
         }
         bitcoin::AddressType::P2pkh => {
@@ -277,7 +277,7 @@ pub fn sign_psbt(
             }
 
             let key_map = BTreeMap::from([(btc_pubkey, priv_key)]);
-            psbt.sign(&key_map, &secp)
+            psbt.sign(&key_map, secp)
                 .map_err(|_| TransactionErrors::PsbtSigningFailed)?;
         }
     }

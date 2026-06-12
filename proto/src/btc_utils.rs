@@ -168,7 +168,7 @@ pub fn create_btc_address(
             use bitcoin::secp256k1::{SECP256K1, XOnlyPublicKey};
             let x_only_pk = XOnlyPublicKey::from(compressed_pk.0);
             let secp = &SECP256K1;
-            bitcoin::Address::p2tr(&secp, x_only_pk, None, hrp)
+            bitcoin::Address::p2tr(secp, x_only_pk, None, hrp)
         }
         _ => return Err(PubKeyError::InvalidKeyType),
     };
@@ -205,9 +205,9 @@ impl BtcAccountXpubsInput {
         let derive = |purpose: u32| -> std::result::Result<Xpub, Bip329Errors> {
             let path = account_path(purpose)?;
             let xpriv = master
-                .derive_priv(&secp, &path)
+                .derive_priv(secp, &path)
                 .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
-            Ok(Xpub::from_priv(&secp, &xpriv))
+            Ok(Xpub::from_priv(secp, &xpriv))
         };
 
         Ok(Self {
@@ -246,10 +246,10 @@ pub fn derive_btc_chain_from_xpub(
     let end = start_index.saturating_add(count);
 
     let external_xpub = account_xpub
-        .ckd_pub(&secp, ChildNumber::Normal { index: 0 })
+        .ckd_pub(secp, ChildNumber::Normal { index: 0 })
         .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
     let internal_xpub = account_xpub
-        .ckd_pub(&secp, ChildNumber::Normal { index: 1 })
+        .ckd_pub(secp, ChildNumber::Normal { index: 1 })
         .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
 
     chain.external.reserve(count as usize);
@@ -260,7 +260,7 @@ pub fn derive_btc_chain_from_xpub(
                       idx: u32|
      -> std::result::Result<BtcAddressEntry, Bip329Errors> {
         let child = branch_xpub
-            .ckd_pub(&secp, ChildNumber::Normal { index: idx })
+            .ckd_pub(secp, ChildNumber::Normal { index: idx })
             .map_err(|e| Bip329Errors::InvalidKey(e.to_string()))?;
         let pk_bytes = child.public_key.serialize();
         let address = create_btc_address(&pk_bytes, network, addr_type)
