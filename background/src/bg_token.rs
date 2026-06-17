@@ -367,8 +367,12 @@ impl TokensManagement for Background {
             ));
         } else if provider.config.slip_44 == SOLANA {
             //
-        } else if let Some(t) = w.get_ftokens()?.into_iter().next() {
-            token_meta.logo = t.logo;
+        } else if let Some(native) = w
+            .get_ftokens()?
+            .into_iter()
+            .find(|t| t.native && t.chain_hash == data.chain_hash)
+        {
+            token_meta.logo = native.logo;
         }
 
         Ok(token_meta)
