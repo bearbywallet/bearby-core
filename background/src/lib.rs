@@ -57,6 +57,15 @@ pub struct Background {
     pub wallets: Vec<Wallet>,
 }
 
+impl Clone for Background {
+    fn clone(&self) -> Self {
+        Self {
+            storage: Arc::clone(&self.storage),
+            wallets: self.wallets.clone(),
+        }
+    }
+}
+
 pub mod bg_bitcoin;
 pub mod bg_book;
 pub mod bg_connections;
