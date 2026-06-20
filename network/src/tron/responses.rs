@@ -58,6 +58,9 @@ pub struct TriggerContractResponse {
     pub result: Option<TriggerResult>,
     #[serde(default)]
     pub energy_used: i64,
+    /// Return data from a constant (read-only) call: array of hex words, one per call frame.
+    #[serde(default)]
+    pub constant_result: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

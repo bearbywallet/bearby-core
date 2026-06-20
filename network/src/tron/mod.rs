@@ -155,12 +155,13 @@ impl TronHttpClient {
         owner_address: Vec<u8>,
         contract_address: Vec<u8>,
         data: Vec<u8>,
+        call_value: i64,
     ) -> std::result::Result<TriggerContractResponse, NetworkErrors> {
         let body = TriggerSmartContractRequest {
             owner_address: alloy::hex::encode(&owner_address),
             contract_address: alloy::hex::encode(&contract_address),
             data: alloy::hex::encode(&data),
-            call_value: None,
+            call_value: (call_value > 0).then_some(call_value),
         };
         self.post("/wallet/triggerconstantcontract", &body).await
     }
@@ -246,6 +247,14 @@ pub trait TronOperations {
         txns: Vec<TransactionReceipt>,
     ) -> Result<Vec<TransactionReceipt>>;
     async fn tron_fill_block_ref(&self, tx: &mut TronTransaction) -> Result<()>;
+    /// Read-only TRON constant call (TRON's analogue of `eth_call`). Returns the
+    /// decoded first result word(s) of `/wallet/triggerconstantcontract`.
+    async fn tron_constant_call(
+        &self,
+        owner: &Address,
+        contract: &Address,
+        data: Vec<u8>,
+    ) -> Result<Vec<u8>>;
 }
 
 #[async_trait]
@@ -377,17 +386,17 @@ impl TronOperations for NetworkProvider {
                         "TriggerSmartContract" => {
                             let contract_address = tron_tx.to_address()?;
 
-                            let data = tron_tx
+                            let trigger = tron_tx
                                 .raw()
                                 .contract
                                 .first()
                                 .and_then(|c| c.parameter.as_ref())
-                                .map(|p| {
-                                    protocol::TriggerSmartContract::decode(&p.value[..])
-                                        .map(|t| t.data)
-                                        .unwrap_or_default()
+                                .and_then(|p| {
+                                    protocol::TriggerSmartContract::decode(&p.value[..]).ok()
                                 })
                                 .unwrap_or_default();
+                            let data = trigger.data;
+                            let call_value = trigger.call_value;
 
                             // Energy: simulate + energy sharing with contract deployer
                             let (sim, contract_info) = tokio::join!(
@@ -395,16 +404,26 @@ impl TronOperations for NetworkProvider {
                                     sender.to_tron_bytes(),
                                     contract_address.to_tron_bytes(),
                                     data.clone(),
+                                    call_value,
                                 ),
                                 client.get_contract(&contract_address),
                             );
 
                             let energy_to_pay = match sim {
                                 Ok(sim) => {
+                                    // TRON's triggerconstantcontract reports reverts via
+                                    // `result.message` (e.g. "REVERT opcode executed") WITHOUT
+                                    // setting `result.code`. Checking only `code.is_some()`
+                                    // misses reverts, causing the energy estimate to use the
+                                    // tiny pre-revert energy_used → fee_limit far too low →
+                                    // on-chain OUT_OF_ENERGY. A non-empty message signals failure.
                                     let failed = sim
                                         .result
                                         .as_ref()
-                                        .map(|r| r.code.is_some())
+                                        .map(|r| {
+                                            r.code.is_some()
+                                                || r.message.as_deref().is_some_and(|m| !m.is_empty())
+                                        })
                                         .unwrap_or(false);
                                     if failed || sim.energy_used == 0 {
                                         DEFAULT_FALLBACK_ENERGY
@@ -591,6 +610,26 @@ impl TronOperations for NetworkProvider {
             tx.set_expiration(timestamp + 300_000);
 
             Ok(())
+        })
+    }
+
+    async fn tron_constant_call(
+        &self,
+        owner: &Address,
+        contract: &Address,
+        data: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        tron_retry!(self, "constant_call", |client| {
+            let res = client
+                .trigger_constant_contract(
+                    owner.to_tron_bytes(),
+                    contract.to_tron_bytes(),
+                    data.clone(),
+                    0,
+                )
+                .await?;
+            let hex_str = res.constant_result.first().cloned().unwrap_or_default();
+            alloy::hex::decode(&hex_str).map_err(|e| NetworkErrors::RPCError(e.to_string()))
         })
     }
 }
