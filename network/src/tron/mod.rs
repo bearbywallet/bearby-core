@@ -44,6 +44,16 @@ const DEFAULT_FALLBACK_ENERGY: i64 = 130_000;
 const DEFAULT_ENERGY_FEE: i64 = 420; // SUN per energy unit (Tron mainnet)
 const DEFAULT_TRANSACTION_FEE: i64 = 1000; // SUN per bandwidth byte
 
+/// TRON returns a failed call's `result.message` hex-encoded (the raw bytes of e.g.
+/// "REVERT opcode executed" or a VM "CPU timeout for '…' operation" message). Decode to UTF-8
+/// best-effort, falling back to the raw string when it is not valid hex/UTF-8.
+fn decode_tron_revert_message(msg: &str) -> String {
+    alloy::hex::decode(msg)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_else(|| msg.to_string())
+}
+
 macro_rules! tron_retry {
     ($self:expr, $method:expr, |$client:ident| $body:expr) => {{
         let retry_start = std::time::Instant::now();
@@ -628,6 +638,24 @@ impl TronOperations for NetworkProvider {
                     0,
                 )
                 .await?;
+            // TRON reports execution failures (revert, OutOfTime/OutOfEnergy) via `result.code`
+            // and/or a non-empty `result.message`, leaving `constant_result` empty. Surface these
+            // as errors instead of returning empty bytes: otherwise callers decode the empty payload
+            // as a valid "no data" answer (e.g. the SunSwap quote path mislabels an OutOfTime as
+            // "no liquidity for pair"). `result.message` is hex-encoded — decode it best-effort.
+            if let Some(result) = &res.result {
+                let failed = result.code.is_some()
+                    || result.message.as_deref().is_some_and(|m| !m.is_empty());
+                if failed {
+                    let msg = result
+                        .message
+                        .as_deref()
+                        .map(decode_tron_revert_message)
+                        .or_else(|| result.code.clone())
+                        .unwrap_or_else(|| "constant call failed".to_string());
+                    return Err(NetworkErrors::RPCError(msg));
+                }
+            }
             let hex_str = res.constant_result.first().cloned().unwrap_or_default();
             alloy::hex::decode(&hex_str).map_err(|e| NetworkErrors::RPCError(e.to_string()))
         })
@@ -642,6 +670,22 @@ mod tests {
     use config::abi::ERC20_ABI;
     use std::time::Instant;
     use test_data::gen_tron_testnet_conf;
+
+    #[test]
+    fn test_decode_tron_revert_message() {
+        // Real `result.message` a TRON node returns for an over-budget constant call (the bug that
+        // surfaced as a false "no liquidity for pair").
+        let hex = "636c617373206f72672e74726f6e2e636f72652e766d2e70726f6772616d2e\
+                   50726f6772616d244f75744f6654696d65457863657074696f6e203a20435055\
+                   2074696d656f757420666f7220274455503427206f7065726174696f6e2065786563\
+                   7574696e67";
+        let decoded = decode_tron_revert_message(&hex.replace(['\n', ' '], ""));
+        assert!(decoded.contains("OutOfTimeException"), "got: {decoded}");
+        assert!(decoded.contains("CPU timeout"), "got: {decoded}");
+
+        // Non-hex input is returned unchanged.
+        assert_eq!(decode_tron_revert_message("plain text"), "plain text");
+    }
 
     #[tokio::test]
     async fn test_tron_connect_timeout_unreachable() {
