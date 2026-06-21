@@ -13,15 +13,14 @@ use proto::address::Address;
 use proto::tron_generated::protocol;
 use proto::tron_tx::TronTransaction;
 use proto::tx::{TransactionReceipt, TransactionRequest};
+use rand::seq::SliceRandom;
 use reqwest::Client;
 use responses::*;
 use serde_json::json;
 use std::time::Duration;
 
 const TRON_REQUEST_TIMEOUT_SECS: u64 = 8;
-const TRON_ATTEMPT_TIMEOUT_SECS: u64 = 25;
 const TRON_TOTAL_TIMEOUT_SECS: u64 = 60;
-const TRON_MAX_RETRIES: usize = 3;
 const TRON_BLOCK_TIME_SECS: u64 = 3;
 const BLOCK_SAMPLE_SIZE: u64 = 10;
 // Transaction size constants for bandwidth calculation.
@@ -59,14 +58,24 @@ macro_rules! tron_retry {
         let retry_start = std::time::Instant::now();
         let total_deadline = Duration::from_secs(TRON_TOTAL_TIMEOUT_SECS);
         let mut last_error = None;
-        let endpoints = $self.tron_endpoints();
-        for (_i, endpoint) in endpoints.iter().take(TRON_MAX_RETRIES).enumerate() {
-            let elapsed = retry_start.elapsed();
-            if elapsed >= total_deadline {
+        // Random start + walk all endpoints until exhausted (mirrors the BTC
+        // adapter's `with_electrum_client`). Load is distributed across nodes
+        // instead of always hitting the first configured URL first.
+        let mut endpoints = $self.tron_endpoints();
+        endpoints.shuffle(&mut rand::rng());
+        for (i, endpoint) in endpoints.iter().enumerate() {
+            let remaining = total_deadline.saturating_sub(retry_start.elapsed());
+            if remaining.is_zero() {
                 break;
             }
-            let remaining = total_deadline - elapsed;
-            let per_attempt = Duration::from_secs(TRON_ATTEMPT_TIMEOUT_SECS).min(remaining);
+            // Dynamic fair slice: divide the remaining budget evenly across the
+            // endpoints still untried so every configured node gets a turn
+            // within total_deadline (e.g. 5 nodes / 60s ≈ 12s each).
+            let endpoints_left = (endpoints.len() - i) as u32;
+            let per_attempt = remaining / endpoints_left.max(1);
+            if per_attempt.is_zero() {
+                break;
+            }
             match tokio::time::timeout(per_attempt, async {
                 let $client = TronHttpClient::new(endpoint)?;
                 $body
@@ -82,7 +91,8 @@ macro_rules! tron_retry {
                 Err(_) => {
                     last_error = Some(NetworkErrors::RPCError(format!(
                         "Timeout {}s: {}",
-                        TRON_REQUEST_TIMEOUT_SECS, endpoint
+                        per_attempt.as_secs(),
+                        endpoint
                     )));
                 }
             }
