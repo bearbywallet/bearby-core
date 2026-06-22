@@ -232,6 +232,31 @@ pub fn derive_sk_btc_address_chains(
     Ok((chains, p2wpkh_address))
 }
 
+/// Derive BTC address chains deterministically from a BIP39 seed WITHOUT any
+/// network calls. Mirrors the first iteration of `scan_btc_chains_for_xpubs`
+/// (window = POOL_SIZE_EXTERNAL) but skips Electrum history/UTXO scanning.
+///
+/// Returns one `AddressChain` per address type (P2pkh, P2sh, P2wpkh, P2tr),
+/// each populated with `POOL_SIZE_EXTERNAL` external + internal entries whose
+/// `history` and `utxos` are empty.
+pub fn derive_btc_chains_offline(
+    seed: &SecretBox<[u8; SHA512_SIZE]>,
+    account_index: usize,
+    network: bitcoin::Network,
+) -> Result<HashMap<bitcoin::AddressType, AddressChain>> {
+    let acct_idx = u32::try_from(account_index)
+        .map_err(|_| WalletErrors::BincodeError("account index overflow".to_string()))?;
+
+    let xpubs = BtcAccountXpubsInput::from_seed(seed, acct_idx, network)
+        .map_err(WalletErrors::Bip329Error)?;
+
+    let mut chains: HashMap<bitcoin::AddressType, AddressChain> = HashMap::with_capacity(4);
+    derive_btc_addresses_from_xpubs(&xpubs, account_index, network, 0, POOL_SIZE_EXTERNAL, &mut chains)
+        .map_err(WalletErrors::Bip329Error)?;
+
+    Ok(chains)
+}
+
 pub fn append_new_change_address(
     chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
     xpubs: &BtcAccountXpubsInput,
@@ -565,6 +590,14 @@ pub trait BitcoinWallet {
         chain: &ChainConfig,
     ) -> std::result::Result<AccountV2, Self::Error>;
 
+    async fn generate_btc_chains_offline(
+        &self,
+        seed_bytes: &Argon2Seed,
+        account_index: usize,
+        chain_hash: u64,
+        network: bitcoin::Network,
+    ) -> std::result::Result<(), Self::Error>;
+
     fn get_btc_addresses_raw(
         &self,
         account_index: usize,
@@ -767,6 +800,38 @@ impl BitcoinWallet for Wallet {
         };
         let entry = self.generate_wallet(&xpubs, account_index, chain).await?;
         AccountV2::from_hd(seed, name, &entry.path, Some(network)).map_err(Into::into)
+    }
+
+    async fn generate_btc_chains_offline(
+        &self,
+        seed_bytes: &Argon2Seed,
+        account_index: usize,
+        chain_hash: u64,
+        network: bitcoin::Network,
+    ) -> Result<()> {
+        let data = self.get_wallet_data()?;
+
+        match &data.wallet_type {
+            WalletTypes::SecretPhrase((_, has_passphrase)) => {
+                if *has_passphrase {
+                    return Ok(());
+                }
+                let mnemonic = self.reveal_mnemonic(seed_bytes)?;
+                let seed_secret = mnemonic.to_seed(&crate::empty_passphrase())?;
+                let chains = derive_btc_chains_offline(&seed_secret, account_index, network)?;
+                self.save_btc_addresses(account_index, &chains, chain_hash)?;
+            }
+            WalletTypes::SecretKey => {
+                let keypair =
+                    self.reveal_keypair(account_index, seed_bytes, &crate::empty_passphrase())?;
+                let sk_bytes = keypair.get_sk_bytes();
+                let (chains, _) = derive_sk_btc_address_chains(&sk_bytes, network)?;
+                self.save_btc_addresses(account_index, &chains, chain_hash)?;
+            }
+            _ => return Err(WalletErrors::InvalidAccountType),
+        }
+
+        Ok(())
     }
 
     fn get_btc_addresses_raw(
@@ -1390,6 +1455,34 @@ mod tests_btc_wallet {
         };
 
         wallet.mark_btc_addresses_used(0, &historical).unwrap();
+    }
+
+    #[test]
+    fn test_derive_btc_chains_offline_produces_4_types() {
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let seed = mnemonic.to_seed(&empty_passphrase()).unwrap();
+        let chains = super::derive_btc_chains_offline(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
+
+        assert_eq!(chains.len(), 4);
+        for addr_type in [
+            bitcoin::AddressType::P2pkh,
+            bitcoin::AddressType::P2sh,
+            bitcoin::AddressType::P2wpkh,
+            bitcoin::AddressType::P2tr,
+        ] {
+            let chain = chains.get(&addr_type).unwrap();
+            assert!(!chain.external.is_empty(), "{:?} external empty", addr_type);
+            assert!(!chain.internal.is_empty(), "{:?} internal empty", addr_type);
+            assert!(chain.external.iter().all(|e| e.history.is_empty()));
+        }
+
+        let p2wpkh = chains.get(&bitcoin::AddressType::P2wpkh).unwrap();
+        let addr = p2wpkh.external[0].address.auto_format();
+        assert_eq!(
+            addr, "bc1q4qw42stdzjqs59xvlrlxr8526e3nunw7mp73te",
+            "expected exact known-vector P2WPKH address for ANVIL mnemonic at account 0, got: {}",
+            addr
+        );
     }
 
     #[test]
