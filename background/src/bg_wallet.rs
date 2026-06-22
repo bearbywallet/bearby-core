@@ -12,6 +12,7 @@ use config::{
     cipher::{PROOF_SALT, PROOF_SIZE},
     session::AuthMethod,
 };
+use crypto::bip49::DerivationPath;
 use errors::{account::AccountErrors, background::BackgroundError};
 use pqbip39::mnemonic::Mnemonic;
 use proto::pubkey::PubKey;
@@ -20,7 +21,8 @@ use session::management::{SessionManagement, SessionManager};
 use settings::wallet_settings::WalletSettings;
 use std::sync::Arc;
 use wallet::{
-    bitcoin_wallet::BitcoinWallet, wallet_init::WalletInit, wallet_security::WalletSecurity,
+    bitcoin_wallet::BitcoinWallet, wallet_account::AccountManagement,
+    wallet_init::WalletInit, wallet_security::WalletSecurity,
     wallet_storage::StorageOperations, Bip39Params, LedgerParams, SecretKeyParams, Wallet,
     WalletConfig,
 };
@@ -179,6 +181,8 @@ impl WalletManagement for Background {
                 .await?;
         }
 
+        self.sync_chain_accounts(wallet_index, &argon_seed).await?;
+
         Ok(argon_seed)
     }
 
@@ -209,6 +213,8 @@ impl WalletManagement for Background {
                 .migrate_btc_storage_if_needed(&seed_bytes, &provider.config)
                 .await?;
         }
+
+        self.sync_chain_accounts(wallet_index, &seed_bytes).await?;
 
         Ok(seed_bytes)
     }
@@ -462,6 +468,74 @@ impl WalletManagement for Background {
         indicators.retain(|&x| x != wallet_address);
         self.wallets.retain(|x| x.wallet_address != wallet_address);
         self.save_indicators(indicators)?;
+
+        Ok(())
+    }
+}
+
+impl Background {
+    /// Derive accounts for all known chains after unlock.
+    /// Ensures every chain has accounts before any switch,
+    /// making select_accounts_chain a pointer-only operation.
+    async fn sync_chain_accounts(
+        &self,
+        wallet_index: usize,
+        seed: &Argon2Seed,
+    ) -> Result<()> {
+        let wallet = self.get_wallet_by_index(wallet_index)?;
+        let mut data = wallet.get_wallet_data()?;
+        let providers = self.get_providers();
+
+        let mut seen_slip44 = std::collections::HashSet::new();
+        for provider in &providers {
+            let slip44 = provider.config.slip_44;
+            if !seen_slip44.insert(slip44) {
+                continue;
+            }
+            match wallet.ensure_chain_accounts(
+                &mut data,
+                slip44,
+                provider.config.bitcoin_network(),
+                seed,
+                &wallet::empty_passphrase(),
+            ) {
+                Ok(()) => {}
+                Err(errors::wallet::WalletErrors::InvalidAccountType) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        wallet.save_wallet_data(&data)?;
+
+        // BTC address chains: generate for EVERY BTC provider's chain_hash
+        // (not deduped by slip44 — mainnet and testnet have the same slip44
+        // but different chain_hashes with isolated address storage)
+        for provider in &providers {
+            if provider.config.slip_44 == crypto::slip44::BITCOIN {
+                if let Some(network) = provider.config.bitcoin_network() {
+                    let chain_hash = provider.config.hash();
+                    let btc_bip = DerivationPath::default_bip(crypto::slip44::BITCOIN);
+                    let account_count = data
+                        .slip44_accounts
+                        .get(&crypto::slip44::BITCOIN)
+                        .and_then(|m| m.get(&btc_bip))
+                        .map_or(0, |v| v.len());
+
+                    for idx in 0..account_count {
+                        if wallet.get_btc_addresses(idx, chain_hash).is_err() {
+                            match wallet
+                                .generate_btc_chains_offline(&data, seed, idx, chain_hash, network)
+                                .await
+                            {
+                                Ok(()) => {}
+                                Err(errors::wallet::WalletErrors::InvalidAccountType) => continue,
+                                Err(e) => return Err(e.into()),
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(())
     }

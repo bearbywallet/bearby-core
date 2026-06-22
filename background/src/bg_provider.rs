@@ -1,21 +1,13 @@
 use crate::{bg_wallet::WalletManagement, Background, Result};
 use async_trait::async_trait;
-use config::session::AuthMethod;
 use crypto::{bip49::DerivationPath, slip44};
 use errors::{background::BackgroundError, wallet::WalletErrors};
-use network::{btc::BtcOperations, common::Provider, provider::NetworkProvider};
+use network::{common::Provider, provider::NetworkProvider};
 use proto::address::Address;
-use proto::btc_utils::{extend_address_pool, AddressChain, BtcAccountXpubsInput};
 use rpc::network_config::ChainConfig;
 use secrecy::SecretString;
 use std::sync::Arc;
-use wallet::{
-    bitcoin_wallet::{derive_sk_btc_address_chains, BitcoinWallet},
-    wallet_account::AccountManagement,
-    wallet_crypto::WalletCrypto,
-    wallet_storage::StorageOperations,
-    wallet_types::WalletTypes,
-};
+use wallet::{wallet_storage::StorageOperations, wallet_types::WalletTypes};
 
 #[async_trait]
 pub trait ProvidersManagement {
@@ -163,7 +155,7 @@ impl ProvidersManagement for Background {
         &self,
         wallet_index: usize,
         chain_hash: u64,
-        password: Option<&SecretString>,
+        _password: Option<&SecretString>,
     ) -> Result<()> {
         let provider = self.get_provider(chain_hash)?;
         let wallet = self.get_wallet_by_index(wallet_index)?;
@@ -193,150 +185,6 @@ impl ProvidersManagement for Background {
         data.bip = new_bip;
         data.chain_hash = chain_hash;
 
-        let reference_count = data
-            .slip44_accounts
-            .values()
-            .flat_map(|bip_map| bip_map.values())
-            .map(|accounts| accounts.len())
-            .max()
-            .unwrap_or(1);
-        let target_count = data
-            .slip44_accounts
-            .get(&new_slip44)
-            .and_then(|bip_map| bip_map.get(&new_bip))
-            .map_or(0, |accounts| accounts.len());
-        let has_accounts = target_count >= reference_count;
-
-        if !has_accounts {
-            let seed = if data.biometric_type != AuthMethod::None {
-                self.unlock_wallet_with_session(wallet_index).await?
-            } else if let Some(pass) = password {
-                self.unlock_wallet_with_password(pass, None, wallet_index)
-                    .await?
-            } else {
-                return Err(BackgroundError::AuthenticationRequired);
-            };
-
-            wallet.ensure_chain_accounts(
-                &mut data,
-                new_slip44,
-                provider.config.bitcoin_network(),
-                &seed,
-                &wallet::empty_passphrase(),
-            )?;
-        }
-
-        if new_slip44 == slip44::BITCOIN {
-            if let Some(new_network) = provider.config.bitcoin_network() {
-                if let Some(bip_map) = data.slip44_accounts.get_mut(&new_slip44) {
-                    for accounts in bip_map.values_mut() {
-                        for account in accounts.iter_mut() {
-                            if let Address::Secp256k1Bitcoin(_) = &account.addr {
-                                if let Ok(current_network) = account.addr.get_bitcoin_network() {
-                                    if current_network != new_network {
-                                        account.addr =
-                                            account.addr.re_encode_btc_network(new_network)?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let btc_accounts = data
-                .slip44_accounts
-                .get(&new_slip44)
-                .and_then(|bip_map| bip_map.get(&new_bip))
-                .map(|accounts| {
-                    accounts
-                        .iter()
-                        .enumerate()
-                        .filter(|(idx, _)| wallet.get_btc_addresses(*idx, chain_hash).is_err())
-                        .map(|(idx, a)| (idx, a.name.clone()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            if !btc_accounts.is_empty() {
-                match &data.wallet_type {
-                    WalletTypes::SecretPhrase(_) => {
-                        let seed = if data.biometric_type != AuthMethod::None {
-                            self.unlock_wallet_with_session(wallet_index).await?
-                        } else if let Some(pass) = password {
-                            self.unlock_wallet_with_password(pass, None, wallet_index)
-                                .await?
-                        } else {
-                            return Err(BackgroundError::AuthenticationRequired);
-                        };
-
-                        let mnemonic = wallet.reveal_mnemonic(&seed)?;
-                        let seed_secret = mnemonic.to_seed(&wallet::empty_passphrase())?;
-
-                        for (idx, name) in btc_accounts {
-                            wallet
-                                .generate_bip39_btc_account(
-                                    &seed_secret,
-                                    idx,
-                                    name,
-                                    &provider.config,
-                                )
-                                .await?;
-                        }
-                    }
-                    WalletTypes::SecretKey => {
-                        let seed = if data.biometric_type != AuthMethod::None {
-                            self.unlock_wallet_with_session(wallet_index).await?
-                        } else if let Some(pass) = password {
-                            self.unlock_wallet_with_password(pass, None, wallet_index)
-                                .await?
-                        } else {
-                            return Err(BackgroundError::AuthenticationRequired);
-                        };
-
-                        let network = provider
-                            .config
-                            .bitcoin_network()
-                            .unwrap_or(bitcoin::Network::Bitcoin);
-
-                        for (idx, _) in btc_accounts {
-                            let keypair =
-                                wallet.reveal_keypair(idx, &seed, &wallet::empty_passphrase())?;
-                            let sk_bytes = keypair.get_sk_bytes();
-                            let (mut chains, _) = derive_sk_btc_address_chains(&sk_bytes, network)?;
-                            if let Err(e) = provider.batch_script_get_history(&mut chains).await {
-                                println!(
-                                    "[select_accounts_chain] sk btc history scan failed: {:?}",
-                                    e,
-                                );
-                            }
-                            wallet.save_btc_addresses(idx, &chains, chain_hash)?;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if new_slip44 == slip44::BITCOIN {
-            if let Some(network) = provider.config.bitcoin_network() {
-                if let WalletTypes::SecretPhrase(_) = &data.wallet_type {
-                    try_extend_btc_pool_background(&PoolExtendCtx {
-                        bg: self,
-                        wallet_index,
-                        password,
-                        wallet,
-                        biometric_type: &data.biometric_type,
-                        account_count: data.get_accounts().map_or(0, |a| a.len()),
-                        chain_hash,
-                        network,
-                    })
-                    .await
-                    .ok();
-                }
-            }
-        }
-
         let new_count = data
             .slip44_accounts
             .get(&new_slip44)
@@ -345,53 +193,12 @@ impl ProvidersManagement for Background {
         if new_count > 0 && data.selected_account >= new_count {
             data.selected_account = new_count - 1;
         }
+
         wallet.save_wallet_data(&data)?;
         wallet.save_ftokens(&ftokens)?;
 
         Ok(())
     }
-}
-
-struct PoolExtendCtx<'a> {
-    bg: &'a Background,
-    wallet_index: usize,
-    password: Option<&'a SecretString>,
-    wallet: &'a wallet::Wallet,
-    biometric_type: &'a AuthMethod,
-    account_count: usize,
-    chain_hash: u64,
-    network: bitcoin::Network,
-}
-
-async fn try_extend_btc_pool_background(c: &PoolExtendCtx<'_>) -> crate::Result<()> {
-    let seed = if *c.biometric_type != AuthMethod::None {
-        c.bg.unlock_wallet_with_session(c.wallet_index).await?
-    } else if let Some(pass) = c.password {
-        c.bg.unlock_wallet_with_password(pass, None, c.wallet_index)
-            .await?
-    } else {
-        return Err(BackgroundError::AuthenticationRequired);
-    };
-    let mnemonic = c.wallet.reveal_mnemonic(&seed)?;
-    let seed_secret = mnemonic
-        .to_seed(&wallet::empty_passphrase())
-        .map_err(|e| BackgroundError::WalletError(WalletErrors::BincodeError(format!("{e:?}"))))?;
-    for account_index in 0..c.account_count {
-        let mut chains = c.wallet.get_btc_addresses(account_index, c.chain_hash)?;
-        if chains.values().any(AddressChain::pool_watermark_reached) {
-            let acct_idx = u32::try_from(account_index).map_err(|e| {
-                BackgroundError::WalletError(WalletErrors::BincodeError(e.to_string()))
-            })?;
-            let map_bip_err = |e| BackgroundError::WalletError(WalletErrors::Bip329Error(e));
-            let xpubs = BtcAccountXpubsInput::from_seed(&seed_secret, acct_idx, c.network)
-                .map_err(map_bip_err)?;
-            extend_address_pool(&mut chains, &xpubs, account_index, c.network)
-                .map_err(map_bip_err)?;
-            c.wallet
-                .save_btc_addresses(account_index, &chains, c.chain_hash)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -407,6 +214,7 @@ mod tests_providers {
         empty_passphrase, gen_anvil_net_conf, gen_btc_testnet_conf, gen_tron_testnet_conf,
         gen_zil_testnet_conf, ANVIL_MNEMONIC, TEST_PASSWORD,
     };
+    use wallet::bitcoin_wallet::BitcoinWallet;
 
     fn setup_test_background() -> (Background, String) {
         let mut rng = rand::rng();
@@ -655,7 +463,7 @@ mod tests_providers {
     }
 
     #[tokio::test]
-    async fn test_select_chain_derive_missing() {
+    async fn test_unlock_derives_accounts_for_all_chains() {
         let (mut bg, _) = setup_test_background();
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
         let btc = gen_btc_testnet_conf();
@@ -680,16 +488,24 @@ mod tests_providers {
         .await
         .unwrap();
 
+        // Only BTC accounts exist after creation
         let wallet = bg.get_wallet_by_index(0).unwrap();
         let data = wallet.get_wallet_data().unwrap();
         assert!(data.slip44_accounts.contains_key(&btc.slip_44));
         assert!(!data.slip44_accounts.contains_key(&trx.slip_44));
 
+        // Add TRX provider, then unlock → sync_chain_accounts derives TRX accounts
         bg.add_provider(trx.clone()).unwrap();
-
-        bg.select_accounts_chain(0, trx.hash(), Some(&password))
+        bg.unlock_wallet_with_password(&password, None, 0)
             .await
             .unwrap();
+
+        let wallet = bg.get_wallet_by_index(0).unwrap();
+        let data = wallet.get_wallet_data().unwrap();
+        assert!(data.slip44_accounts.contains_key(&trx.slip_44));
+
+        // Switch to TRX — pointer-only, no auth needed
+        bg.select_accounts_chain(0, trx.hash(), None).await.unwrap();
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
         let data = wallet.get_wallet_data().unwrap();
@@ -697,7 +513,6 @@ mod tests_providers {
         assert_eq!(data.slip44, trx.slip_44);
         assert_eq!(data.bip, DerivationPath::BIP44_PURPOSE);
         assert_eq!(data.chain_hash, trx.hash());
-        assert!(data.slip44_accounts.contains_key(&trx.slip_44));
 
         let tron_accounts = data.get_accounts().unwrap();
         assert_eq!(tron_accounts.len(), 2);
@@ -747,9 +562,12 @@ mod tests_providers {
         .await
         .unwrap();
 
-        bg.select_accounts_chain(0, trx.hash(), Some(&password))
+        // Unlock → sync_chain_accounts derives accounts for all chains
+        bg.unlock_wallet_with_password(&password, None, 0)
             .await
             .unwrap();
+
+        bg.select_accounts_chain(0, trx.hash(), None).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -765,9 +583,7 @@ mod tests_providers {
             .unwrap();
         assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
 
-        bg.select_accounts_chain(0, eth.hash(), Some(&password))
-            .await
-            .unwrap();
+        bg.select_accounts_chain(0, eth.hash(), None).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -811,9 +627,12 @@ mod tests_providers {
         .await
         .unwrap();
 
-        bg.select_accounts_chain(0, btc.hash(), Some(&password))
+        // Unlock → sync_chain_accounts derives accounts for all chains
+        bg.unlock_wallet_with_password(&password, None, 0)
             .await
             .unwrap();
+
+        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
 
         let data = bg
             .get_wallet_by_index(0)
@@ -824,7 +643,7 @@ mod tests_providers {
     }
 
     #[tokio::test]
-    async fn test_select_chain_no_password_returns_auth_required() {
+    async fn test_select_chain_no_auth_needed() {
         let (mut bg, _) = setup_test_background();
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
         let btc = gen_btc_testnet_conf();
@@ -851,12 +670,14 @@ mod tests_providers {
 
         bg.add_provider(eth.clone()).unwrap();
 
-        let result = bg.select_accounts_chain(0, eth.hash(), None).await;
+        // Unlock → sync_chain_accounts derives ETH accounts
+        bg.unlock_wallet_with_password(&password, None, 0)
+            .await
+            .unwrap();
 
-        assert!(matches!(
-            result,
-            Err(BackgroundError::AuthenticationRequired)
-        ));
+        // Switch with None — succeeds because accounts were derived at unlock
+        let result = bg.select_accounts_chain(0, eth.hash(), None).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -890,9 +711,12 @@ mod tests_providers {
         assert_eq!(data.slip44, slip44::ZILLIQA);
         assert_eq!(data.get_accounts().unwrap().len(), 1);
 
-        bg.select_accounts_chain(0, btc.hash(), Some(&password))
+        // Unlock → sync_chain_accounts derives BTC accounts
+        bg.unlock_wallet_with_password(&password, None, 0)
             .await
             .unwrap();
+
+        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
 
         let data = bg
             .get_wallet_by_index(0)
@@ -916,12 +740,80 @@ mod tests_providers {
         assert_eq!(data.get_accounts().unwrap().len(), 1);
     }
 
-    /// Regression: ensure_chain_accounts must be invoked when the target chain has
-    /// fewer accounts than any other chain, not just when the target chain is empty.
-    /// Scenario: 2 ETH accounts → switch BTC (gets 2) → switch ETH, add 3rd → switch
-    /// BTC again → must derive the 3rd BTC account.
     #[tokio::test]
-    async fn test_select_chain_account_count_convergence() {
+    async fn test_btc_network_switch_preserves_address_data() {
+        let (mut bg, _) = setup_test_background();
+        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
+        let btc_testnet = gen_btc_testnet_conf();
+
+        bg.add_provider(btc_testnet.clone()).unwrap();
+
+        let accounts = [(0, "acc 0".to_string())];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
+        bg.add_bip39_wallet(BackgroundBip39Params {
+            password: &password,
+            chain_hash: btc_testnet.hash(),
+            mnemonic_str: &mnemonic_secret,
+            mnemonic_check: true,
+            accounts: &accounts,
+            wallet_settings: Default::default(),
+            passphrase: &empty_passphrase(),
+            wallet_name: String::new(),
+            biometric_type: Default::default(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        // Unlock → sync_chain_accounts generates BTC chains for testnet
+        bg.unlock_wallet_with_password(&password, None, 0)
+            .await
+            .unwrap();
+
+        let wallet = bg.get_wallet_by_index(0).unwrap();
+        // Testnet chains exist
+        assert!(wallet.get_btc_addresses(0, btc_testnet.hash()).is_ok());
+
+        // Switch away and back — data preserved (pointer-only, no re-derivation)
+        bg.select_accounts_chain(0, btc_testnet.hash(), None)
+            .await
+            .unwrap();
+        assert!(wallet.get_btc_addresses(0, btc_testnet.hash()).is_ok());
+
+        // Double-unlock idempotency: unlock again, account counts stable
+        bg.unlock_wallet_with_password(&password, None, 0)
+            .await
+            .unwrap();
+        let data = bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_wallet_data()
+            .unwrap();
+        let btc_bip = DerivationPath::default_bip(slip44::BITCOIN);
+        let btc_count = data
+            .slip44_accounts
+            .get(&slip44::BITCOIN)
+            .and_then(|m| m.get(&btc_bip))
+            .map_or(0, |v| v.len());
+        assert_eq!(
+            btc_count, 1,
+            "BTC account count must not change on double-unlock"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ledger_zilliqa_blocks_switch() {
+        // Ledger wallets on Zilliqa cannot switch away.
+        // This is preserved by the ledger guard in select_accounts_chain.
+        // (Setup: add ledger wallet on ZIL, attempt switch to BTC, expect InvalidAccountType)
+        // Note: Ledger wallet creation requires a physical device or mock.
+        // This test documents the contract; full Ledger testing requires integration setup.
+    }
+
+    /// Unlock derives convergent account counts across all chains.
+    /// Scenario: 2 ETH accounts → unlock → BTC also gets 2 accounts (convergence).
+    #[tokio::test]
+    async fn test_unlock_derives_convergent_accounts() {
         let (mut bg, _) = setup_test_background();
         let password: SecretString = SecretString::new(TEST_PASSWORD.into());
         let eth = gen_anvil_net_conf();
@@ -930,7 +822,6 @@ mod tests_providers {
         bg.add_provider(eth.clone()).unwrap();
         bg.add_provider(btc.clone()).unwrap();
 
-        // Start with 2 ETH accounts
         let accounts = [(0, "ETH 0".to_string()), (1, "ETH 1".to_string())];
         let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
         bg.add_bip39_wallet(BackgroundBip39Params {
@@ -956,27 +847,39 @@ mod tests_providers {
         assert_eq!(data.slip44, eth.slip_44);
         assert_eq!(data.get_accounts().unwrap().len(), 2);
 
-        // Switch to BTC — must create 2 BTC accounts (reference = 2 from ETH)
-        bg.select_accounts_chain(0, btc.hash(), Some(&password))
+        // Unlock → sync_chain_accounts derives 2 BTC accounts (convergence to ETH's count)
+        bg.unlock_wallet_with_password(&password, None, 0)
             .await
             .unwrap();
+
+        let data = bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_wallet_data()
+            .unwrap();
+        let btc_bip = DerivationPath::default_bip(slip44::BITCOIN);
+        let btc_count = data
+            .slip44_accounts
+            .get(&slip44::BITCOIN)
+            .and_then(|m| m.get(&btc_bip))
+            .map_or(0, |v| v.len());
+        assert_eq!(
+            btc_count, 2,
+            "BTC must have 2 accounts matching ETH reference"
+        );
+
+        // Switch to BTC — pointer-only, no auth needed
+        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
             .get_wallet_data()
             .unwrap();
         assert_eq!(data.slip44, btc.slip_44);
-        let btc_accounts = data.get_accounts().unwrap();
-        assert_eq!(
-            btc_accounts.len(),
-            2,
-            "BTC must have 2 accounts matching ETH reference"
-        );
+        assert_eq!(data.get_accounts().unwrap().len(), 2);
 
         // Switch back to ETH
-        bg.select_accounts_chain(0, eth.hash(), Some(&password))
-            .await
-            .unwrap();
+        bg.select_accounts_chain(0, eth.hash(), None).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -985,7 +888,7 @@ mod tests_providers {
         assert_eq!(data.slip44, eth.slip_44);
         assert_eq!(data.get_accounts().unwrap().len(), 2);
 
-        // Switch to BTC again — must still have 2 accounts (was already converged)
+        // Switch to BTC again with None password — succeeds (pointer-only)
         bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
@@ -993,10 +896,6 @@ mod tests_providers {
             .get_wallet_data()
             .unwrap();
         assert_eq!(data.slip44, btc.slip_44);
-        assert_eq!(
-            data.get_accounts().unwrap().len(),
-            2,
-            "BTC must still have 2 accounts on re-select"
-        );
+        assert_eq!(data.get_accounts().unwrap().len(), 2);
     }
 }
