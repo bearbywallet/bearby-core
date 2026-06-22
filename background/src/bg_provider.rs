@@ -5,7 +5,6 @@ use errors::{background::BackgroundError, wallet::WalletErrors};
 use network::{common::Provider, provider::NetworkProvider};
 use proto::address::Address;
 use rpc::network_config::ChainConfig;
-use secrecy::SecretString;
 use std::sync::Arc;
 use wallet::{wallet_storage::StorageOperations, wallet_types::WalletTypes};
 
@@ -24,7 +23,6 @@ pub trait ProvidersManagement {
         &self,
         wallet_index: usize,
         chain_hash: u64,
-        password: Option<&SecretString>,
     ) -> std::result::Result<(), Self::Error>;
     fn add_provider(&self, config: ChainConfig) -> std::result::Result<u64, Self::Error>;
     fn add_batch_providers(
@@ -155,7 +153,6 @@ impl ProvidersManagement for Background {
         &self,
         wallet_index: usize,
         chain_hash: u64,
-        _password: Option<&SecretString>,
     ) -> Result<()> {
         let provider = self.get_provider(chain_hash)?;
         let wallet = self.get_wallet_by_index(wallet_index)?;
@@ -505,7 +502,7 @@ mod tests_providers {
         assert!(data.slip44_accounts.contains_key(&trx.slip_44));
 
         // Switch to TRX — pointer-only, no auth needed
-        bg.select_accounts_chain(0, trx.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, trx.hash()).await.unwrap();
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
         let data = wallet.get_wallet_data().unwrap();
@@ -521,7 +518,7 @@ mod tests_providers {
 
         assert!(data.slip44_accounts.contains_key(&btc.slip_44));
 
-        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, btc.hash()).await.unwrap();
 
         let wallet = bg.get_wallet_by_index(0).unwrap();
         let data = wallet.get_wallet_data().unwrap();
@@ -567,7 +564,7 @@ mod tests_providers {
             .await
             .unwrap();
 
-        bg.select_accounts_chain(0, trx.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, trx.hash()).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -575,7 +572,7 @@ mod tests_providers {
             .unwrap();
         assert_eq!(data.bip, DerivationPath::BIP44_PURPOSE);
 
-        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, btc.hash()).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -583,7 +580,7 @@ mod tests_providers {
             .unwrap();
         assert_eq!(data.bip, DerivationPath::BIP84_PURPOSE);
 
-        bg.select_accounts_chain(0, eth.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, eth.hash()).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -591,7 +588,7 @@ mod tests_providers {
             .unwrap();
         assert_eq!(data.bip, DerivationPath::BIP44_PURPOSE);
 
-        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, btc.hash()).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -632,7 +629,7 @@ mod tests_providers {
             .await
             .unwrap();
 
-        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, btc.hash()).await.unwrap();
 
         let data = bg
             .get_wallet_by_index(0)
@@ -676,7 +673,7 @@ mod tests_providers {
             .unwrap();
 
         // Switch with None — succeeds because accounts were derived at unlock
-        let result = bg.select_accounts_chain(0, eth.hash(), None).await;
+        let result = bg.select_accounts_chain(0, eth.hash()).await;
         assert!(result.is_ok());
     }
 
@@ -716,7 +713,7 @@ mod tests_providers {
             .await
             .unwrap();
 
-        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, btc.hash()).await.unwrap();
 
         let data = bg
             .get_wallet_by_index(0)
@@ -729,7 +726,7 @@ mod tests_providers {
         assert!(data.slip44_accounts.contains_key(&slip44::BITCOIN));
         assert_eq!(data.get_accounts().unwrap().len(), 1);
 
-        bg.select_accounts_chain(0, zil.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, zil.hash()).await.unwrap();
 
         let data = bg
             .get_wallet_by_index(0)
@@ -775,7 +772,7 @@ mod tests_providers {
         assert!(wallet.get_btc_addresses(0, btc_testnet.hash()).is_ok());
 
         // Switch away and back — data preserved (pointer-only, no re-derivation)
-        bg.select_accounts_chain(0, btc_testnet.hash(), None)
+        bg.select_accounts_chain(0, btc_testnet.hash())
             .await
             .unwrap();
         assert!(wallet.get_btc_addresses(0, btc_testnet.hash()).is_ok());
@@ -869,7 +866,7 @@ mod tests_providers {
         );
 
         // Switch to BTC — pointer-only, no auth needed
-        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, btc.hash()).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -879,7 +876,7 @@ mod tests_providers {
         assert_eq!(data.get_accounts().unwrap().len(), 2);
 
         // Switch back to ETH
-        bg.select_accounts_chain(0, eth.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, eth.hash()).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()
@@ -889,7 +886,7 @@ mod tests_providers {
         assert_eq!(data.get_accounts().unwrap().len(), 2);
 
         // Switch to BTC again with None password — succeeds (pointer-only)
-        bg.select_accounts_chain(0, btc.hash(), None).await.unwrap();
+        bg.select_accounts_chain(0, btc.hash()).await.unwrap();
         let data = bg
             .get_wallet_by_index(0)
             .unwrap()

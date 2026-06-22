@@ -626,7 +626,7 @@ mod tests_background_transactions {
             .await
             .unwrap();
 
-        bg.select_accounts_chain(0, anvil_config.hash(), None)
+        bg.select_accounts_chain(0, anvil_config.hash())
             .await
             .unwrap();
 
