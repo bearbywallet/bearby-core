@@ -17,6 +17,7 @@ use proto::tx::{TransactionReceipt, TransactionRequest};
 use rand::seq::SliceRandom;
 use rpc::common::NetworkConfigTrait;
 use std::collections::HashMap;
+use std::time::Duration;
 use token::ft::FToken;
 
 const DEFAULT_FEE_RATE_BTC: f64 = 0.00001;
@@ -24,6 +25,8 @@ const SATOSHIS_PER_BTC: f64 = 100_000_000.0;
 const BYTES_PER_KB: f64 = 1000.0;
 const DEFAULT_TX_SIZE_BYTES: u64 = 250;
 const HISTORY_BATCH_CHUNK: usize = 50;
+const BTC_TOTAL_TIMEOUT_SECS: u64 = 30;
+const BTC_MIN_PER_NODE_TIMEOUT: Duration = Duration::from_secs(2);
 
 type ChainLayout = Vec<(bitcoin::AddressType, Vec<usize>, Vec<usize>)>;
 
@@ -293,27 +296,38 @@ impl NetworkProvider {
     where
         F: FnMut(&ElectrumClient) -> Result<T>,
     {
+        let start = std::time::Instant::now();
+        let total_deadline = Duration::from_secs(BTC_TOTAL_TIMEOUT_SECS);
         let mut last_error = None;
-        let mut errors = String::with_capacity(200);
 
         let mut urls: Vec<&String> = self.config.nodes().iter().collect();
         urls.shuffle(&mut rand::rng());
 
-        for url in urls {
+        for (i, url) in urls.iter().enumerate() {
+            let remaining = total_deadline.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            let nodes_left = (urls.len() - i) as u32;
+            let per_attempt =
+                (remaining / nodes_left.max(1)).max(BTC_MIN_PER_NODE_TIMEOUT);
+            if per_attempt.is_zero() {
+                break;
+            }
+
             let config = ConfigBuilder::new()
-                .timeout(Some(std::time::Duration::from_secs(5)))
+                .timeout(Some(per_attempt))
+                .retry(0)
                 .build();
 
             match ElectrumClient::from_config(url, config) {
                 Ok(client) => match operation(&client) {
                     Ok(result) => return Ok(result),
                     Err(e) => {
-                        errors.push_str(&format!("Operation failed on {}: {}. ", url, e));
                         last_error = Some(e);
                     }
                 },
                 Err(e) => {
-                    errors.push_str(&format!("Failed to connect to {}: {}. ", url, e));
                     last_error = Some(NetworkErrors::RPCError(e.to_string()));
                 }
             }

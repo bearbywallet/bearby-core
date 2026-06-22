@@ -33,11 +33,16 @@ pub struct ChainConfig {
     pub testnet: Option<bool>,
     pub ens: Option<Address>,
     pub explorers: Vec<Explorer>,
+    #[serde(default = "default_true")]
     pub fallback_enabled: bool,
     pub ftokens: Vec<FToken>,
 }
 
 impl Codec for ChainConfig {}
+
+fn default_true() -> bool {
+    true
+}
 
 impl ChainConfig {
     pub fn network_name(&self) -> &str {
@@ -402,5 +407,26 @@ mod tests {
         let mut config = test_data::gen_btc_regtest_conf();
         config.testnet = Some(true);
         assert_eq!(config.bitcoin_network(), Some(bitcoin::Network::Regtest));
+    }
+
+    #[test]
+    fn test_fallback_default_true_when_absent() {
+        let json = r#"{
+            "name": "Test",
+            "chain": "TEST",
+            "rpc": ["http://node1.com", "http://node2.com", "http://node3.com"],
+            "chain_ids": [1, 0],
+            "slip_44": 0
+        }"#;
+        let config: ChainConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            config.is_fallback_enabled(),
+            "fallback_enabled should default to true when absent from JSON"
+        );
+        assert_eq!(
+            config.nodes().len(),
+            3,
+            "all nodes reachable when fallback defaults to true"
+        );
     }
 }
