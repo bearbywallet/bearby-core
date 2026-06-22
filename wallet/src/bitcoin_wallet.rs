@@ -1,6 +1,6 @@
 use crate::{
-    account::AccountV2, wallet_crypto::WalletCrypto, wallet_storage::StorageOperations,
-    wallet_types::WalletTypes, Result, Wallet, WalletAddrType,
+    account::AccountV2, wallet_crypto::WalletCrypto, wallet_data::WalletDataV2,
+    wallet_storage::StorageOperations, wallet_types::WalletTypes, Result, Wallet, WalletAddrType,
 };
 use async_trait::async_trait;
 use cipher::argon2::Argon2Seed;
@@ -592,6 +592,7 @@ pub trait BitcoinWallet {
 
     async fn generate_btc_chains_offline(
         &self,
+        data: &WalletDataV2,
         seed_bytes: &Argon2Seed,
         account_index: usize,
         chain_hash: u64,
@@ -804,13 +805,12 @@ impl BitcoinWallet for Wallet {
 
     async fn generate_btc_chains_offline(
         &self,
+        data: &WalletDataV2,
         seed_bytes: &Argon2Seed,
         account_index: usize,
         chain_hash: u64,
         network: bitcoin::Network,
     ) -> Result<()> {
-        let data = self.get_wallet_data()?;
-
         match &data.wallet_type {
             WalletTypes::SecretPhrase((_, has_passphrase)) => {
                 if *has_passphrase {
