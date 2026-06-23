@@ -812,10 +812,7 @@ impl BitcoinWallet for Wallet {
         network: bitcoin::Network,
     ) -> Result<()> {
         match &data.wallet_type {
-            WalletTypes::SecretPhrase((_, has_passphrase)) => {
-                if *has_passphrase {
-                    return Ok(());
-                }
+            WalletTypes::SecretPhrase(_) => {
                 let mnemonic = self.reveal_mnemonic(seed_bytes)?;
                 let seed_secret = mnemonic.to_seed(&crate::empty_passphrase())?;
                 let chains = derive_btc_chains_offline(&seed_secret, account_index, network)?;
@@ -1112,11 +1109,7 @@ impl BitcoinWallet for Wallet {
         let mut data = self.get_wallet_data()?;
 
         match &data.wallet_type {
-            WalletTypes::SecretPhrase((_, has_passphrase)) => {
-                if *has_passphrase {
-                    return Ok(());
-                }
-
+            WalletTypes::SecretPhrase(_) => {
                 let legacy_name = match data.slip44_accounts.get(&slip44::BITCOIN) {
                     Some(btc_map) if !btc_map.is_empty() => btc_map
                         .values()
