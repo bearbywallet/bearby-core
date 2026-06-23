@@ -918,36 +918,6 @@ impl BitcoinWallet for Wallet {
             .bitcoin_network()
             .unwrap_or(bitcoin::Network::Bitcoin);
 
-        let total_utxos: usize = chains
-            .values()
-            .flat_map(|c| c.external.iter().chain(c.internal.iter()))
-            .map(|e| e.utxos.len())
-            .sum();
-        let total_utxo_value: u64 = chains
-            .values()
-            .flat_map(|c| c.external.iter().chain(c.internal.iter()))
-            .flat_map(|e| e.utxos.iter())
-            .map(|u| u.value)
-            .sum();
-        eprintln!(
-            "[btc] prepare_and_sign: account_index={} chain_hash={} chains={} total_utxos={} total_utxo_value={}",
-            account_index, data.chain_hash, chains.len(), total_utxos, total_utxo_value
-        );
-        for (addr_type, chain) in &chains {
-            let utxo_count: usize =
-                chain.external.iter().chain(chain.internal.iter()).map(|e| e.utxos.len()).sum();
-            if utxo_count > 0 {
-                eprintln!(
-                    "[btc]   chain {:?}: ext={} int={} utxos={}",
-                    addr_type, chain.external.len(), chain.internal.len(), utxo_count
-                );
-            }
-        }
-        eprintln!(
-            "[btc] prepare_and_sign: destinations={} fee_rate={:?}",
-            destinations.len(), fee_rate_sat_per_vbyte
-        );
-
         let mnemonic = self.reveal_mnemonic(seed_bytes)?;
         let seed_secret = mnemonic.to_seed(passphrase).map_err(|e| {
             WalletErrors::Bip329Error(errors::bip32::Bip329Errors::InvalidKey(format!("{:?}", e)))
@@ -957,10 +927,6 @@ impl BitcoinWallet for Wallet {
             .get(&bitcoin::AddressType::P2wpkh)
             .map(|c| c.get_internal().is_err())
             .unwrap_or(true);
-        eprintln!(
-            "[btc] prepare_and_sign: needs_new_change={}",
-            needs_new_change
-        );
 
         if needs_new_change {
             let xpubs = {
@@ -978,20 +944,10 @@ impl BitcoinWallet for Wallet {
                 bitcoin::AddressType::P2wpkh,
             )?;
             self.save_btc_addresses(account_index, &chains, data.chain_hash)?;
-            eprintln!("[btc] prepare_and_sign: appended new P2WPKH change address");
         }
 
         let (tx, witness_utxos, input_meta) =
             build_unsigned_btc_transaction(&chains, destinations, fee_rate_sat_per_vbyte)?;
-        eprintln!(
-            "[btc] prepare_and_sign: built tx inputs={} outputs={} witnesses={}",
-            tx.input.len(), tx.output.len(), witness_utxos.len()
-        );
-        let total_output: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
-        eprintln!(
-            "[btc] prepare_and_sign: total_output_value={}",
-            total_output
-        );
 
         let mut psbt = btc_tx::build_psbt(tx, &witness_utxos)?;
         let secp = &bitcoin::secp256k1::SECP256K1;
@@ -1023,11 +979,6 @@ impl BitcoinWallet for Wallet {
         let signed_tx = psbt.extract_tx_unchecked_fee_rate();
 
         let account_addr = data.get_account(account_index)?.addr.clone();
-        let signed_txid = signed_tx.compute_txid();
-        eprintln!(
-            "[btc] prepare_and_sign: signed txid={} signer={}",
-            signed_txid, account_addr
-        );
         let metadata = TransactionMetadata {
             chain_hash: data.chain_hash,
             signer: Some(account_addr),
@@ -1110,12 +1061,7 @@ impl BitcoinWallet for Wallet {
             .iter()
             .map(|i| (i.previous_output.txid, i.previous_output.vout))
             .collect();
-        eprintln!(
-            "[btc] mark_used: account_index={} txid={} inputs={} outputs={}",
-            account_index, broadcast_txid, spent.len(), signed_tx.output.len()
-        );
 
-        let mut spent_removed: u64 = 0;
         for chain in chains.values_mut() {
             for entry in chain.external.iter_mut().chain(chain.internal.iter_mut()) {
                 let consumed = entry
@@ -1123,16 +1069,13 @@ impl BitcoinWallet for Wallet {
                     .iter()
                     .any(|u| spent.contains(&(u.txid, u.vout)));
                 if consumed {
-                    let before = entry.utxos.len();
                     if !entry.history.contains(&broadcast_txid) {
                         entry.history.push(broadcast_txid);
                     }
                     entry.utxos.retain(|u| !spent.contains(&(u.txid, u.vout)));
-                    spent_removed += (before - entry.utxos.len()) as u64;
                 }
             }
         }
-        eprintln!("[btc] mark_used: spent UTXOs removed={}", spent_removed);
 
         let mut output_map: HashMap<&bitcoin::ScriptBuf, Vec<(u32, u64)>> = HashMap::new();
         for (vout, output) in signed_tx.output.iter().enumerate() {
@@ -1142,7 +1085,6 @@ impl BitcoinWallet for Wallet {
                 .push((vout as u32, output.value.to_sat()));
         }
 
-        let mut change_materialized: u64 = 0;
         for chain in chains.values_mut() {
             for entry in chain.external.iter_mut().chain(chain.internal.iter_mut()) {
                 let entry_script = entry
@@ -1160,23 +1102,17 @@ impl BitcoinWallet for Wallet {
                             .iter()
                             .any(|u| u.txid == broadcast_txid && u.vout == vout);
                         if !already_tracked {
-                            eprintln!(
-                                "[btc] mark_used: change UTXO materialized addr={} vout={} value={} height=0",
-                                entry.address, vout, value
-                            );
                             entry.utxos.push(Utxo {
                                 txid: broadcast_txid,
                                 vout,
                                 value,
                                 height: 0,
                             });
-                            change_materialized += 1;
                         }
                     }
                 }
             }
         }
-        eprintln!("[btc] mark_used: change UTXOs materialized={}", change_materialized);
 
         self.save_btc_addresses(account_index, &chains, chain_hash)?;
         Ok(())
