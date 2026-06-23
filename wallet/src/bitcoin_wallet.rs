@@ -20,7 +20,7 @@ use proto::{
     btc_utils::{
         create_btc_address, derive_btc_addresses_from_xpubs, derive_btc_chain_from_xpub,
         AddressChain, BtcAccountXpubsInput, BtcAddressEntry, ByteCodec, GAP_LIMIT,
-        POOL_SIZE_EXTERNAL,
+        POOL_SIZE_EXTERNAL, Utxo,
     },
     secret_key::SecretKey,
     tx::{TransactionMetadata, TransactionReceipt},
@@ -978,8 +978,10 @@ impl BitcoinWallet for Wallet {
 
         let signed_tx = psbt.extract_tx_unchecked_fee_rate();
 
+        let account_addr = data.get_account(account_index)?.addr.clone();
         let metadata = TransactionMetadata {
             chain_hash: data.chain_hash,
+            signer: Some(account_addr),
             ..Default::default()
         };
 
@@ -1075,8 +1077,13 @@ impl BitcoinWallet for Wallet {
             }
         }
 
-        let output_scripts: HashSet<&bitcoin::ScriptBuf> =
-            signed_tx.output.iter().map(|o| &o.script_pubkey).collect();
+        let mut output_map: HashMap<&bitcoin::ScriptBuf, Vec<(u32, u64)>> = HashMap::new();
+        for (vout, output) in signed_tx.output.iter().enumerate() {
+            output_map
+                .entry(&output.script_pubkey)
+                .or_default()
+                .push((vout as u32, output.value.to_sat()));
+        }
 
         for chain in chains.values_mut() {
             for entry in chain.external.iter_mut().chain(chain.internal.iter_mut()) {
@@ -1085,10 +1092,24 @@ impl BitcoinWallet for Wallet {
                     .to_bitcoin_addr()
                     .map_err(|e| WalletErrors::BincodeError(e.to_string()))?
                     .script_pubkey();
-                if output_scripts.contains(&entry_script)
-                    && !entry.history.contains(&broadcast_txid)
-                {
-                    entry.history.push(broadcast_txid);
+                if let Some(outputs) = output_map.get(&entry_script) {
+                    if !entry.history.contains(&broadcast_txid) {
+                        entry.history.push(broadcast_txid);
+                    }
+                    for &(vout, value) in outputs {
+                        let already_tracked = entry
+                            .utxos
+                            .iter()
+                            .any(|u| u.txid == broadcast_txid && u.vout == vout);
+                        if !already_tracked {
+                            entry.utxos.push(Utxo {
+                                txid: broadcast_txid,
+                                vout,
+                                value,
+                                height: 0,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1353,6 +1374,26 @@ mod tests_btc_wallet {
             .to_bitcoin_addr()
             .unwrap()
             .script_pubkey();
+        // Plant the same UTXO in other chain types to verify cross-chain spent removal:
+        chains
+            .get_mut(&bitcoin::AddressType::P2wpkh)
+            .unwrap()
+            .external[0]
+            .utxos
+            .push(planted.clone());
+        chains
+            .get_mut(&bitcoin::AddressType::P2sh)
+            .unwrap()
+            .external[0]
+            .utxos
+            .push(planted.clone());
+        chains
+            .get_mut(&bitcoin::AddressType::P2pkh)
+            .unwrap()
+            .external[0]
+            .utxos
+            .push(planted.clone());
+
         wallet.save_btc_addresses(0, &chains, chain_hash).unwrap();
 
         let signed_tx = bitcoin::Transaction {
@@ -1401,6 +1442,20 @@ mod tests_btc_wallet {
         assert_eq!(p2tr.external[0].history, vec![broadcast_txid]);
         assert!(p2tr.external[0].utxos.is_empty());
         assert_eq!(p2tr.internal[0].history, vec![broadcast_txid]);
+        // Change UTXO is materialized for instant balance correctness
+        assert_eq!(p2tr.internal[0].utxos.len(), 1);
+        assert_eq!(p2tr.internal[0].utxos[0].txid, broadcast_txid);
+        assert_eq!(p2tr.internal[0].utxos[0].vout, 0);
+        assert_eq!(p2tr.internal[0].utxos[0].value, 90_000);
+        assert_eq!(p2tr.internal[0].utxos[0].height, 0);
+
+        // Cross-chain spent UTXO removal (fc6dda8 precedent: all chains must be covered)
+        let p2wpkh = chains.get(&bitcoin::AddressType::P2wpkh).unwrap();
+        assert!(p2wpkh.external[0].utxos.is_empty(), "P2WPKH spent UTXO not removed");
+        let p2sh = chains.get(&bitcoin::AddressType::P2sh).unwrap();
+        assert!(p2sh.external[0].utxos.is_empty(), "P2SH spent UTXO not removed");
+        let p2pkh = chains.get(&bitcoin::AddressType::P2pkh).unwrap();
+        assert!(p2pkh.external[0].utxos.is_empty(), "P2PKH spent UTXO not removed");
 
         assert!(p2tr.external[1].history.is_empty());
         assert!(p2tr.internal[1].history.is_empty());
