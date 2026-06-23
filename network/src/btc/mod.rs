@@ -152,16 +152,7 @@ fn layout_is_empty(layout: &ChainLayout) -> bool {
 }
 
 fn prune_unused_btc_chains(chains: &mut HashMap<bitcoin::AddressType, AddressChain>) {
-    chains.retain(|addr_type, chain| {
-        if matches!(
-            *addr_type,
-            bitcoin::AddressType::P2tr | bitcoin::AddressType::P2wpkh
-        ) {
-            return true;
-        }
-        chain.external.iter().any(|e| !e.history.is_empty())
-            || chain.internal.iter().any(|e| !e.history.is_empty())
-    });
+    chains.retain(|addr_type, _| matches!(*addr_type, bitcoin::AddressType::P2wpkh));
 }
 
 fn scripts_for_layout(
@@ -628,21 +619,81 @@ impl BtcOperations for NetworkProvider {
                 && c.internal.iter().all(|e| e.history.is_empty())
         });
 
+        eprintln!(
+            "[btc] update_balances: no_recorded_balance={} no_history={} -> {}",
+            no_recorded_balance, no_history,
+            if no_recorded_balance && no_history { "FULL_SCAN" } else { "FRONTIER" }
+        );
+
         if no_recorded_balance && no_history {
             let full = build_layout(chains, |entries| (0..entries.len()).collect());
+            let total_scripts: usize = full.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+            eprintln!(
+                "[btc] update_balances: FULL_SCAN scripts_to_probe={}",
+                total_scripts
+            );
             if !layout_is_empty(&full) {
                 self.with_electrum_client(|client| {
                     fetch_history_with_apply(client, chains, &full, |entry, history| {
                         entry.history = history.into_iter().map(|h| h.tx_hash).collect();
                     })?;
+
+                    eprintln!("[btc] update_balances: --- BEFORE PRUNE ---");
+                    for (addr_type, chain) in chains.iter() {
+                        let ext_with_hist = chain.external.iter().filter(|e| !e.history.is_empty()).count();
+                        let int_with_hist = chain.internal.iter().filter(|e| !e.history.is_empty()).count();
+                        let ext_hist_txs: usize = chain.external.iter().map(|e| e.history.len()).sum();
+                        let int_hist_txs: usize = chain.internal.iter().map(|e| e.history.len()).sum();
+                        eprintln!(
+                            "[btc]   {:?}: ext={} int={} | ext_with_history={} ({} txs) int_with_history={} ({} txs)",
+                            addr_type, chain.external.len(), chain.internal.len(),
+                            ext_with_hist, ext_hist_txs, int_with_hist, int_hist_txs
+                        );
+                    }
+
                     prune_unused_btc_chains(chains);
+
+                    eprintln!("[btc] update_balances: --- AFTER PRUNE ---");
+                    for (addr_type, chain) in chains.iter() {
+                        let ext_with_hist = chain.external.iter().filter(|e| !e.history.is_empty()).count();
+                        let int_with_hist = chain.internal.iter().filter(|e| !e.history.is_empty()).count();
+                        eprintln!(
+                            "[btc]   {:?}: ext={} int={} | ext_with_history={} int_with_history={}",
+                            addr_type, chain.external.len(), chain.internal.len(),
+                            ext_with_hist, int_with_hist
+                        );
+                    }
+
                     let used = build_layout(chains, used_indices);
-                    fetch_unspent_sync(client, chains, &used)
+                    let used_count: usize = used.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+                    eprintln!(
+                        "[btc] update_balances: used_indices_for_utxo={}",
+                        used_count
+                    );
+                    fetch_unspent_sync(client, chains, &used)?;
+
+                    eprintln!("[btc] update_balances: --- UTXOs AFTER FETCH ---");
+                    for (addr_type, chain) in chains.iter() {
+                        let utxo_count: usize = chain.external.iter().chain(chain.internal.iter()).map(|e| e.utxos.len()).sum();
+                        let utxo_value: u64 = chain.external.iter().chain(chain.internal.iter()).flat_map(|e| e.utxos.iter()).map(|u| u.value).sum();
+                        eprintln!(
+                            "[btc]   {:?}: utxos={} value={} sat",
+                            addr_type, utxo_count, utxo_value
+                        );
+                    }
+                    Ok(())
                 })?;
             }
         } else {
             let frontier = build_layout(chains, gap_window_indices);
             let used = build_layout(chains, used_indices);
+            let frontier_count: usize = frontier.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+            let used_count: usize = used.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+            eprintln!(
+                "[btc] update_balances: FRONTIER scan: frontier_indices={} used_indices_for_utxo={}",
+                frontier_count, used_count
+            );
+
             if !layout_is_empty(&frontier) || !layout_is_empty(&used) {
                 // The retry closure may run on multiple Electrum nodes; keep applies idempotent overwrites.
                 self.with_electrum_client(|client| {
@@ -651,6 +702,8 @@ impl BtcOperations for NetworkProvider {
                     fetch_unspent_sync(client, chains, &used)
                 })?;
             }
+
+            prune_unused_btc_chains(chains);
         }
 
         let total: u64 = chains
@@ -659,6 +712,10 @@ impl BtcOperations for NetworkProvider {
             .flat_map(|entry| entry.utxos.iter())
             .map(|u| u.value)
             .sum();
+        eprintln!(
+            "[btc] update_balances: total_balance={} sat ({} BTC) for account={}",
+            total, total as f64 / 100_000_000.0, selected_account
+        );
 
         for token in tokens.iter_mut() {
             if token.native {
@@ -1025,6 +1082,102 @@ mod tests {
                 "{:?} internal chain length changed",
                 addr_type
             );
+        }
+
+        // P2WPKH must always survive pruning (unconditionally retained).
+        assert!(
+            chains.contains_key(&bitcoin::AddressType::P2wpkh),
+            "P2WPKH must survive pruning"
+        );
+    }
+
+    #[test]
+    fn test_prune_unused_btc_chains() {
+        use crypto::bip49::{DerivationPath, DerivationType};
+        use crypto::slip44;
+        use proto::btc_utils::{AddressChain, BtcAddressEntry};
+        use std::str::FromStr;
+
+        let mk_entry = |has_history: bool| -> BtcAddressEntry {
+            BtcAddressEntry {
+                address: Address::Secp256k1Bitcoin(b"bc1qtest".to_vec()),
+                path: DerivationPath::new(
+                    slip44::BITCOIN,
+                    DerivationType::AddressIndex(0, 0, 0),
+                    DerivationPath::BIP84_PURPOSE,
+                ),
+                history: if has_history {
+                    vec![bitcoin::Txid::from_str(
+                        "76464c2b9e2af4d63ef38a77964b3b77e629dddefc5cb9eb1a3645b1608b790f",
+                    )
+                    .unwrap()]
+                } else {
+                    Vec::new()
+                },
+                utxos: Vec::new(),
+            }
+        };
+
+        let mk_chain = |has_history: bool| -> AddressChain {
+            AddressChain {
+                external: vec![mk_entry(has_history)],
+                internal: vec![mk_entry(has_history)],
+            }
+        };
+
+        // P2wpkh always survives, even with no history.
+        {
+            let mut chains = HashMap::new();
+            chains.insert(bitcoin::AddressType::P2wpkh, mk_chain(false));
+            prune_unused_btc_chains(&mut chains);
+            assert_eq!(chains.len(), 1);
+            assert!(chains.contains_key(&bitcoin::AddressType::P2wpkh));
+        }
+
+        // P2tr, P2pkh, P2sh all pruned when no history.
+        {
+            let mut chains = HashMap::new();
+            chains.insert(bitcoin::AddressType::P2tr, mk_chain(false));
+            chains.insert(bitcoin::AddressType::P2pkh, mk_chain(false));
+            chains.insert(bitcoin::AddressType::P2sh, mk_chain(false));
+            prune_unused_btc_chains(&mut chains);
+            assert!(chains.is_empty());
+        }
+
+        // Non-P2wpkh pruned unconditionally, even with history.
+        {
+            let mut chains = HashMap::new();
+            chains.insert(bitcoin::AddressType::P2tr, mk_chain(true));
+            chains.insert(bitcoin::AddressType::P2pkh, mk_chain(false));
+            prune_unused_btc_chains(&mut chains);
+            assert!(chains.is_empty());
+        }
+
+        // P2wpkh always survives; non-P2wpkh pruned even with history.
+        {
+            let mut chains = HashMap::new();
+            chains.insert(bitcoin::AddressType::P2wpkh, mk_chain(false));
+            chains.insert(bitcoin::AddressType::P2tr, mk_chain(true));
+            chains.insert(bitcoin::AddressType::P2pkh, mk_chain(false));
+            prune_unused_btc_chains(&mut chains);
+            assert_eq!(chains.len(), 1);
+            assert!(chains.contains_key(&bitcoin::AddressType::P2wpkh));
+            assert!(!chains.contains_key(&bitcoin::AddressType::P2tr));
+            assert!(!chains.contains_key(&bitcoin::AddressType::P2pkh));
+        }
+
+        // History in internal chain only does NOT save non-P2wpkh chain.
+        {
+            let mut chains = HashMap::new();
+            chains.insert(
+                bitcoin::AddressType::P2tr,
+                AddressChain {
+                    external: vec![mk_entry(false)],
+                    internal: vec![mk_entry(true)],
+                },
+            );
+            prune_unused_btc_chains(&mut chains);
+            assert!(chains.is_empty());
         }
     }
 }

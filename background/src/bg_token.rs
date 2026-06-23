@@ -400,9 +400,33 @@ impl TokensManagement for Background {
         if provider.config.slip_44 == BITCOIN {
             let selected_account = data.get_selected_account()?;
             let mut chains = w.get_btc_addresses(data.selected_account, data.chain_hash)?;
+            eprintln!(
+                "[btc] sync_balances: wallet={} account_index={} chain_hash={} chains={}",
+                wallet_index, data.selected_account, data.chain_hash, chains.len()
+            );
+            for (addr_type, chain) in &chains {
+                let utxo_count: usize =
+                    chain.external.iter().chain(chain.internal.iter()).map(|e| e.utxos.len()).sum();
+                let hist_count: usize =
+                    chain.external.iter().chain(chain.internal.iter()).map(|e| e.history.len()).sum();
+                eprintln!(
+                    "[btc]   {:?}: ext={} int={} utxos={} history_entries={}",
+                    addr_type, chain.external.len(), chain.internal.len(), utxo_count, hist_count
+                );
+            }
             provider
                 .btc_update_balances(matching_tokens, &mut chains, &selected_account.addr)
                 .await?;
+            let total_after: u64 = chains
+                .values()
+                .flat_map(|c| c.external.iter().chain(c.internal.iter()))
+                .flat_map(|e| e.utxos.iter())
+                .map(|u| u.value)
+                .sum();
+            eprintln!(
+                "[btc] sync_balances: after update total_utxo_value={} chains={}",
+                total_after, chains.len()
+            );
             w.save_btc_addresses(data.selected_account, &chains, data.chain_hash)?;
         } else {
             let selected_account = data.get_selected_account()?;
