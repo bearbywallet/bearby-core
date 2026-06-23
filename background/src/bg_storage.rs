@@ -278,6 +278,7 @@ impl StorageManagement for Background {
 
         indicators.push(wallet.wallet_address);
         self.wallets.push(wallet);
+        self.sync_chain_accounts(self.wallets.len() - 1, &argon_seed).await?;
         self.save_indicators(indicators)?;
         self.storage.flush()?;
 
@@ -1089,6 +1090,105 @@ mod tests_background_storage {
             let restored_history = restored_wallet.get_btc_addresses(idx, chain_hash).unwrap();
             assert_eq!(origin_history, restored_history);
         }
+    }
+
+    #[tokio::test]
+    async fn test_keystore_restore_generates_btc_chains() {
+        let (mut bg, _dir) = setup_test_background();
+
+        let offline_btc_conf = ChainConfig {
+            rpc: vec!["ssl://localhost:1".to_string()],
+            slip_44: BITCOIN,
+            testnet: Some(true),
+            ..gen_btc_regtest_conf()
+        };
+        bg.add_provider(offline_btc_conf.clone()).unwrap();
+
+        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
+        let accounts = [(0, "btc acc 0".to_string())];
+
+        bg.add_bip39_wallet(BackgroundBip39Params {
+            password: &password,
+            chain_hash: offline_btc_conf.hash(),
+            mnemonic_str: &mnemonic_secret,
+            mnemonic_check: true,
+            accounts: &accounts,
+            wallet_settings: Default::default(),
+            passphrase: &empty_passphrase(),
+            wallet_name: "btc restore test".to_string(),
+            biometric_type: Default::default(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        // Simulate a pre-first-sync backup: strip BTC address chains from the
+        // keystore blob. With empty btc_address_chains, restore_btc_chains_from_backup
+        // writes nothing. The fix (sync_chain_accounts) must regeneratively derive them.
+        let keystore_bytes = bg.get_keystore(0, &password).await.unwrap();
+        let keystore_argon_seed = argon2::derive_key(
+            password.expose_secret().as_bytes(),
+            b"",
+            &ARGON2_DEFAULT_CONFIG,
+        )
+        .unwrap();
+        let mut keystore = KeyStore::from_backup(keystore_bytes, &keystore_argon_seed).unwrap();
+        let cipher_orders = keystore.wallet_data.settings.cipher_orders.clone();
+        keystore.btc_address_chains = Vec::new();
+        let keystore_plain = codec::serialize(&keystore).unwrap().to_bytes();
+        let keychain = KeyChain::from_seed(&keystore_argon_seed).unwrap();
+        let cipher_bytes = keychain
+            .encrypt(keystore_plain, &cipher_orders)
+            .unwrap();
+        let cipher_orders_bytes = cipher_orders
+            .iter()
+            .map(|c| c.code())
+            .collect::<Vec<u8>>();
+
+        let mut modified_backup = Vec::with_capacity(
+            SIGNATURE.len() + 1 + 1 + cipher_orders_bytes.len() + cipher_bytes.len(),
+        );
+        modified_backup.extend_from_slice(SIGNATURE);
+        modified_backup.push(1u8); // version 1
+        modified_backup.push(cipher_orders_bytes.len() as u8);
+        modified_backup.extend(cipher_orders_bytes);
+        modified_backup.extend(cipher_bytes);
+
+        bg.load_keystore(modified_backup, &password, AuthMethod::None)
+            .await
+            .unwrap();
+
+        // After keystore restore, BTC address chains must exist for the
+        // restored wallet — sync_chain_accounts regenerated them from seed.
+        let restored_wallet = bg.get_wallet_by_index(1).unwrap();
+        let chain_hash = offline_btc_conf.hash();
+
+        let chains = restored_wallet.get_btc_addresses(0, chain_hash);
+        assert!(
+            chains.is_ok(),
+            "BTC address chains should exist after keystore restore"
+        );
+
+        let chains = chains.unwrap();
+        assert!(
+            !chains.is_empty(),
+            "BTC address chains should not be empty after keystore restore"
+        );
+        assert!(
+            chains.contains_key(&bitcoin::AddressType::P2wpkh),
+            "P2WPKH address chain must exist"
+        );
+
+        let p2wpkh = chains.get(&bitcoin::AddressType::P2wpkh).unwrap();
+        assert!(
+            !p2wpkh.external.is_empty(),
+            "P2WPKH external chain must have entries"
+        );
+        assert!(
+            !p2wpkh.internal.is_empty(),
+            "P2WPKH internal chain must have entries"
+        );
     }
 
     #[tokio::test]

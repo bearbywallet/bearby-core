@@ -477,7 +477,7 @@ impl Background {
     /// Derive accounts for all known chains after unlock.
     /// Ensures every chain has accounts before any switch,
     /// making select_accounts_chain a pointer-only operation.
-    async fn sync_chain_accounts(
+    pub(crate) async fn sync_chain_accounts(
         &self,
         wallet_index: usize,
         seed: &Argon2Seed,
