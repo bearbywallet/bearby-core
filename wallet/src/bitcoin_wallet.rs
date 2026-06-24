@@ -793,13 +793,12 @@ impl BitcoinWallet for Wallet {
         chain: &ChainConfig,
     ) -> Result<AccountV2> {
         let network = chain.bitcoin_network().unwrap_or(bitcoin::Network::Bitcoin);
-        let xpubs = {
-            let acct_idx = u32::try_from(account_index)
-                .map_err(|_| WalletErrors::BincodeError("account index overflow".to_string()))?;
-            BtcAccountXpubsInput::from_seed(seed, acct_idx, network)
-                .map_err(WalletErrors::Bip329Error)?
-        };
-        let entry = self.generate_wallet(&xpubs, account_index, chain).await?;
+        let chain_hash = chain.hash();
+
+        let chains = derive_btc_chains_offline(seed, account_index, network)?;
+        self.save_btc_addresses(account_index, &chains, chain_hash)?;
+
+        let entry = pick_primary_btc_entry(&chains)?;
         AccountV2::from_hd(seed, name, &entry.path, Some(network)).map_err(Into::into)
     }
 
@@ -1531,6 +1530,75 @@ mod tests_btc_wallet {
             "expected exact known-vector P2WPKH address for ANVIL mnemonic at account 0, got: {}",
             addr
         );
+    }
+
+    #[tokio::test]
+    async fn test_generate_bip39_btc_account_is_offline() {
+        let (storage, _dir) = setup_test_storage();
+        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        let keychain = KeyChain::from_seed(&argon_seed).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        let wallet_config = WalletConfig {
+            keychain,
+            storage: Arc::clone(&storage),
+            settings: Default::default(),
+        };
+        let chain_config = ChainConfig::default();
+        let wallet = Wallet::from_bip39_words(
+            Bip39Params {
+                chain_config: &chain_config,
+                proof,
+                mnemonic: &mnemonic,
+                passphrase: &empty_passphrase(),
+                indexes: &[(0, "Bitcoin Account 0".to_string())],
+                wallet_name: "Bitcoin Wallet".to_string(),
+                biometric_type: AuthMethod::Biometric,
+                chains: std::slice::from_ref(&chain_config),
+            },
+            wallet_config,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let seed = mnemonic.to_seed(&empty_passphrase()).unwrap();
+        let chain_hash = chain_config.hash();
+
+        let account = wallet
+            .generate_bip39_btc_account(
+                &seed,
+                1,
+                "Bitcoin Account 1".to_string(),
+                &chain_config,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(account.name, "Bitcoin Account 1");
+
+        let chains = wallet.get_btc_addresses(1, chain_hash).unwrap();
+        assert_eq!(chains.len(), 4);
+        for addr_type in [
+            bitcoin::AddressType::P2pkh,
+            bitcoin::AddressType::P2sh,
+            bitcoin::AddressType::P2wpkh,
+            bitcoin::AddressType::P2tr,
+        ] {
+            let chain = chains.get(&addr_type).unwrap();
+            assert!(!chain.external.is_empty(), "{:?} external empty", addr_type);
+            assert!(!chain.internal.is_empty(), "{:?} internal empty", addr_type);
+            assert!(
+                chain.external.iter().all(|e| e.history.is_empty()),
+                "{:?} external history not empty",
+                addr_type
+            );
+            assert!(
+                chain.internal.iter().all(|e| e.history.is_empty()),
+                "{:?} internal history not empty",
+                addr_type
+            );
+        }
     }
 
     #[test]
