@@ -25,8 +25,9 @@ const SATOSHIS_PER_BTC: f64 = 100_000_000.0;
 const BYTES_PER_KB: f64 = 1000.0;
 const DEFAULT_TX_SIZE_BYTES: u64 = 250;
 const HISTORY_BATCH_CHUNK: usize = 50;
-const BTC_TOTAL_TIMEOUT_SECS: u64 = 30;
-const BTC_MIN_PER_NODE_TIMEOUT: Duration = Duration::from_secs(2);
+const BTC_TOTAL_TIMEOUT_SECS: u64 = 60;
+const BTC_MIN_PER_NODE_TIMEOUT: Duration = Duration::from_secs(5);
+const BTC_PARALLEL_GUARD_SECS: u64 = 150;
 
 type ChainLayout = Vec<(bitcoin::AddressType, Vec<usize>, Vec<usize>)>;
 
@@ -227,68 +228,307 @@ fn apply_results<T>(
     Ok(())
 }
 
-fn fetch_history_with_apply(
+// --- Per-client chunked fetch helpers (called inside blocking tasks) ---
+
+fn fetch_history_chunked(
     client: &ElectrumClient,
-    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
-    layout: &ChainLayout,
-    apply: impl FnMut(&mut BtcAddressEntry, Vec<electrum_client::GetHistoryRes>),
-) -> Result<()> {
-    let scripts = scripts_for_layout(chains, layout)?;
-    if scripts.is_empty() {
-        return Ok(());
-    }
+    scripts: &[bitcoin::ScriptBuf],
+) -> Result<Vec<Vec<electrum_client::GetHistoryRes>>> {
     let mut all = Vec::with_capacity(scripts.len());
     for chunk in scripts.chunks(HISTORY_BATCH_CHUNK) {
         let refs: Vec<&bitcoin::Script> = chunk.iter().map(|s| s.as_ref()).collect();
-        all.extend(client.batch_script_get_history(&refs).map_err(|e| {
-            NetworkErrors::RPCError(format!("Failed to batch script history: {e}"))
-        })?);
+        all.extend(
+            client
+                .batch_script_get_history(&refs)
+                .map_err(|e| NetworkErrors::RPCError(format!("batch history: {e}")))?,
+        );
     }
-    apply_results(chains, layout, all, apply)
+    Ok(all)
 }
 
-fn fetch_history_sync(
+fn fetch_unspent_chunked(
     client: &ElectrumClient,
-    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
-    layout: &ChainLayout,
-) -> Result<()> {
-    fetch_history_with_apply(client, chains, layout, |entry, history| {
-        if !history.is_empty() {
-            entry.history = history.into_iter().map(|h| h.tx_hash).collect();
+    scripts: &[bitcoin::ScriptBuf],
+) -> Result<Vec<Vec<electrum_client::ListUnspentRes>>> {
+    let mut all = Vec::with_capacity(scripts.len());
+    for chunk in scripts.chunks(HISTORY_BATCH_CHUNK) {
+        let refs: Vec<&bitcoin::Script> = chunk.iter().map(|s| s.as_ref()).collect();
+        all.extend(
+            client
+                .batch_script_list_unspent(&refs)
+                .map_err(|e| NetworkErrors::RPCError(format!("batch unspent: {e}")))?,
+        );
+    }
+    Ok(all)
+}
+
+// --- Node-level sync fetch fns: try each node in order until one succeeds ---
+// These are called inside spawn_blocking so they can be fully synchronous.
+
+fn fetch_history_from_nodes(
+    node_urls: Vec<String>,
+    scripts: Vec<bitcoin::ScriptBuf>,
+    total_timeout: Duration,
+    min_per_node: Duration,
+) -> Result<Vec<Vec<electrum_client::GetHistoryRes>>> {
+    let start = std::time::Instant::now();
+    let mut last_error = None;
+    eprintln!(
+        "[btc-net] history shard: {} scripts, {} candidate nodes, budget={}s",
+        scripts.len(),
+        node_urls.len(),
+        total_timeout.as_secs()
+    );
+    for (i, url) in node_urls.iter().enumerate() {
+        let remaining = total_timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            eprintln!("[btc-net] history shard: total budget exhausted after {} attempts", i);
+            break;
         }
-    })
+        let nodes_left = (node_urls.len() - i) as u32;
+        let per_attempt = (remaining / nodes_left.max(1)).max(min_per_node);
+        eprintln!(
+            "[btc-net] history shard: trying node[{}] {} (timeout={}ms)",
+            i,
+            url,
+            per_attempt.as_millis()
+        );
+        let config = ConfigBuilder::new()
+            .timeout(Some(per_attempt))
+            .retry(0)
+            .build();
+        match ElectrumClient::from_config(url, config) {
+            Ok(client) => match fetch_history_chunked(&client, &scripts) {
+                Ok(r) => {
+                    eprintln!(
+                        "[btc-net] history shard: OK from {} in {}ms",
+                        url,
+                        start.elapsed().as_millis()
+                    );
+                    return Ok(r);
+                }
+                Err(e) => {
+                    eprintln!("[btc-net] history shard: node {} op failed: {}", url, e);
+                    last_error = Some(e);
+                }
+            },
+            Err(e) => {
+                eprintln!("[btc-net] history shard: node {} connect failed: {}", url, e);
+                last_error = Some(NetworkErrors::RPCError(e.to_string()));
+            }
+        }
+    }
+    eprintln!(
+        "[btc-net] history shard: all nodes failed after {}ms",
+        start.elapsed().as_millis()
+    );
+    Err(last_error.unwrap_or_else(|| NetworkErrors::RPCError("No RPC nodes".into())))
 }
 
-fn fetch_unspent_sync(
-    client: &ElectrumClient,
-    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
+fn fetch_unspent_from_nodes(
+    node_urls: Vec<String>,
+    scripts: Vec<bitcoin::ScriptBuf>,
+    total_timeout: Duration,
+    min_per_node: Duration,
+) -> Result<Vec<Vec<electrum_client::ListUnspentRes>>> {
+    let start = std::time::Instant::now();
+    let mut last_error = None;
+    eprintln!(
+        "[btc-net] utxo shard: {} scripts, {} candidate nodes, budget={}s",
+        scripts.len(),
+        node_urls.len(),
+        total_timeout.as_secs()
+    );
+    for (i, url) in node_urls.iter().enumerate() {
+        let remaining = total_timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            eprintln!("[btc-net] utxo shard: total budget exhausted after {} attempts", i);
+            break;
+        }
+        let nodes_left = (node_urls.len() - i) as u32;
+        let per_attempt = (remaining / nodes_left.max(1)).max(min_per_node);
+        eprintln!(
+            "[btc-net] utxo shard: trying node[{}] {} (timeout={}ms)",
+            i,
+            url,
+            per_attempt.as_millis()
+        );
+        let config = ConfigBuilder::new()
+            .timeout(Some(per_attempt))
+            .retry(0)
+            .build();
+        match ElectrumClient::from_config(url, config) {
+            Ok(client) => match fetch_unspent_chunked(&client, &scripts) {
+                Ok(r) => {
+                    eprintln!(
+                        "[btc-net] utxo shard: OK from {} in {}ms",
+                        url,
+                        start.elapsed().as_millis()
+                    );
+                    return Ok(r);
+                }
+                Err(e) => {
+                    eprintln!("[btc-net] utxo shard: node {} op failed: {}", url, e);
+                    last_error = Some(e);
+                }
+            },
+            Err(e) => {
+                eprintln!("[btc-net] utxo shard: node {} connect failed: {}", url, e);
+                last_error = Some(NetworkErrors::RPCError(e.to_string()));
+            }
+        }
+    }
+    eprintln!(
+        "[btc-net] utxo shard: all nodes failed after {}ms",
+        start.elapsed().as_millis()
+    );
+    Err(last_error.unwrap_or_else(|| NetworkErrors::RPCError("No RPC nodes".into())))
+}
+
+// --- Parallel orchestrators: shard by address type, assign distinct primary nodes ---
+
+type HistoryShard = (ChainLayout, Vec<Vec<electrum_client::GetHistoryRes>>);
+type UnspentShard = (ChainLayout, Vec<Vec<electrum_client::ListUnspentRes>>);
+
+async fn parallel_fetch_history(
+    nodes: &[String],
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
     layout: &ChainLayout,
-) -> Result<()> {
-    let scripts = scripts_for_layout(chains, layout)?;
-    if scripts.is_empty() {
-        return Ok(());
-    }
-    let mut all = Vec::with_capacity(scripts.len());
-    for chunk in scripts.chunks(HISTORY_BATCH_CHUNK) {
-        let refs: Vec<&bitcoin::Script> = chunk.iter().map(|s| s.as_ref()).collect();
-        all.extend(client.batch_script_list_unspent(&refs).map_err(|e| {
-            NetworkErrors::RPCError(format!("Failed to batch script list unspent: {e}"))
-        })?);
-    }
-    apply_results(chains, layout, all, |entry, unspents| {
-        entry.utxos = unspents.into_iter().map(Utxo::from).collect();
+) -> Result<Vec<HistoryShard>> {
+    parallel_fetch_impl(nodes, chains, layout, |node_urls, scripts| {
+        fetch_history_from_nodes(
+            node_urls,
+            scripts,
+            Duration::from_secs(BTC_TOTAL_TIMEOUT_SECS),
+            BTC_MIN_PER_NODE_TIMEOUT,
+        )
     })
+    .await
 }
 
-fn fetch_frontier_history_sync(
-    client: &ElectrumClient,
-    chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
-) -> Result<()> {
-    let frontier = build_layout(chains, gap_window_indices);
-    if layout_is_empty(&frontier) {
-        return Ok(());
+async fn parallel_fetch_unspent(
+    nodes: &[String],
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
+    layout: &ChainLayout,
+) -> Result<Vec<UnspentShard>> {
+    parallel_fetch_impl(nodes, chains, layout, |node_urls, scripts| {
+        fetch_unspent_from_nodes(
+            node_urls,
+            scripts,
+            Duration::from_secs(BTC_TOTAL_TIMEOUT_SECS),
+            BTC_MIN_PER_NODE_TIMEOUT,
+        )
+    })
+    .await
+}
+
+/// Split `layout` into per-address-type shards, assign each a distinct primary node
+/// (via list rotation), and run all shards concurrently via `spawn_blocking`.
+async fn parallel_fetch_impl<T, F>(
+    nodes: &[String],
+    chains: &HashMap<bitcoin::AddressType, AddressChain>,
+    layout: &ChainLayout,
+    fetch_fn: F,
+) -> Result<Vec<(ChainLayout, Vec<Vec<T>>)>>
+where
+    T: Send + 'static,
+    F: Fn(Vec<String>, Vec<bitcoin::ScriptBuf>) -> Result<Vec<Vec<T>>> + Send + Sync + 'static,
+{
+    if nodes.is_empty() {
+        return Err(NetworkErrors::RPCError("No RPC nodes configured".into()));
     }
-    fetch_history_sync(client, chains, &frontier)
+
+    let mut shuffled: Vec<String> = nodes.to_vec();
+    shuffled.shuffle(&mut rand::rng());
+    let num_nodes = shuffled.len();
+
+    eprintln!(
+        "[btc-net] parallel fetch: {} total nodes available (shuffled)",
+        num_nodes
+    );
+
+    // Build one shard per address type present in the layout.
+    let shards: Vec<(ChainLayout, Vec<bitcoin::ScriptBuf>)> = layout
+        .iter()
+        .filter_map(|(addr_type, ext_idx, int_idx)| {
+            let sub = vec![(*addr_type, ext_idx.clone(), int_idx.clone())];
+            let scripts = scripts_for_layout(chains, &sub).ok()?;
+            if scripts.is_empty() {
+                None
+            } else {
+                Some((sub, scripts))
+            }
+        })
+        .collect();
+
+    if shards.is_empty() {
+        eprintln!("[btc-net] parallel fetch: no non-empty shards, skipping");
+        return Ok(vec![]);
+    }
+
+    eprintln!(
+        "[btc-net] parallel fetch: spawning {} shards concurrently",
+        shards.len()
+    );
+
+    use std::sync::Arc;
+    let fetch_fn = Arc::new(fetch_fn);
+    let mut set: tokio::task::JoinSet<Result<(ChainLayout, Vec<Vec<T>>)>> =
+        tokio::task::JoinSet::new();
+
+    for (i, (sub_layout, scripts)) in shards.into_iter().enumerate() {
+        // Rotate so shard i starts at a different node than shard i-1.
+        let mut shard_nodes = shuffled.clone();
+        shard_nodes.rotate_left(i % num_nodes);
+        let primary = shard_nodes.first().cloned().unwrap_or_default();
+        let addr_type = sub_layout.first().map(|(t, _, _)| format!("{t:?}")).unwrap_or_default();
+        eprintln!(
+            "[btc-net] shard[{}] addr_type={} scripts={} primary_node={}",
+            i,
+            addr_type,
+            scripts.len(),
+            primary
+        );
+        let fetch_fn = Arc::clone(&fetch_fn);
+
+        set.spawn_blocking(move || {
+            let results = fetch_fn(shard_nodes, scripts)?;
+            Ok((sub_layout, results))
+        });
+    }
+
+    let overall_start = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(BTC_PARALLEL_GUARD_SECS),
+        async {
+            let mut out = Vec::new();
+            while let Some(res) = set.join_next().await {
+                out.push(res.map_err(|e| NetworkErrors::RPCError(e.to_string()))??);
+            }
+            Ok(out)
+        },
+    )
+    .await
+    .map_err(|_| {
+        NetworkErrors::RPCError(format!(
+            "parallel BTC sync timed out after {BTC_PARALLEL_GUARD_SECS}s"
+        ))
+    })?;
+
+    match &result {
+        Ok(shards) => eprintln!(
+            "[btc-net] parallel fetch: all {} shards done in {}ms",
+            shards.len(),
+            overall_start.elapsed().as_millis()
+        ),
+        Err(e) => eprintln!(
+            "[btc-net] parallel fetch: failed after {}ms: {}",
+            overall_start.elapsed().as_millis(),
+            e
+        ),
+    }
+
+    result
 }
 
 impl NetworkProvider {
@@ -303,9 +543,16 @@ impl NetworkProvider {
         let mut urls: Vec<&String> = self.config.nodes().iter().collect();
         urls.shuffle(&mut rand::rng());
 
+        eprintln!(
+            "[btc-net] single-call: {} candidate nodes, budget={}s",
+            urls.len(),
+            BTC_TOTAL_TIMEOUT_SECS
+        );
+
         for (i, url) in urls.iter().enumerate() {
             let remaining = total_deadline.saturating_sub(start.elapsed());
             if remaining.is_zero() {
+                eprintln!("[btc-net] single-call: budget exhausted after {} attempts", i);
                 break;
             }
             let nodes_left = (urls.len() - i) as u32;
@@ -315,6 +562,13 @@ impl NetworkProvider {
                 break;
             }
 
+            eprintln!(
+                "[btc-net] single-call: trying node[{}] {} (timeout={}ms)",
+                i,
+                url,
+                per_attempt.as_millis()
+            );
+
             let config = ConfigBuilder::new()
                 .timeout(Some(per_attempt))
                 .retry(0)
@@ -322,17 +576,30 @@ impl NetworkProvider {
 
             match ElectrumClient::from_config(url, config) {
                 Ok(client) => match operation(&client) {
-                    Ok(result) => return Ok(result),
+                    Ok(result) => {
+                        eprintln!(
+                            "[btc-net] single-call: OK from {} in {}ms",
+                            url,
+                            start.elapsed().as_millis()
+                        );
+                        return Ok(result);
+                    }
                     Err(e) => {
+                        eprintln!("[btc-net] single-call: node {} op failed: {}", url, e);
                         last_error = Some(e);
                     }
                 },
                 Err(e) => {
+                    eprintln!("[btc-net] single-call: node {} connect failed: {}", url, e);
                     last_error = Some(NetworkErrors::RPCError(e.to_string()));
                 }
             }
         }
 
+        eprintln!(
+            "[btc-net] single-call: all nodes failed after {}ms",
+            start.elapsed().as_millis()
+        );
         Err(last_error
             .unwrap_or_else(|| NetworkErrors::RPCError("No RPC URLs configured".to_string())))
     }
@@ -628,28 +895,81 @@ impl BtcOperations for NetworkProvider {
                 && c.internal.iter().all(|e| e.history.is_empty())
         });
 
+        let nodes = self.config.nodes().to_vec();
+        let addr_count: usize = chains
+            .values()
+            .map(|c| c.external.len() + c.internal.len())
+            .sum();
+
+        eprintln!(
+            "[btc-net] btc_update_balances: addr_types={} total_addrs={} nodes={} \
+             no_balance={} no_history={}",
+            chains.len(),
+            addr_count,
+            nodes.len(),
+            no_recorded_balance,
+            no_history
+        );
+
         if no_recorded_balance && no_history {
+            // Full scan: history across all addresses in parallel, then UTXOs for used ones.
+            eprintln!("[btc-net] btc_update_balances: path=FULL_SCAN");
             let full = build_layout(chains, |entries| (0..entries.len()).collect());
             if !layout_is_empty(&full) {
-                self.with_electrum_client(|client| {
-                    fetch_history_with_apply(client, chains, &full, |entry, history| {
+                for (sub_layout, results) in
+                    parallel_fetch_history(&nodes, chains, &full).await?
+                {
+                    apply_results(chains, &sub_layout, results, |entry, history| {
                         entry.history = history.into_iter().map(|h| h.tx_hash).collect();
                     })?;
-                    prune_unused_btc_chains(chains);
-                    let used = build_layout(chains, used_indices);
-                    fetch_unspent_sync(client, chains, &used)
-                })?;
+                }
+                prune_unused_btc_chains(chains);
+
+                let used = build_layout(chains, used_indices);
+                let used_count: usize = used.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+                eprintln!("[btc-net] btc_update_balances: full scan used_addrs={}", used_count);
+                if !layout_is_empty(&used) {
+                    for (sub_layout, results) in
+                        parallel_fetch_unspent(&nodes, chains, &used).await?
+                    {
+                        apply_results(chains, &sub_layout, results, |entry, unspents| {
+                            entry.utxos = unspents.into_iter().map(Utxo::from).collect();
+                        })?;
+                    }
+                }
             }
         } else {
+            // Frontier scan: gap-window history + UTXO refresh for used addresses — in parallel.
+            eprintln!("[btc-net] btc_update_balances: path=FRONTIER_SCAN");
             let frontier = build_layout(chains, gap_window_indices);
+            let frontier_count: usize = frontier.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+            eprintln!(
+                "[btc-net] btc_update_balances: frontier_addrs={}",
+                frontier_count
+            );
+            if !layout_is_empty(&frontier) {
+                for (sub_layout, results) in
+                    parallel_fetch_history(&nodes, chains, &frontier).await?
+                {
+                    apply_results(chains, &sub_layout, results, |entry, history| {
+                        if !history.is_empty() {
+                            entry.history = history.into_iter().map(|h| h.tx_hash).collect();
+                        }
+                    })?;
+                }
+            }
+
             let used = build_layout(chains, used_indices);
-            if !layout_is_empty(&frontier) || !layout_is_empty(&used) {
-                // The retry closure may run on multiple Electrum nodes; keep applies idempotent overwrites.
-                self.with_electrum_client(|client| {
-                    fetch_frontier_history_sync(client, chains)?;
-                    let used = build_layout(chains, used_indices);
-                    fetch_unspent_sync(client, chains, &used)
-                })?;
+            let used_count: usize = used.iter().map(|(_, e, i)| e.len() + i.len()).sum();
+            eprintln!("[btc-net] btc_update_balances: frontier used_addrs={}", used_count);
+            if !layout_is_empty(&used) {
+                for (sub_layout, results) in
+                    parallel_fetch_unspent(&nodes, chains, &used).await?
+                {
+                    apply_results(chains, &sub_layout, results, |entry, unspents| {
+                        entry.utxos = unspents.into_iter().map(Utxo::from).collect();
+                    })?;
+                }
             }
 
             prune_unused_btc_chains(chains);
@@ -661,6 +981,12 @@ impl BtcOperations for NetworkProvider {
             .flat_map(|entry| entry.utxos.iter())
             .map(|u| u.value)
             .sum();
+
+        eprintln!(
+            "[btc-net] btc_update_balances: done total_satoshis={} ({})",
+            total,
+            selected_account
+        );
 
         for token in tokens.iter_mut() {
             if token.native {
@@ -702,14 +1028,14 @@ impl BtcOperations for NetworkProvider {
         if layout_is_empty(&layout) {
             return Ok(());
         }
-        self.with_electrum_client(|client| {
-            fetch_history_with_apply(client, chains, &layout, |entry, history| {
+
+        let nodes = self.config.nodes().to_vec();
+        for (sub_layout, results) in parallel_fetch_history(&nodes, chains, &layout).await? {
+            apply_results(chains, &sub_layout, results, |entry, history| {
                 entry.history = history.into_iter().map(|h| h.tx_hash).collect();
-            })
-        })?;
-
+            })?;
+        }
         prune_unused_btc_chains(chains);
-
         Ok(())
     }
 
@@ -725,7 +1051,14 @@ impl BtcOperations for NetworkProvider {
         if layout_is_empty(&layout) {
             return Ok(());
         }
-        self.with_electrum_client(|client| fetch_unspent_sync(client, chains, &layout))
+
+        let nodes = self.config.nodes().to_vec();
+        for (sub_layout, results) in parallel_fetch_unspent(&nodes, chains, &layout).await? {
+            apply_results(chains, &sub_layout, results, |entry, unspents| {
+                entry.utxos = unspents.into_iter().map(Utxo::from).collect();
+            })?;
+        }
+        Ok(())
     }
 }
 
