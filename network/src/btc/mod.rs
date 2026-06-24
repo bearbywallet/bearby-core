@@ -273,55 +273,29 @@ fn fetch_history_from_nodes(
 ) -> Result<Vec<Vec<electrum_client::GetHistoryRes>>> {
     let start = std::time::Instant::now();
     let mut last_error = None;
-    eprintln!(
-        "[btc-net] history shard: {} scripts, {} candidate nodes, budget={}s",
-        scripts.len(),
-        node_urls.len(),
-        total_timeout.as_secs()
-    );
     for (i, url) in node_urls.iter().enumerate() {
         let remaining = total_timeout.saturating_sub(start.elapsed());
         if remaining.is_zero() {
-            eprintln!("[btc-net] history shard: total budget exhausted after {} attempts", i);
             break;
         }
         let nodes_left = (node_urls.len() - i) as u32;
         let per_attempt = (remaining / nodes_left.max(1)).max(min_per_node);
-        eprintln!(
-            "[btc-net] history shard: trying node[{}] {} (timeout={}ms)",
-            i,
-            url,
-            per_attempt.as_millis()
-        );
         let config = ConfigBuilder::new()
             .timeout(Some(per_attempt))
             .retry(0)
             .build();
         match ElectrumClient::from_config(url, config) {
             Ok(client) => match fetch_history_chunked(&client, &scripts) {
-                Ok(r) => {
-                    eprintln!(
-                        "[btc-net] history shard: OK from {} in {}ms",
-                        url,
-                        start.elapsed().as_millis()
-                    );
-                    return Ok(r);
-                }
+                Ok(r) => return Ok(r),
                 Err(e) => {
-                    eprintln!("[btc-net] history shard: node {} op failed: {}", url, e);
                     last_error = Some(e);
                 }
             },
             Err(e) => {
-                eprintln!("[btc-net] history shard: node {} connect failed: {}", url, e);
                 last_error = Some(NetworkErrors::RPCError(e.to_string()));
             }
         }
     }
-    eprintln!(
-        "[btc-net] history shard: all nodes failed after {}ms",
-        start.elapsed().as_millis()
-    );
     Err(last_error.unwrap_or_else(|| NetworkErrors::RPCError("No RPC nodes".into())))
 }
 
@@ -333,55 +307,29 @@ fn fetch_unspent_from_nodes(
 ) -> Result<Vec<Vec<electrum_client::ListUnspentRes>>> {
     let start = std::time::Instant::now();
     let mut last_error = None;
-    eprintln!(
-        "[btc-net] utxo shard: {} scripts, {} candidate nodes, budget={}s",
-        scripts.len(),
-        node_urls.len(),
-        total_timeout.as_secs()
-    );
     for (i, url) in node_urls.iter().enumerate() {
         let remaining = total_timeout.saturating_sub(start.elapsed());
         if remaining.is_zero() {
-            eprintln!("[btc-net] utxo shard: total budget exhausted after {} attempts", i);
             break;
         }
         let nodes_left = (node_urls.len() - i) as u32;
         let per_attempt = (remaining / nodes_left.max(1)).max(min_per_node);
-        eprintln!(
-            "[btc-net] utxo shard: trying node[{}] {} (timeout={}ms)",
-            i,
-            url,
-            per_attempt.as_millis()
-        );
         let config = ConfigBuilder::new()
             .timeout(Some(per_attempt))
             .retry(0)
             .build();
         match ElectrumClient::from_config(url, config) {
             Ok(client) => match fetch_unspent_chunked(&client, &scripts) {
-                Ok(r) => {
-                    eprintln!(
-                        "[btc-net] utxo shard: OK from {} in {}ms",
-                        url,
-                        start.elapsed().as_millis()
-                    );
-                    return Ok(r);
-                }
+                Ok(r) => return Ok(r),
                 Err(e) => {
-                    eprintln!("[btc-net] utxo shard: node {} op failed: {}", url, e);
                     last_error = Some(e);
                 }
             },
             Err(e) => {
-                eprintln!("[btc-net] utxo shard: node {} connect failed: {}", url, e);
                 last_error = Some(NetworkErrors::RPCError(e.to_string()));
             }
         }
     }
-    eprintln!(
-        "[btc-net] utxo shard: all nodes failed after {}ms",
-        start.elapsed().as_millis()
-    );
     Err(last_error.unwrap_or_else(|| NetworkErrors::RPCError("No RPC nodes".into())))
 }
 
@@ -442,11 +390,6 @@ where
     shuffled.shuffle(&mut rand::rng());
     let num_nodes = shuffled.len();
 
-    eprintln!(
-        "[btc-net] parallel fetch: {} total nodes available (shuffled)",
-        num_nodes
-    );
-
     // Build one shard per address type present in the layout.
     let shards: Vec<(ChainLayout, Vec<bitcoin::ScriptBuf>)> = layout
         .iter()
@@ -462,14 +405,8 @@ where
         .collect();
 
     if shards.is_empty() {
-        eprintln!("[btc-net] parallel fetch: no non-empty shards, skipping");
         return Ok(vec![]);
     }
-
-    eprintln!(
-        "[btc-net] parallel fetch: spawning {} shards concurrently",
-        shards.len()
-    );
 
     use std::sync::Arc;
     let fetch_fn = Arc::new(fetch_fn);
@@ -480,15 +417,6 @@ where
         // Rotate so shard i starts at a different node than shard i-1.
         let mut shard_nodes = shuffled.clone();
         shard_nodes.rotate_left(i % num_nodes);
-        let primary = shard_nodes.first().cloned().unwrap_or_default();
-        let addr_type = sub_layout.first().map(|(t, _, _)| format!("{t:?}")).unwrap_or_default();
-        eprintln!(
-            "[btc-net] shard[{}] addr_type={} scripts={} primary_node={}",
-            i,
-            addr_type,
-            scripts.len(),
-            primary
-        );
         let fetch_fn = Arc::clone(&fetch_fn);
 
         set.spawn_blocking(move || {
@@ -497,8 +425,7 @@ where
         });
     }
 
-    let overall_start = std::time::Instant::now();
-    let result = tokio::time::timeout(
+    tokio::time::timeout(
         Duration::from_secs(BTC_PARALLEL_GUARD_SECS),
         async {
             let mut out = Vec::new();
@@ -513,22 +440,7 @@ where
         NetworkErrors::RPCError(format!(
             "parallel BTC sync timed out after {BTC_PARALLEL_GUARD_SECS}s"
         ))
-    })?;
-
-    match &result {
-        Ok(shards) => eprintln!(
-            "[btc-net] parallel fetch: all {} shards done in {}ms",
-            shards.len(),
-            overall_start.elapsed().as_millis()
-        ),
-        Err(e) => eprintln!(
-            "[btc-net] parallel fetch: failed after {}ms: {}",
-            overall_start.elapsed().as_millis(),
-            e
-        ),
-    }
-
-    result
+    })?
 }
 
 impl NetworkProvider {
@@ -543,16 +455,9 @@ impl NetworkProvider {
         let mut urls: Vec<&String> = self.config.nodes().iter().collect();
         urls.shuffle(&mut rand::rng());
 
-        eprintln!(
-            "[btc-net] single-call: {} candidate nodes, budget={}s",
-            urls.len(),
-            BTC_TOTAL_TIMEOUT_SECS
-        );
-
         for (i, url) in urls.iter().enumerate() {
             let remaining = total_deadline.saturating_sub(start.elapsed());
             if remaining.is_zero() {
-                eprintln!("[btc-net] single-call: budget exhausted after {} attempts", i);
                 break;
             }
             let nodes_left = (urls.len() - i) as u32;
@@ -562,13 +467,6 @@ impl NetworkProvider {
                 break;
             }
 
-            eprintln!(
-                "[btc-net] single-call: trying node[{}] {} (timeout={}ms)",
-                i,
-                url,
-                per_attempt.as_millis()
-            );
-
             let config = ConfigBuilder::new()
                 .timeout(Some(per_attempt))
                 .retry(0)
@@ -576,30 +474,17 @@ impl NetworkProvider {
 
             match ElectrumClient::from_config(url, config) {
                 Ok(client) => match operation(&client) {
-                    Ok(result) => {
-                        eprintln!(
-                            "[btc-net] single-call: OK from {} in {}ms",
-                            url,
-                            start.elapsed().as_millis()
-                        );
-                        return Ok(result);
-                    }
+                    Ok(result) => return Ok(result),
                     Err(e) => {
-                        eprintln!("[btc-net] single-call: node {} op failed: {}", url, e);
                         last_error = Some(e);
                     }
                 },
                 Err(e) => {
-                    eprintln!("[btc-net] single-call: node {} connect failed: {}", url, e);
                     last_error = Some(NetworkErrors::RPCError(e.to_string()));
                 }
             }
         }
 
-        eprintln!(
-            "[btc-net] single-call: all nodes failed after {}ms",
-            start.elapsed().as_millis()
-        );
         Err(last_error
             .unwrap_or_else(|| NetworkErrors::RPCError("No RPC URLs configured".to_string())))
     }
@@ -896,24 +781,9 @@ impl BtcOperations for NetworkProvider {
         });
 
         let nodes = self.config.nodes().to_vec();
-        let addr_count: usize = chains
-            .values()
-            .map(|c| c.external.len() + c.internal.len())
-            .sum();
-
-        eprintln!(
-            "[btc-net] btc_update_balances: addr_types={} total_addrs={} nodes={} \
-             no_balance={} no_history={}",
-            chains.len(),
-            addr_count,
-            nodes.len(),
-            no_recorded_balance,
-            no_history
-        );
 
         if no_recorded_balance && no_history {
             // Full scan: history across all addresses in parallel, then UTXOs for used ones.
-            eprintln!("[btc-net] btc_update_balances: path=FULL_SCAN");
             let full = build_layout(chains, |entries| (0..entries.len()).collect());
             if !layout_is_empty(&full) {
                 for (sub_layout, results) in
@@ -926,8 +796,6 @@ impl BtcOperations for NetworkProvider {
                 prune_unused_btc_chains(chains);
 
                 let used = build_layout(chains, used_indices);
-                let used_count: usize = used.iter().map(|(_, e, i)| e.len() + i.len()).sum();
-                eprintln!("[btc-net] btc_update_balances: full scan used_addrs={}", used_count);
                 if !layout_is_empty(&used) {
                     for (sub_layout, results) in
                         parallel_fetch_unspent(&nodes, chains, &used).await?
@@ -940,13 +808,7 @@ impl BtcOperations for NetworkProvider {
             }
         } else {
             // Frontier scan: gap-window history + UTXO refresh for used addresses — in parallel.
-            eprintln!("[btc-net] btc_update_balances: path=FRONTIER_SCAN");
             let frontier = build_layout(chains, gap_window_indices);
-            let frontier_count: usize = frontier.iter().map(|(_, e, i)| e.len() + i.len()).sum();
-            eprintln!(
-                "[btc-net] btc_update_balances: frontier_addrs={}",
-                frontier_count
-            );
             if !layout_is_empty(&frontier) {
                 for (sub_layout, results) in
                     parallel_fetch_history(&nodes, chains, &frontier).await?
@@ -960,8 +822,6 @@ impl BtcOperations for NetworkProvider {
             }
 
             let used = build_layout(chains, used_indices);
-            let used_count: usize = used.iter().map(|(_, e, i)| e.len() + i.len()).sum();
-            eprintln!("[btc-net] btc_update_balances: frontier used_addrs={}", used_count);
             if !layout_is_empty(&used) {
                 for (sub_layout, results) in
                     parallel_fetch_unspent(&nodes, chains, &used).await?
@@ -981,12 +841,6 @@ impl BtcOperations for NetworkProvider {
             .flat_map(|entry| entry.utxos.iter())
             .map(|u| u.value)
             .sum();
-
-        eprintln!(
-            "[btc-net] btc_update_balances: done total_satoshis={} ({})",
-            total,
-            selected_account
-        );
 
         for token in tokens.iter_mut() {
             if token.native {
@@ -1244,64 +1098,6 @@ mod tests {
 
         let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
         mnemonic.to_seed(&SecretString::from("")).unwrap()
-    }
-
-    #[test]
-    fn print_get_history_payloads() {
-        use bitcoin::hashes::{sha256, Hash};
-        use proto::btc_utils::{derive_btc_addresses_from_xpubs, BtcAccountXpubsInput, GAP_LIMIT};
-
-        let seed = anvil_seed();
-        let xpubs = BtcAccountXpubsInput::from_seed(&seed, 0, bitcoin::Network::Bitcoin).unwrap();
-        let mut chains = HashMap::new();
-        derive_btc_addresses_from_xpubs(
-            &xpubs,
-            0,
-            bitcoin::Network::Bitcoin,
-            0,
-            GAP_LIMIT,
-            &mut chains,
-        )
-        .unwrap();
-
-        let mut all_scripthashes: Vec<String> = Vec::new();
-
-        for (addr_type, chain) in &chains {
-            for (label, vec) in [("ext", &chain.external), ("int", &chain.internal)] {
-                for entry in vec.iter().take(2) {
-                    let script = entry.address.to_bitcoin_addr().unwrap().script_pubkey();
-                    let mut sh = sha256::Hash::hash(script.as_bytes()).to_byte_array();
-                    sh.reverse();
-                    let sh_hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
-                    println!(
-                        "{:?} {} {} -> sh={}",
-                        addr_type, label, entry.address, sh_hex
-                    );
-                    all_scripthashes.push(sh_hex);
-                }
-            }
-        }
-
-        println!("\n--- single-call payload (paste into openssl s_client, append \\n) ---");
-        println!(
-            r#"{{"id":1,"method":"blockchain.scripthash.get_history","params":["{}"]}}"#,
-            all_scripthashes[0]
-        );
-
-        println!("\n--- batch (3) payload ---");
-        let batch_items: Vec<String> = all_scripthashes
-            .iter()
-            .take(3)
-            .enumerate()
-            .map(|(i, sh)| {
-                format!(
-                    r#"{{"id":{},"method":"blockchain.scripthash.get_history","params":["{}"]}}"#,
-                    i + 1,
-                    sh
-                )
-            })
-            .collect();
-        println!("[{}]", batch_items.join(","));
     }
 
     #[tokio::test]

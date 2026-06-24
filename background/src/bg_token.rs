@@ -126,39 +126,12 @@ impl TokensManagement for Background {
                 let wallet_data = wallet_ref.get_wallet_data()?;
                 let chains = wallet_ref.get_btc_addresses(account_index, wallet_data.chain_hash)?;
 
-                let chain_summary: Vec<String> = chains
-                    .iter()
-                    .map(|(at, c)| {
-                        format!(
-                            "{:?}(ext:{},int:{})",
-                            at,
-                            c.external.len(),
-                            c.internal.len()
-                        )
-                    })
-                    .collect();
-                println!(
-                    "[build_token_transfer] BTC: sender={} receiver={} amount_sat={} account_index={} chains=[{}]",
-                    sender.addr,
-                    to,
-                    amount_sat,
-                    account_index,
-                    chain_summary.join(", ")
-                );
-
                 let (tx, witness_utxos, input_meta) =
                     wallet::bitcoin_wallet::build_unsigned_btc_transaction(
                         &chains,
                         vec![(to, amount_sat)],
                         None,
                     )?;
-
-                println!(
-                    "[build_token_transfer] BTC tx built: {} inputs {} outputs wutxos={}",
-                    tx.input.len(),
-                    tx.output.len(),
-                    witness_utxos.len()
-                );
 
                 let btc_input_meta: Vec<(u8, crypto::bip49::DerivationPath)> = input_meta
                     .into_iter()

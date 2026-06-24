@@ -151,7 +151,6 @@ impl BitcoinManagement for Background {
                     .config
                     .bitcoin_network()
                     .unwrap_or(bitcoin::Network::Bitcoin);
-                eprintln!("[btc-deposit] appending new P2WPKH change address");
                 append_new_change_address(
                     &mut chains,
                     xpubs,
@@ -169,29 +168,12 @@ impl BitcoinManagement for Background {
         // and listunspent also surfaces mempool change from a prior swap.
         let refreshed = match provider.batch_btc_list_unspent(&mut chains).await {
             Ok(()) => true,
-            Err(e) => {
-                eprintln!("[btc-deposit] utxo refresh failed, using stored state: {e}");
-                false
-            }
+            Err(_) => false,
         };
         if refreshed || appended_change {
             wallet_ref.save_btc_addresses(account_index, &chains, wallet_data.chain_hash)?;
         }
 
-        for (addr_type, chain) in &chains {
-            let utxo_sat: u64 = chain
-                .external
-                .iter()
-                .chain(chain.internal.iter())
-                .flat_map(|e| e.utxos.iter())
-                .map(|u| u.value)
-                .sum();
-            eprintln!(
-                "[btc-deposit] type={addr_type:?} ext={} int={} utxo_sat={utxo_sat} refreshed={refreshed}",
-                chain.external.len(),
-                chain.internal.len(),
-            );
-        }
         let extra_outputs = memo
             .map(|m| build_op_return_output(m.as_bytes()))
             .transpose()?
