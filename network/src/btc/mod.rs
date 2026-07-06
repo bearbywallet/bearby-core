@@ -89,6 +89,7 @@ fn build_required_params(
         market: market_fee_sat,
         fast: fast_fee_sat,
         current: market_fee_sat,
+        l1_fee: Default::default(),
     }
 }
 
@@ -1143,26 +1144,31 @@ mod tests {
             .await
             .unwrap();
 
-        for (addr_type, chain) in &chains {
-            assert_eq!(
-                chain.external.len(),
-                original_lengths[addr_type],
-                "{:?} external chain length changed",
-                addr_type
-            );
-            assert_eq!(
-                chain.internal.len(),
-                original_lengths[addr_type],
-                "{:?} internal chain length changed",
-                addr_type
-            );
-        }
-
-        // P2WPKH must always survive pruning (unconditionally retained).
+        // P2WPKH is unconditionally retained and its entries are never pruned,
+        // so its length is preserved regardless of on-chain history.
         assert!(
             chains.contains_key(&bitcoin::AddressType::P2wpkh),
             "P2WPKH must survive pruning"
         );
+        assert_eq!(
+            chains[&bitcoin::AddressType::P2wpkh].external.len(),
+            original_lengths[&bitcoin::AddressType::P2wpkh],
+            "P2WPKH external entries must never be pruned"
+        );
+
+        // All other address types are pruned: only entries with on-chain history survive.
+        for (addr_type, chain) in &chains {
+            if *addr_type == bitcoin::AddressType::P2wpkh {
+                continue;
+            }
+            for entry in chain.external.iter().chain(chain.internal.iter()) {
+                assert!(
+                    !entry.history.is_empty(),
+                    "{:?} entry with empty history survived pruning",
+                    addr_type
+                );
+            }
+        }
     }
 
     #[test]

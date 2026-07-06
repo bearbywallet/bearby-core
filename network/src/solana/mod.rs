@@ -197,6 +197,7 @@ impl SolanaOperations for NetworkProvider {
                         market: U256::from(SOLANA_BASE_FEE_LAMPORTS),
                         fast: U256::from(SOLANA_BASE_FEE_LAMPORTS),
                         current: U256::from(SOLANA_BASE_FEE_LAMPORTS),
+                        l1_fee: Default::default(),
                     });
                 };
                 let blockhash_str = self.solana_get_latest_blockhash().await?;
@@ -226,6 +227,7 @@ impl SolanaOperations for NetworkProvider {
             market: fee,
             fast: fee,
             current: fee,
+            l1_fee: Default::default(),
         })
     }
 
@@ -813,13 +815,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_solana_update_balances_multiple_accounts() {
-        let provider = NetworkProvider::new(gen_sol_devnet_conf());
+        // Deterministic mock: avoids hitting the live Solana devnet.
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/")
+            .with_body(
+                r#"[
+                    {"jsonrpc":"2.0","id":1,"result":{"value":1000000}},
+                    {"jsonrpc":"2.0","id":2,"result":{"value":0}}
+                ]"#,
+            )
+            .create_async()
+            .await;
+
+        let mut net_conf = gen_sol_devnet_conf();
+        net_conf.rpc = vec![server.url()];
+        let provider = NetworkProvider::new(net_conf);
+
         let mut token = gen_sol_token();
         let rich_account = Address::from_solana_address(DEVNET_RICH_ADDRESS).unwrap();
         let zero_account = Address::from_solana_address(DEVNET_ZERO_ADDRESS).unwrap();
         let accounts: Vec<&Address> = vec![&rich_account, &zero_account];
 
-        println!("Querying balances for {} accounts", accounts.len());
         provider
             .solana_update_balances(vec![&mut token], &accounts)
             .await
@@ -827,11 +844,9 @@ mod tests {
 
         let rich_balance = token.balances.get(&rich_account.to_hash()).unwrap();
         let zero_balance = token.balances.get(&zero_account.to_hash()).unwrap();
-        dbg!(rich_balance, zero_balance);
 
         assert!(*rich_balance > U256::from(0));
         assert_eq!(*zero_balance, U256::from(0));
-        println!("Multi-account balance check passed");
     }
 
     #[tokio::test]
