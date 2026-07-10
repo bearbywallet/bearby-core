@@ -89,7 +89,6 @@ fn build_required_params(
         market: market_fee_sat,
         fast: fast_fee_sat,
         current: market_fee_sat,
-        l1_fee: Default::default(),
     }
 }
 
@@ -426,16 +425,13 @@ where
         });
     }
 
-    tokio::time::timeout(
-        Duration::from_secs(BTC_PARALLEL_GUARD_SECS),
-        async {
-            let mut out = Vec::new();
-            while let Some(res) = set.join_next().await {
-                out.push(res.map_err(|e| NetworkErrors::RPCError(e.to_string()))??);
-            }
-            Ok(out)
-        },
-    )
+    tokio::time::timeout(Duration::from_secs(BTC_PARALLEL_GUARD_SECS), async {
+        let mut out = Vec::new();
+        while let Some(res) = set.join_next().await {
+            out.push(res.map_err(|e| NetworkErrors::RPCError(e.to_string()))??);
+        }
+        Ok(out)
+    })
     .await
     .map_err(|_| {
         NetworkErrors::RPCError(format!(
@@ -462,8 +458,7 @@ impl NetworkProvider {
                 break;
             }
             let nodes_left = (urls.len() - i) as u32;
-            let per_attempt =
-                (remaining / nodes_left.max(1)).max(BTC_MIN_PER_NODE_TIMEOUT);
+            let per_attempt = (remaining / nodes_left.max(1)).max(BTC_MIN_PER_NODE_TIMEOUT);
             if per_attempt.is_zero() {
                 break;
             }
@@ -787,9 +782,7 @@ impl BtcOperations for NetworkProvider {
             // Full scan: history across all addresses in parallel, then UTXOs for used ones.
             let full = build_layout(chains, |entries| (0..entries.len()).collect());
             if !layout_is_empty(&full) {
-                for (sub_layout, results) in
-                    parallel_fetch_history(&nodes, chains, &full).await?
-                {
+                for (sub_layout, results) in parallel_fetch_history(&nodes, chains, &full).await? {
                     apply_results(chains, &sub_layout, results, |entry, history| {
                         entry.history = history.into_iter().map(|h| h.tx_hash).collect();
                     })?;
@@ -824,9 +817,7 @@ impl BtcOperations for NetworkProvider {
 
             let used = build_layout(chains, used_indices);
             if !layout_is_empty(&used) {
-                for (sub_layout, results) in
-                    parallel_fetch_unspent(&nodes, chains, &used).await?
-                {
+                for (sub_layout, results) in parallel_fetch_unspent(&nodes, chains, &used).await? {
                     apply_results(chains, &sub_layout, results, |entry, unspents| {
                         entry.utxos = unspents.into_iter().map(Utxo::from).collect();
                     })?;

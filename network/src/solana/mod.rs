@@ -197,7 +197,6 @@ impl SolanaOperations for NetworkProvider {
                         market: U256::from(SOLANA_BASE_FEE_LAMPORTS),
                         fast: U256::from(SOLANA_BASE_FEE_LAMPORTS),
                         current: U256::from(SOLANA_BASE_FEE_LAMPORTS),
-                        l1_fee: Default::default(),
                     });
                 };
                 let blockhash_str = self.solana_get_latest_blockhash().await?;
@@ -227,7 +226,6 @@ impl SolanaOperations for NetworkProvider {
             market: fee,
             fast: fee,
             current: fee,
-            l1_fee: Default::default(),
         })
     }
 
