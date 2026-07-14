@@ -16,7 +16,7 @@ use proto::btc_utils::{
 use proto::tx::{TransactionReceipt, TransactionRequest};
 use rand::seq::SliceRandom;
 use rpc::common::NetworkConfigTrait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use token::ft::FToken;
 
@@ -25,6 +25,9 @@ const SATOSHIS_PER_BTC: f64 = 100_000_000.0;
 const BYTES_PER_KB: f64 = 1000.0;
 const DEFAULT_TX_SIZE_BYTES: u64 = 250;
 const HISTORY_BATCH_CHUNK: usize = 50;
+/// Cap missing-txid fetches per balance-sync so a large restore makes
+/// bounded progress under the shared electrum timeout budget.
+const BACKFILL_MAX_PER_SYNC: usize = 200; // 4 chunks of HISTORY_BATCH_CHUNK
 const BTC_TOTAL_TIMEOUT_SECS: u64 = 60;
 const BTC_MIN_PER_NODE_TIMEOUT: Duration = Duration::from_secs(5);
 const BTC_PARALLEL_GUARD_SECS: u64 = 150;
@@ -122,6 +125,175 @@ fn parse_fee_histogram(value: &serde_json::Value) -> Option<(u64, u64, u64)> {
     let fast_rate = f64_to_sat(min_fee_rate * 1.15);
 
     Some((slow_rate, market_rate, fast_rate))
+}
+
+/// Extract confirmation state from a verbose `blockchain.transaction.get` response.
+/// Electrum verbose responses carry `confirmations` (u64, absent/0 while in mempool);
+/// some servers only expose `height` (> 0 once mined).
+fn btc_tx_confirmed(result: &serde_json::Value) -> bool {
+    if let Some(c) = result.get("confirmations").and_then(|c| c.as_u64()) {
+        return c > 0;
+    }
+    result
+        .get("height")
+        .and_then(|h| h.as_i64())
+        .map(|h| h > 0)
+        .unwrap_or(false)
+}
+
+/// Timestamp (ms) from a verbose tx response; `None` for mempool txs.
+fn btc_tx_timestamp_ms(result: &serde_json::Value) -> Option<u64> {
+    result
+        .get("blocktime")
+        .or_else(|| result.get("time"))
+        .and_then(|t| t.as_u64())
+        .map(|secs| secs * 1000)
+}
+
+/// Compute received/sent satoshis and witness UTXOs for a BTC tx relative to our scripts.
+/// `witness_utxos` is filled only when every prevout resolves (fully-owned outgoing tx).
+fn btc_history_io(
+    tx: &bitcoin::Transaction,
+    our_scripts: &HashSet<bitcoin::ScriptBuf>,
+    parents: &HashMap<bitcoin::Txid, &bitcoin::Transaction>,
+) -> (u64, u64, Vec<bitcoin::TxOut>) {
+    let received: u64 = tx
+        .output
+        .iter()
+        .filter(|o| our_scripts.contains(&o.script_pubkey))
+        .map(|o| o.value.to_sat())
+        .sum();
+
+    let mut prevouts: Vec<Option<bitcoin::TxOut>> = Vec::with_capacity(tx.input.len());
+    for input in &tx.input {
+        let prev = parents
+            .get(&input.previous_output.txid)
+            .and_then(|p| p.output.get(input.previous_output.vout as usize))
+            .cloned();
+        prevouts.push(prev);
+    }
+
+    let sent: u64 = prevouts
+        .iter()
+        .flatten()
+        .filter(|o| our_scripts.contains(&o.script_pubkey))
+        .map(|o| o.value.to_sat())
+        .sum();
+
+    let all_resolved = prevouts.iter().all(Option::is_some);
+    let witness_utxos: Vec<bitcoin::TxOut> = if all_resolved {
+        prevouts.into_iter().flatten().collect()
+    } else {
+        Vec::with_capacity(0)
+    };
+
+    (received, sent, witness_utxos)
+}
+
+/// Per-run constants + precomputed io for building one history entry without
+/// re-borrowing the parent map (enables a zero-clone consume of `fetched`).
+struct BtcEntryBuildCtx<'a> {
+    txid: bitcoin::Txid,
+    tx: bitcoin::Transaction,
+    result: &'a serde_json::Value,
+    received: u64,
+    sent: u64,
+    witness_utxos: Vec<bitcoin::TxOut>,
+    chain_hash: u64,
+    symbol: &'a str,
+    decimals: u8,
+    selected_account: &'a Address,
+    now_ms: u64,
+}
+
+fn build_btc_historical_entry(ctx: BtcEntryBuildCtx<'_>) -> HistoricalTransaction {
+    let net_amount = ctx.received.abs_diff(ctx.sent);
+    let confirmed = btc_tx_confirmed(ctx.result);
+
+    HistoricalTransaction {
+        status: if confirmed {
+            TransactionStatus::Success
+        } else {
+            TransactionStatus::Pending
+        },
+        metadata: proto::tx::TransactionMetadata {
+            chain_hash: ctx.chain_hash,
+            hash: Some(ctx.txid.to_string()),
+            info: None,
+            icon: None,
+            title: None,
+            // First-writer-wins attribution: signer/token_info are relative to the
+            // currently selected account's chains. A tx that also touches another
+            // account is not re-attributed when that account syncs later (txid is
+            // already in known). For pure receives, signer is the selected wallet
+            // address (not the external sender) — intentional v1 trade-off.
+            signer: Some(ctx.selected_account.clone()),
+            token_info: Some((U256::from(net_amount), ctx.decimals, ctx.symbol.to_owned())),
+            broadcast: true,
+        },
+        evm: None,
+        scilla: None,
+        btc: Some((
+            ctx.tx,
+            proto::btc_tx::BitcoinMetadata {
+                witness_utxos: ctx.witness_utxos,
+                input_meta: Vec::with_capacity(0),
+            },
+        )),
+        tron: None,
+        solana: None,
+        signed_message: None,
+        timestamp: btc_tx_timestamp_ms(ctx.result).unwrap_or(ctx.now_ms),
+    }
+}
+
+/// Decode verbose `blockchain.transaction.get` results for a chunk of txids.
+/// Missing/invalid entries are skipped (RBF-replaced, pruned, malformed hex)
+/// so one bad txid cannot poison the rest of the backfill.
+fn parse_tx_get_results(
+    chunk: &[bitcoin::Txid],
+    results: impl IntoIterator<Item = serde_json::Value>,
+) -> Vec<(bitcoin::Txid, bitcoin::Transaction, serde_json::Value)> {
+    use bitcoin::consensus::encode::deserialize_hex;
+
+    let mut out = Vec::with_capacity(chunk.len());
+    for (txid, result) in chunk.iter().zip(results) {
+        let Some(hex) = result.get("hex").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Ok(tx) = deserialize_hex::<bitcoin::Transaction>(hex) else {
+            continue;
+        };
+        out.push((*txid, tx, result));
+    }
+    out
+}
+
+/// True when the electrum error indicates a dead/unreachable node (failover),
+/// as opposed to an application-level response (e.g. unknown txid → skip).
+fn is_electrum_transport_error(err: &electrum_client::Error) -> bool {
+    use electrum_client::Error as E;
+    // Application-level responses: server spoke — skip the txid, do not fail over.
+    if matches!(
+        err,
+        E::Protocol(_)
+            | E::InvalidResponse(_)
+            | E::Message(_)
+            | E::JSON(_)
+            | E::Hex(_)
+            | E::Bitcoin(_)
+            | E::AlreadySubscribed(_)
+            | E::NotSubscribed(_)
+    ) {
+        return false;
+    }
+    match err {
+        E::AllAttemptsErrored(errs) => {
+            !errs.is_empty() && errs.iter().all(is_electrum_transport_error)
+        }
+        // IO / TLS / DNS / lock / IPC / connection setup: node is dead.
+        _ => true,
+    }
 }
 
 fn sorted_chain_keys(
@@ -505,6 +677,20 @@ pub trait BtcOperations {
         chains: &mut HashMap<bitcoin::AddressType, AddressChain>,
         selected_account: &Address,
     ) -> Result<()>;
+    /// Fetch full transaction objects for txids present in `chains` entry.history
+    /// but absent from `known_ids` (the wallet's stored history for this chain).
+    /// `known_txs` supplies full bodies for parent/prevout lookup only (borrowed —
+    /// no clone of stored history on the steady-state path).
+    /// Returns ready-to-store HistoricalTransaction entries.
+    /// Issues NO network calls when nothing is missing.
+    /// Unfetchable txids (RBF-replaced, pruned) are skipped; partial results are OK.
+    async fn btc_scan_history_txns(
+        &self,
+        chains: &HashMap<bitcoin::AddressType, AddressChain>,
+        known_ids: &HashSet<bitcoin::Txid>,
+        known_txs: &HashMap<bitcoin::Txid, &bitcoin::Transaction>,
+        selected_account: &Address,
+    ) -> Result<Vec<HistoricalTransaction>>;
     async fn btc_list_unspent(
         &self,
         address: &Address,
@@ -707,11 +893,9 @@ impl BtcOperations for NetworkProvider {
                     NetworkErrors::RPCError(format!("failed to decode tx {} hex: {}", txid, e))
                 })?;
 
-                let confirmations = result.get("weight").and_then(|c| c.as_u64()).unwrap_or(0);
-
                 let tx_ref = &mut txns[original_idx];
                 tx_ref.update_btc_tx(transaction);
-                tx_ref.status = if confirmations > 0 {
+                tx_ref.status = if btc_tx_confirmed(result) {
                     TransactionStatus::Success
                 } else {
                     TransactionStatus::Pending
@@ -843,6 +1027,174 @@ impl BtcOperations for NetworkProvider {
         }
 
         Ok(())
+    }
+
+    async fn btc_scan_history_txns(
+        &self,
+        chains: &HashMap<bitcoin::AddressType, AddressChain>,
+        known_ids: &HashSet<bitcoin::Txid>,
+        known_txs: &HashMap<bitcoin::Txid, &bitcoin::Transaction>,
+        selected_account: &Address,
+    ) -> Result<Vec<HistoricalTransaction>> {
+        // 1. Dedupe all txids across every entry (ext+int, all address types);
+        //    a tx spending our utxo and paying our change appears in several entries.
+        //    Iterate sorted address-type keys so a capped backfill makes deterministic
+        //    progress across successive syncs.
+        let approx_history: usize = chains
+            .values()
+            .flat_map(|c| c.external.iter().chain(c.internal.iter()))
+            .map(|e| e.history.len())
+            .sum();
+        let mut missing: Vec<bitcoin::Txid> =
+            Vec::with_capacity(approx_history.min(BACKFILL_MAX_PER_SYNC));
+        let mut seen: HashSet<bitcoin::Txid> = HashSet::with_capacity(approx_history);
+        for key in sorted_chain_keys(chains) {
+            let Some(chain) = chains.get(&key) else {
+                continue;
+            };
+            for entry in chain.external.iter().chain(chain.internal.iter()) {
+                for txid in &entry.history {
+                    if !known_ids.contains(txid) && seen.insert(*txid) {
+                        missing.push(*txid);
+                    }
+                }
+            }
+        }
+
+        if missing.is_empty() {
+            return Ok(Vec::new()); // steady state: zero node requests
+        }
+
+        // Bounded progress under the shared electrum timeout budget.
+        if missing.len() > BACKFILL_MAX_PER_SYNC {
+            missing.truncate(BACKFILL_MAX_PER_SYNC);
+        }
+
+        // 2. Our scripts, for direction/amount computation.
+        let entry_count: usize = chains
+            .values()
+            .map(|c| c.external.len() + c.internal.len())
+            .sum();
+        let mut our_scripts: HashSet<bitcoin::ScriptBuf> = HashSet::with_capacity(entry_count);
+        for chain in chains.values() {
+            for entry in chain.external.iter().chain(chain.internal.iter()) {
+                if let Ok(addr) = entry.address.to_bitcoin_addr() {
+                    our_scripts.insert(addr.script_pubkey());
+                }
+            }
+        }
+
+        // 3. Fetch verbose tx objects, chunked, through node-failover.
+        //    One unfetchable txid must not poison the whole batch (RBF/dropped).
+        //    Permanently missing txids stay in entry.history and are re-tried on
+        //    every sync (cheap: one slot in a batch); a tombstone/negative-cache
+        //    is future work if that ever shows up in profiles.
+        let chain_hash = self.config.hash();
+        let (symbol, decimals) = self
+            .config
+            .ftokens
+            .iter()
+            .find(|t| t.native)
+            .map(|t| (t.symbol.clone(), t.decimals))
+            .unwrap_or_else(|| ("BTC".to_string(), 8));
+
+        let fetched: Vec<(bitcoin::Txid, bitcoin::Transaction, serde_json::Value)> =
+            self.with_electrum_client(|client| {
+                let mut out = Vec::with_capacity(missing.len());
+                for chunk in missing.chunks(HISTORY_BATCH_CHUNK) {
+                    let mut batch = Batch::default();
+                    for txid in chunk {
+                        batch.raw(
+                            "blockchain.transaction.get".to_string(),
+                            vec![Param::String(txid.to_string()), Param::Bool(true)],
+                        );
+                    }
+                    let results = match client.batch_call(&batch) {
+                        Ok(r) if r.len() == chunk.len() => r,
+                        _ => {
+                            // Batch poisoned (e.g. RBF-replaced txid) or node glitch —
+                            // fall back to per-txid calls.
+                            // Protocol errors (unknown txid) → skip that tx.
+                            // Transport errors on every call → node dead, fail over.
+                            let mut per_tx = Vec::with_capacity(chunk.len());
+                            let mut transport_errors = 0usize;
+                            for txid in chunk {
+                                match client.raw_call(
+                                    "blockchain.transaction.get",
+                                    [
+                                        Param::String(txid.to_string()),
+                                        Param::Bool(true),
+                                    ],
+                                ) {
+                                    Ok(val) => per_tx.push(val),
+                                    Err(e) if is_electrum_transport_error(&e) => {
+                                        transport_errors += 1;
+                                        per_tx.push(serde_json::Value::Null);
+                                    }
+                                    Err(_) => {
+                                        // Application-level (Protocol, etc.): skip txid.
+                                        per_tx.push(serde_json::Value::Null);
+                                    }
+                                }
+                            }
+                            if transport_errors == chunk.len() {
+                                return Err(NetworkErrors::RPCError(
+                                    "transaction.get fallback: all calls failed".to_string(),
+                                ));
+                            }
+                            per_tx
+                        }
+                    };
+                    out.extend(parse_tx_get_results(chunk, results));
+                }
+                Ok(out)
+            })?;
+
+        // 4. Parent lookup = known_txs ∪ fetched. Any input WE own was funded by a tx
+        //    that touched our address, so its parent is guaranteed to be in this map;
+        //    unresolvable parents belong to other people's inputs (pure receives).
+        let mut parents: HashMap<bitcoin::Txid, &bitcoin::Transaction> =
+            HashMap::with_capacity(known_txs.len() + fetched.len());
+        for (id, tx) in known_txs {
+            parents.insert(*id, *tx);
+        }
+        for (txid, tx, _) in &fetched {
+            parents.insert(*txid, tx);
+        }
+
+        // 5. Two-pass build: compute borrow-dependent io while parents is live,
+        //    then drop parents and move txs out of fetched (no full-tx clone).
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let ios: Vec<(u64, u64, Vec<bitcoin::TxOut>)> = fetched
+            .iter()
+            .map(|(_, tx, _)| btc_history_io(tx, &our_scripts, &parents))
+            .collect();
+        drop(parents);
+
+        let mut history = Vec::with_capacity(fetched.len());
+        for ((txid, tx, result), (received, sent, witness_utxos)) in
+            fetched.into_iter().zip(ios)
+        {
+            history.push(build_btc_historical_entry(BtcEntryBuildCtx {
+                txid,
+                tx,
+                result: &result,
+                received,
+                sent,
+                witness_utxos,
+                chain_hash,
+                symbol: &symbol,
+                decimals,
+                selected_account,
+                now_ms,
+            }));
+        }
+
+        Ok(history)
     }
 
     async fn btc_list_unspent(
@@ -1257,5 +1609,247 @@ mod tests {
             assert!(p2tr.external.is_empty()); // no-history entry removed
             assert_eq!(p2tr.internal.len(), 1); // history entry kept
         }
+    }
+
+    #[test]
+    fn test_btc_tx_confirmed() {
+        use serde_json::json;
+
+        assert!(btc_tx_confirmed(&json!({"confirmations": 3})));
+        assert!(!btc_tx_confirmed(&json!({"confirmations": 0})));
+        assert!(btc_tx_confirmed(&json!({"height": 812345})));
+        assert!(!btc_tx_confirmed(&json!({"height": 0})));
+        assert!(!btc_tx_confirmed(&json!({})));
+        // Regression: weight must never be treated as confirmations.
+        assert!(!btc_tx_confirmed(&json!({"weight": 565})));
+        // confirmations takes precedence over height.
+        assert!(!btc_tx_confirmed(
+            &json!({"confirmations": 0, "height": 812345})
+        ));
+        assert!(btc_tx_confirmed(
+            &json!({"confirmations": 1, "height": 0})
+        ));
+    }
+
+    #[test]
+    fn test_btc_tx_timestamp_ms() {
+        use serde_json::json;
+
+        assert_eq!(
+            btc_tx_timestamp_ms(&json!({"blocktime": 1_700_000_000})),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            btc_tx_timestamp_ms(&json!({"time": 1_700_000_001})),
+            Some(1_700_000_001_000)
+        );
+        // blocktime preferred over time.
+        assert_eq!(
+            btc_tx_timestamp_ms(&json!({"blocktime": 100, "time": 200})),
+            Some(100_000)
+        );
+        assert_eq!(btc_tx_timestamp_ms(&json!({})), None);
+    }
+
+    #[test]
+    fn test_btc_history_io_direction_and_amount() {
+        use bitcoin::{
+            absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence,
+            Transaction, TxIn, TxOut, Witness,
+        };
+        use serde_json::json;
+        use std::str::FromStr;
+
+        let our_script = ScriptBuf::new_p2wpkh(
+            &bitcoin::WPubkeyHash::from_str("00112233445566778899aabbccddeeff00112233").unwrap(),
+        );
+        let their_script = ScriptBuf::new_p2wpkh(
+            &bitcoin::WPubkeyHash::from_str("ffeeddccbbaa99887766554433221100ffeeddcc").unwrap(),
+        );
+
+        let mut our_scripts = HashSet::with_capacity(1);
+        our_scripts.insert(our_script.clone());
+
+        // Parent funds our script with 50_000 sats.
+        let parent_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn::default()],
+            output: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey: our_script.clone(),
+            }],
+        };
+        let parent_txid = parent_tx.compute_txid();
+
+        // Pure receive: someone pays us 10_000 (no resolvable prevouts we own).
+        let receive_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: bitcoin::Txid::from_str(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .unwrap(),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(10_000),
+                script_pubkey: our_script.clone(),
+            }],
+        };
+        let parents_empty: HashMap<bitcoin::Txid, &Transaction> = HashMap::new();
+        let (recv, sent, witness) = btc_history_io(&receive_tx, &our_scripts, &parents_empty);
+        assert_eq!(recv, 10_000);
+        assert_eq!(sent, 0);
+        assert!(witness.is_empty(), "unresolved prevouts → no witness_utxos");
+
+        // Outgoing: we spend the parent and pay them 40_000, change 9_000 to us.
+        let send_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: parent_txid,
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![
+                TxOut {
+                    value: Amount::from_sat(40_000),
+                    script_pubkey: their_script,
+                },
+                TxOut {
+                    value: Amount::from_sat(9_000),
+                    script_pubkey: our_script.clone(),
+                },
+            ],
+        };
+        let mut parents: HashMap<bitcoin::Txid, &Transaction> = HashMap::with_capacity(1);
+        parents.insert(parent_txid, &parent_tx);
+        let (recv, sent, witness) = btc_history_io(&send_tx, &our_scripts, &parents);
+        assert_eq!(recv, 9_000);
+        assert_eq!(sent, 50_000);
+        assert_eq!(witness.len(), 1);
+        assert_eq!(witness[0].value.to_sat(), 50_000);
+
+        let net = recv.abs_diff(sent);
+        assert_eq!(net, 41_000); // 50k sent − 9k change
+
+        let send_txid = send_tx.compute_txid();
+        let result = json!({
+            "confirmations": 2,
+            "blocktime": 1_700_000_000,
+            "hex": "00"
+        });
+        let selected = Address::Secp256k1Bitcoin(b"bc1qtest".to_vec());
+        let entry = build_btc_historical_entry(BtcEntryBuildCtx {
+            txid: send_txid,
+            tx: send_tx,
+            result: &result,
+            received: recv,
+            sent,
+            witness_utxos: witness,
+            chain_hash: 42,
+            symbol: "BTC",
+            decimals: 8,
+            selected_account: &selected,
+            now_ms: 99,
+        });
+        assert_eq!(entry.status, TransactionStatus::Success);
+        assert_eq!(entry.timestamp, 1_700_000_000_000);
+        assert_eq!(entry.metadata.chain_hash, 42);
+        assert_eq!(
+            entry.metadata.token_info,
+            Some((U256::from(41_000u64), 8, "BTC".to_string()))
+        );
+        let (_, meta) = entry.get_btc().expect("btc payload");
+        assert_eq!(meta.witness_utxos.len(), 1);
+    }
+
+    #[test]
+    fn test_is_electrum_transport_error() {
+        use electrum_client::Error as E;
+        use std::io::{Error as IoError, ErrorKind};
+
+        assert!(
+            is_electrum_transport_error(&E::IOError(IoError::from(ErrorKind::ConnectionRefused))),
+            "IO errors are transport"
+        );
+        assert!(
+            !is_electrum_transport_error(&E::Protocol(serde_json::json!("tx not found"))),
+            "Protocol (unknown txid) must not trigger failover"
+        );
+        assert!(
+            !is_electrum_transport_error(&E::Message("no such tx".into())),
+            "application Message must not trigger failover"
+        );
+        assert!(
+            is_electrum_transport_error(&E::AllAttemptsErrored(vec![E::IOError(
+                IoError::from(ErrorKind::TimedOut)
+            )])),
+            "all-transport AllAttemptsErrored is transport"
+        );
+        assert!(
+            !is_electrum_transport_error(&E::AllAttemptsErrored(vec![E::Protocol(
+                serde_json::json!(null)
+            )])),
+            "all-protocol AllAttemptsErrored is not transport"
+        );
+    }
+
+    #[test]
+    fn test_parse_tx_get_results_skips_unfetchable() {
+        use bitcoin::consensus::encode::serialize_hex;
+        use bitcoin::{absolute::LockTime, transaction::Version, Amount, ScriptBuf, Transaction, TxOut};
+        use serde_json::json;
+        use std::str::FromStr;
+
+        let good_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let good_txid = good_tx.compute_txid();
+        let good_hex = serialize_hex(&good_tx);
+
+        let bad_txid = bitcoin::Txid::from_str(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .unwrap();
+        let poison_txid = bitcoin::Txid::from_str(
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        )
+        .unwrap();
+        let malformed_txid = bitcoin::Txid::from_str(
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        )
+        .unwrap();
+
+        let chunk = [bad_txid, good_txid, poison_txid, malformed_txid];
+        let results = vec![
+            serde_json::Value::Null, // unfetchable
+            json!({"hex": good_hex, "confirmations": 1}),
+            json!({}),               // missing hex
+            json!({"hex": "not-valid-hex"}),
+        ];
+
+        let parsed = parse_tx_get_results(&chunk, results);
+        assert_eq!(parsed.len(), 1, "only the valid tx must survive");
+        assert_eq!(parsed[0].0, good_txid);
+        assert_eq!(parsed[0].1.compute_txid(), good_txid);
+        assert!(btc_tx_confirmed(&parsed[0].2));
     }
 }

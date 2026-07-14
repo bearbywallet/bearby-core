@@ -10,5 +10,6 @@ crypto = { path = "../crypto" }
 pqbip39.workspace = true
 proto = { path = "../proto" }
 rpc = { path = "../rpc" }
+rustls.workspace = true
 secrecy.workspace = true
 token = { path = "../token" }

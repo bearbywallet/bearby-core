@@ -4,10 +4,21 @@ use proto::address::Address;
 use rpc::network_config::{ChainConfig, Explorer};
 use secrecy::SecretString;
 use std::collections::HashMap;
+use std::sync::Once;
 use token::ft::FToken;
 
 pub const TEST_PASSWORD: &str = "TEst password";
 pub const ANVIL_MNEMONIC: &str = "test test test test test test test test test test test junk";
+
+/// Install the process-wide rustls CryptoProvider once.
+/// Electrum SSL clients race on install when multiple tests start in parallel
+/// (`get_default().is_none()` then `install_default` → "Failed to install CryptoProvider").
+pub fn ensure_rustls_crypto_provider() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 pub fn empty_passphrase() -> SecretString {
     SecretString::new(Box::from(""))
@@ -183,6 +194,7 @@ pub fn gen_eth_mainnet_token() -> FToken {
 }
 
 pub fn gen_btc_testnet_conf() -> ChainConfig {
+    ensure_rustls_crypto_provider();
     ChainConfig {
         ftokens: vec![gen_btc_token()],
         logo: String::new(),
@@ -202,6 +214,7 @@ pub fn gen_btc_testnet_conf() -> ChainConfig {
 }
 
 pub fn gen_btc_mainnet_conf() -> ChainConfig {
+    ensure_rustls_crypto_provider();
     ChainConfig {
         ftokens: vec![gen_btc_mainnet_token()],
         logo: String::new(),
@@ -221,6 +234,7 @@ pub fn gen_btc_mainnet_conf() -> ChainConfig {
 }
 
 pub fn gen_btc_regtest_conf() -> ChainConfig {
+    ensure_rustls_crypto_provider();
     ChainConfig {
         ftokens: vec![gen_btc_regtest_token()],
         logo: String::new(),

@@ -4,19 +4,24 @@ use async_trait::async_trait;
 use config::sha::SHA256_SIZE;
 use crypto::slip44::{BITCOIN, SOLANA, TRON};
 use errors::background::BackgroundError;
-use network::{btc::BtcOperations, evm::generate_erc20_transfer_data, solana::SolanaOperations};
+use network::{
+    btc::BtcOperations, evm::generate_erc20_transfer_data, provider::NetworkProvider,
+    solana::SolanaOperations,
+};
 use proto::{
     address::Address,
     btc_tx::BitcoinMetadata,
+    btc_utils::AddressChain,
     solana_tx::{build_sol_transfer_message, build_spl_transfer_message, SolanaTransaction},
     tron_tx::TronTransaction,
     tx::{ETHTransactionRequest, TransactionMetadata, TransactionRequest},
     zil_tx::ZILTransactionRequest,
 };
 use serde_json::json;
+use std::collections::HashMap;
 use token::ft::FToken;
 use wallet::{
-    account::AccountV2, bitcoin_wallet::BitcoinWallet, wallet_storage::StorageOperations,
+    account::AccountV2, bitcoin_wallet::BitcoinWallet, wallet_storage::StorageOperations, Wallet,
 };
 
 #[async_trait]
@@ -377,6 +382,15 @@ impl TokensManagement for Background {
                 .btc_update_balances(matching_tokens, &mut chains, &selected_account.addr)
                 .await?;
             w.save_btc_addresses(data.selected_account, &chains, data.chain_hash)?;
+
+            // Backfill the user-visible history list from chain-derived txids.
+            // Best-effort: a flaky node must never break balance sync.
+            if let Err(e) = self
+                .sync_btc_history(w, &provider, &chains, data.chain_hash, &selected_account.addr)
+                .await
+            {
+                println!("[sync_ftokens_balances] btc history backfill failed: {e:?}");
+            }
         } else {
             let selected_account = data.get_selected_account()?;
             let addresses: Vec<&Address> = vec![&selected_account.addr];
@@ -386,6 +400,76 @@ impl TokensManagement for Background {
         }
 
         w.save_ftokens(&ftokens)?;
+
+        Ok(())
+    }
+}
+
+impl Background {
+    async fn sync_btc_history(
+        &self,
+        wallet: &Wallet,
+        provider: &NetworkProvider,
+        chains: &HashMap<bitcoin::AddressType, AddressChain>,
+        chain_hash: u64,
+        selected_addr: &Address,
+    ) -> Result<()> {
+        use bitcoin::Txid;
+        use std::collections::HashSet;
+        use std::str::FromStr;
+
+        let mut history = wallet.get_history()?;
+
+        // Known BTC txs for THIS chain only (mainnet/testnet isolation).
+        // Same txid resolution order as btc_update_transactions_receipt:
+        // full tx object first, metadata.hash fallback —
+        // so broadcast-created and backfilled entries dedupe against each other.
+        // Split: known_ids for dedupe, known_txs (borrowed bodies) for parent
+        // lookup — no clone of stored txs on the steady-state (zero-missing) path.
+        let chain_history_len = history
+            .iter()
+            .filter(|h| h.metadata.chain_hash == chain_hash)
+            .count();
+        let mut known_ids: HashSet<Txid> = HashSet::with_capacity(chain_history_len);
+        let mut known_txs: HashMap<Txid, &bitcoin::Transaction> =
+            HashMap::with_capacity(chain_history_len);
+        for h in history.iter().filter(|h| h.metadata.chain_hash == chain_hash) {
+            if let Some((t, _)) = h.get_btc() {
+                let id = t.compute_txid();
+                known_ids.insert(id);
+                known_txs.insert(id, t);
+            } else if let Some(id) = h
+                .metadata
+                .hash
+                .as_deref()
+                .and_then(|s| Txid::from_str(s).ok())
+            {
+                known_ids.insert(id);
+            }
+        }
+
+        let mut new_txns = provider
+            .btc_scan_history_txns(chains, &known_ids, &known_txs, selected_addr)
+            .await?;
+        drop(known_txs); // end borrows of history before mutation
+
+        if new_txns.is_empty() {
+            return Ok(());
+        }
+
+        // Merge-insert by timestamp so other chains' relative order is preserved.
+        // Use rposition (not partition_point): history is only approximately sorted
+        // (multi-chain append order, blocktime vs wall-clock), so binary-search
+        // partitioning is not guaranteed.
+        new_txns.sort_by_key(|h| h.timestamp);
+        for tx in new_txns {
+            let pos = history
+                .iter()
+                .rposition(|h| h.timestamp <= tx.timestamp)
+                .map_or(0, |i| i + 1);
+            history.insert(pos, tx);
+        }
+        wallet.save_history(&history)?;
 
         Ok(())
     }
@@ -562,6 +646,167 @@ mod tests_background_tokens {
             }
             _ => panic!("Expected Zilliqa transaction request"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_btc_history_backfill_on_sync() {
+        let (mut bg, _dir) = setup_test_background();
+        let net_config = gen_btc_regtest_conf();
+        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
+        let chain_hash = net_config.hash();
+
+        bg.add_provider(net_config.clone()).unwrap();
+
+        // Account indices 2/3 are pre-funded on the shared regtest (see other BTC tests).
+        let accounts = [
+            (2, "BTC TapRoot Acc 2".to_string()),
+            (3, "BTC TapRoot Acc 3".to_string()),
+        ];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
+        bg.add_bip39_wallet(BackgroundBip39Params {
+            mnemonic_check: true,
+            password: &password,
+            chain_hash,
+            mnemonic_str: &mnemonic_secret,
+            accounts: &accounts,
+            wallet_settings: Default::default(),
+            passphrase: &empty_passphrase(),
+            wallet_name: "BTC history backfill wallet".to_string(),
+            biometric_type: Default::default(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        let wallet = bg.get_wallet_by_index(0).unwrap();
+
+        // Fresh wallet: user-visible history is empty until balance sync backfills it.
+        assert!(
+            wallet.get_history().unwrap().is_empty(),
+            "history must start empty before first sync"
+        );
+
+        bg.sync_ftokens_balances(0).await.unwrap();
+
+        let history = wallet.get_history().unwrap();
+        assert!(
+            !history.is_empty(),
+            "first sync_ftokens_balances must backfill BTC history from chain txids"
+        );
+        let entry = &history[0];
+        assert!(entry.btc.is_some(), "full tx object must be stored");
+        assert_eq!(entry.metadata.chain_hash, chain_hash);
+        assert!(
+            entry.metadata.hash.is_some(),
+            "txid must be stamped on metadata.hash"
+        );
+
+        // Idempotency: second sync must not introduce duplicate txids.
+        // Property assert (not length equality): concurrent suite tests may
+        // broadcast new txs from the same pre-funded accounts mid-run.
+        let assert_no_duplicate_txids = |hist: &[history::transaction::HistoricalTransaction]| {
+            let mut seen = std::collections::HashSet::new();
+            for h in hist {
+                if let Some(hash) = h.metadata.hash.as_ref() {
+                    assert!(
+                        seen.insert(hash.as_str()),
+                        "duplicate history txid: {hash}"
+                    );
+                }
+            }
+        };
+        assert_no_duplicate_txids(&history);
+        bg.sync_ftokens_balances(0).await.unwrap();
+        let after_second = wallet.get_history().unwrap();
+        assert_no_duplicate_txids(&after_second);
+
+        // Switch account (also funded) and ensure its txs also backfill without wiping chain-mates.
+        let len_after_first = history.len();
+        wallet.select_account(1).unwrap();
+        bg.sync_ftokens_balances(0).await.unwrap();
+        let history_both = wallet.get_history().unwrap();
+        assert!(
+            history_both.len() >= len_after_first,
+            "account switch sync should keep prior entries and may add more"
+        );
+        assert!(
+            history_both
+                .iter()
+                .all(|h| h.metadata.chain_hash == chain_hash),
+            "all backfilled entries must carry the provider chain_hash"
+        );
+        assert_no_duplicate_txids(&history_both);
+
+        // Poisoned (unfetchable) txid in entry.history must not fail the backfill
+        // and must not produce a history entry for that fake txid.
+        let data = wallet.get_wallet_data().unwrap();
+        let account_idx = data.selected_account;
+        let mut chains = wallet
+            .get_btc_addresses(account_idx, chain_hash)
+            .unwrap();
+        let fake_txid = bitcoin::Txid::from_str(
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        )
+        .unwrap();
+        let fake_txid_str = fake_txid.to_string();
+        let mut planted = false;
+        for chain in chains.values_mut() {
+            for entry in chain.external.iter_mut().chain(chain.internal.iter_mut()) {
+                if !entry.history.is_empty() {
+                    entry.history.push(fake_txid);
+                    planted = true;
+                    break;
+                }
+            }
+            if planted {
+                break;
+            }
+        }
+        assert!(planted, "need an address entry with history to plant fake txid");
+        wallet
+            .save_btc_addresses(account_idx, &chains, chain_hash)
+            .unwrap();
+
+        let selected = data.get_selected_account().unwrap();
+        let provider = bg.get_provider(chain_hash).unwrap();
+        let history_for_known = wallet.get_history().unwrap();
+        let mut known_ids = std::collections::HashSet::new();
+        let mut known_txs: HashMap<bitcoin::Txid, &bitcoin::Transaction> = HashMap::new();
+        for h in &history_for_known {
+            if h.metadata.chain_hash != chain_hash {
+                continue;
+            }
+            if let Some((t, _)) = h.get_btc() {
+                let id = t.compute_txid();
+                known_ids.insert(id);
+                known_txs.insert(id, t);
+            }
+        }
+        let scanned = provider
+            .btc_scan_history_txns(&chains, &known_ids, &known_txs, &selected.addr)
+            .await
+            .expect("poisoned txid must not fail the whole backfill");
+        assert!(
+            scanned
+                .iter()
+                .all(|h| h.metadata.hash.as_deref() != Some(fake_txid_str.as_str())),
+            "fake txid must never appear in backfilled history"
+        );
+        // With all real txs already in known, scan should only try the fake and skip it.
+        assert!(
+            scanned.is_empty(),
+            "only the unfetchable fake was missing; expect empty partial result"
+        );
+        // Full balance sync still succeeds with the planted poison in storage.
+        bg.sync_ftokens_balances(0).await.unwrap();
+        let after_poison = wallet.get_history().unwrap();
+        assert!(
+            after_poison
+                .iter()
+                .all(|h| h.metadata.hash.as_deref() != Some(fake_txid_str.as_str())),
+            "poisoned txid must never appear in saved history"
+        );
+        assert_no_duplicate_txids(&after_poison);
     }
 
     #[tokio::test]

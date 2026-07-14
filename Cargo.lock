@@ -7281,6 +7281,7 @@ dependencies = [
  "pqbip39",
  "proto",
  "rpc",
+ "rustls",
  "secrecy",
  "token",
 ]
