@@ -220,7 +220,7 @@ impl Address {
             Address::Secp256k1Bitcoin(_) => self
                 .get_bitcoin_address_type()
                 .map(DerivationPath::bip_from_address_type)
-                .unwrap_or(DerivationPath::BIP86_PURPOSE),
+                .unwrap_or(DerivationPath::BIP84_PURPOSE),
         }
     }
 

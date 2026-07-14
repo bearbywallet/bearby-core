@@ -1151,12 +1151,13 @@ impl BitcoinWallet for Wallet {
                     .generate_bip39_btc_account(&seed, 0, legacy_name, chain)
                     .await?;
 
-                let mut new_btc: HashMap<u32, Vec<AccountV2>> = HashMap::new();
-                new_btc.insert(DerivationPath::BIP86_PURPOSE, vec![account]);
+                let btc_bip = DerivationPath::default_bip(slip44::BITCOIN);
+                let mut new_btc: HashMap<u32, Vec<AccountV2>> = HashMap::with_capacity(1);
+                new_btc.insert(btc_bip, vec![account]);
                 data.slip44_accounts.insert(slip44::BITCOIN, new_btc);
 
                 if data.slip44 == slip44::BITCOIN {
-                    data.bip = DerivationPath::BIP86_PURPOSE;
+                    data.bip = btc_bip;
                     if data.selected_account > 0 {
                         data.selected_account = 0;
                     }
@@ -1736,5 +1737,101 @@ mod tests_btc_wallet {
         assert!(!tx.output[1].script_pubkey.is_op_return());
         assert_eq!(tx.output[2].value.to_sat(), 0);
         assert!(tx.output[2].script_pubkey.is_op_return());
+    }
+
+    /// Migration must store account 0 under `default_bip(BITCOIN)` (BIP84), never BIP86.
+    #[tokio::test]
+    async fn test_migrate_btc_storage_uses_default_bip84() {
+        use std::collections::HashMap;
+
+        use crypto::bip49::DerivationPath;
+        use crypto::slip44;
+        use crate::wallet_storage::StorageOperations;
+
+        let (storage, _dir) = setup_test_storage();
+        let argon_seed = derive_key(TEST_PASSWORD.as_bytes(), b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        let keychain = KeyChain::from_seed(&argon_seed).unwrap();
+        let mnemonic = Mnemonic::parse_str(&EN_WORDS, &SecretString::from(ANVIL_MNEMONIC)).unwrap();
+        let proof = derive_key(&argon_seed[..PROOF_SIZE], b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        let wallet_config = WalletConfig {
+            keychain,
+            storage: Arc::clone(&storage),
+            settings: Default::default(),
+        };
+        // slip_44 defaults to 0 (BITCOIN).
+        let chain_config = ChainConfig::default();
+        let wallet = Wallet::from_bip39_words(
+            Bip39Params {
+                chain_config: &chain_config,
+                proof,
+                mnemonic: &mnemonic,
+                passphrase: &empty_passphrase(),
+                indexes: &[(0, "Bitcoin Account 0".to_string())],
+                wallet_name: "Bitcoin Wallet".to_string(),
+                biometric_type: AuthMethod::Biometric,
+                chains: std::slice::from_ref(&chain_config),
+            },
+            wallet_config,
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let chain_hash = chain_config.hash();
+
+        // Simulate legacy buggy layout: accounts under BIP86, data.bip = 86.
+        let mut data = wallet.get_wallet_data().unwrap();
+        let btc_accounts = data
+            .slip44_accounts
+            .get(&slip44::BITCOIN)
+            .and_then(|m| m.get(&DerivationPath::BIP84_PURPOSE))
+            .cloned()
+            .expect("expected BIP84 accounts after init");
+        let mut bip86_map: HashMap<u32, Vec<_>> = HashMap::with_capacity(1);
+        bip86_map.insert(DerivationPath::BIP86_PURPOSE, btc_accounts);
+        data.slip44_accounts.insert(slip44::BITCOIN, bip86_map);
+        data.bip = DerivationPath::BIP86_PURPOSE;
+        data.slip44 = slip44::BITCOIN;
+        wallet.save_wallet_data(&data).unwrap();
+
+        // Drop BTC address storage so migration re-runs.
+        let btc_key =
+            Wallet::get_btc_addresses_db_key(&wallet.wallet_address, 0, chain_hash);
+        storage.remove(&btc_key).unwrap();
+        assert!(
+            wallet.get_btc_addresses(0, chain_hash).is_err(),
+            "addresses must be missing so migration runs"
+        );
+
+        wallet
+            .migrate_btc_storage_if_needed(&argon_seed, &chain_config)
+            .await
+            .unwrap();
+
+        let data = wallet.get_wallet_data().unwrap();
+        assert_eq!(
+            data.bip,
+            DerivationPath::BIP84_PURPOSE,
+            "migration must set data.bip to BIP84"
+        );
+
+        let btc_map = data
+            .slip44_accounts
+            .get(&slip44::BITCOIN)
+            .expect("BTC slip44 bucket must exist");
+        assert!(
+            btc_map.contains_key(&DerivationPath::BIP84_PURPOSE),
+            "accounts must be under BIP84"
+        );
+        assert!(
+            !btc_map.contains_key(&DerivationPath::BIP86_PURPOSE),
+            "accounts must NOT be under BIP86"
+        );
+        assert_eq!(
+            btc_map
+                .get(&DerivationPath::BIP84_PURPOSE)
+                .map_or(0, Vec::len),
+            1
+        );
     }
 }

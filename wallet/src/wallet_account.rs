@@ -294,6 +294,17 @@ impl AccountManagement for Wallet {
             let bip = crypto::bip49::DerivationPath::default_bip(slip44);
             let network = effective_chain.bitcoin_network();
 
+            let already_exists = data
+                .slip44_accounts
+                .get(&slip44)
+                .and_then(|bip_map| bip_map.get(&bip))
+                .is_some_and(|accounts| accounts.iter().any(|a| a.account_type.value() == index));
+            if already_exists {
+                #[cfg(debug_assertions)]
+                eprintln!("[add-account] skip_existing slip44={slip44} index={index}");
+                continue;
+            }
+
             let hd_account = if slip44 == crypto::slip44::BITCOIN {
                 self.generate_bip39_btc_account(
                     &mnemonic_seed_secret,
