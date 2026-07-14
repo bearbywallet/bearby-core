@@ -6,7 +6,9 @@ use network::{common::Provider, provider::NetworkProvider};
 use proto::address::Address;
 use rpc::network_config::ChainConfig;
 use std::sync::Arc;
-use wallet::{wallet_storage::StorageOperations, wallet_types::WalletTypes};
+use wallet::{
+    bitcoin_wallet::BitcoinWallet, wallet_storage::StorageOperations, wallet_types::WalletTypes,
+};
 
 #[async_trait]
 pub trait ProvidersManagement {
@@ -193,6 +195,18 @@ impl ProvidersManagement for Background {
 
         wallet.save_wallet_data(&data)?;
         wallet.save_ftokens(&ftokens)?;
+
+        // BTC address chains are keyed by chain_hash; a provider added or edited
+        // mid-session (hash change) has none until the next unlock. Regenerate from
+        // the active session when there is one; password-only users are healed on
+        // next unlock, and readers degrade gracefully meanwhile.
+        if new_slip44 == slip44::BITCOIN
+            && wallet
+                .get_btc_addresses(data.selected_account, chain_hash)
+                .is_err()
+        {
+            let _ = self.unlock_wallet_with_session(wallet_index).await;
+        }
 
         Ok(())
     }
@@ -796,6 +810,89 @@ mod tests_providers {
             btc_count, 1,
             "BTC account count must not change on double-unlock"
         );
+    }
+
+    /// A BTC provider edited mid-session changes its chain_hash, orphaning the
+    /// stored address chains. Switching to it must not error, and balance
+    /// refresh must skip the BTC branch instead of failing with
+    /// StorageDataNotFound; the next unlock regenerates the chains.
+    #[tokio::test]
+    async fn test_select_edited_btc_chain_missing_chains() {
+        use crate::bg_token::TokensManagement;
+
+        let (mut bg, _dir) = setup_test_background();
+        let password: SecretString = SecretString::new(TEST_PASSWORD.into());
+        let eth = gen_anvil_net_conf();
+        let btc = gen_btc_testnet_conf();
+
+        bg.add_provider(eth.clone()).unwrap();
+        bg.add_provider(btc.clone()).unwrap();
+
+        let accounts = [(0, "acc 0".to_string())];
+        let mnemonic_secret = SecretString::from(ANVIL_MNEMONIC);
+        bg.add_bip39_wallet(BackgroundBip39Params {
+            password: &password,
+            chain_hash: eth.hash(),
+            mnemonic_str: &mnemonic_secret,
+            mnemonic_check: true,
+            accounts: &accounts,
+            wallet_settings: Default::default(),
+            passphrase: &empty_passphrase(),
+            wallet_name: String::new(),
+            biometric_type: Default::default(),
+            ftokens: vec![],
+        })
+        .await
+        .unwrap();
+
+        // Unlock → sync_chain_accounts generates BTC accounts + chains for btc.hash()
+        bg.unlock_wallet_with_password(&password, None, 0)
+            .await
+            .unwrap();
+        assert!(bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_btc_addresses(0, btc.hash())
+            .is_ok());
+
+        // Edit the BTC chain mid-session → new chain_hash, stored chains are
+        // orphaned under the old hash.
+        let mut btc_edited = btc.clone();
+        btc_edited.chain_ids = [btc.chain_ids[0] + 1, 0];
+        assert_ne!(btc_edited.hash(), btc.hash());
+        bg.add_provider(btc_edited.clone()).unwrap();
+
+        // Switch must succeed even though chains for the new hash don't exist
+        // (no session in tests → regeneration is skipped silently).
+        bg.select_accounts_chain(0, btc_edited.hash())
+            .await
+            .unwrap();
+
+        let data = bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_wallet_data()
+            .unwrap();
+        assert_eq!(data.chain_hash, btc_edited.hash());
+        assert!(bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_btc_addresses(0, btc_edited.hash())
+            .is_err());
+
+        // Regression: refresh must not fail with StorageDataNotFound; the BTC
+        // branch skips gracefully until chains are regenerated.
+        bg.sync_ftokens_balances(0).await.unwrap();
+
+        // Next unlock heals: chains regenerated for the edited hash.
+        bg.unlock_wallet_with_password(&password, None, 0)
+            .await
+            .unwrap();
+        assert!(bg
+            .get_wallet_by_index(0)
+            .unwrap()
+            .get_btc_addresses(0, btc_edited.hash())
+            .is_ok());
     }
 
     #[tokio::test]

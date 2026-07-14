@@ -377,19 +377,34 @@ impl TokensManagement for Background {
 
         if provider.config.slip_44 == BITCOIN {
             let selected_account = data.get_selected_account()?;
-            let mut chains = w.get_btc_addresses(data.selected_account, data.chain_hash)?;
-            provider
-                .btc_update_balances(matching_tokens, &mut chains, &selected_account.addr)
-                .await?;
-            w.save_btc_addresses(data.selected_account, &chains, data.chain_hash)?;
+            match w.get_btc_addresses(data.selected_account, data.chain_hash) {
+                Ok(mut chains) => {
+                    provider
+                        .btc_update_balances(matching_tokens, &mut chains, &selected_account.addr)
+                        .await?;
+                    w.save_btc_addresses(data.selected_account, &chains, data.chain_hash)?;
 
-            // Backfill the user-visible history list from chain-derived txids.
-            // Best-effort: a flaky node must never break balance sync.
-            if let Err(e) = self
-                .sync_btc_history(w, &provider, &chains, data.chain_hash, &selected_account.addr)
-                .await
-            {
-                println!("[sync_ftokens_balances] btc history backfill failed: {e:?}");
+                    // Backfill the user-visible history list from chain-derived txids.
+                    // Best-effort: a flaky node must never break balance sync.
+                    if let Err(e) = self
+                        .sync_btc_history(
+                            w,
+                            &provider,
+                            &chains,
+                            data.chain_hash,
+                            &selected_account.addr,
+                        )
+                        .await
+                    {
+                        println!("[sync_ftokens_balances] btc history backfill failed: {e:?}");
+                    }
+                }
+                Err(e) => {
+                    // Chains not generated yet for this chain_hash (provider added or
+                    // edited mid-session). select_accounts_chain / next unlock
+                    // regenerates them; don't fail the whole refresh meanwhile.
+                    println!("[sync_ftokens_balances] btc chains missing, skipping: {e:?}");
+                }
             }
         } else {
             let selected_account = data.get_selected_account()?;
