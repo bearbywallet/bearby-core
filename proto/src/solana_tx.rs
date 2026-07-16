@@ -1,5 +1,6 @@
 use crate::{keypair::KeyPair, signature::Signature};
 use errors::keypair::KeyPairError;
+use errors::tx::TransactionErrors;
 use serde::{Deserialize, Serialize};
 use solana_hash::Hash;
 use solana_instruction::Instruction;
@@ -24,6 +25,89 @@ pub struct SolanaTransactionReceipt {
     pub message: Vec<u8>,
     #[serde(with = "hex::serde")]
     pub signature: Vec<u8>,
+}
+
+/// Typed Solana row stored under `HistoricalTransaction.solana`.
+/// New writes always set `message` + `signature`.
+/// Legacy JSON rows may only have a base58 hash (signature recovered when possible).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SolanaHistoryTransaction {
+    /// Bincode-encoded Solana message (legacy rows: empty).
+    #[serde(with = "hex::serde", default)]
+    pub message: Vec<u8>,
+    /// 64-byte Ed25519 signature (legacy: decoded from `transactionHash` when possible).
+    #[serde(with = "hex::serde", default)]
+    pub signature: Vec<u8>,
+    /// Confirmation fee in lamports (from `getTransaction.meta.fee`).
+    #[serde(default)]
+    pub fee: Option<u64>,
+    /// Confirmation slot (from `getTransaction.slot`).
+    #[serde(default)]
+    pub slot: Option<u64>,
+}
+
+impl From<SolanaTransactionReceipt> for SolanaHistoryTransaction {
+    fn from(receipt: SolanaTransactionReceipt) -> Self {
+        Self {
+            message: receipt.message,
+            signature: receipt.signature,
+            fee: None,
+            slot: None,
+        }
+    }
+}
+
+impl SolanaHistoryTransaction {
+    #[inline]
+    pub fn tx_id(&self) -> String {
+        bs58::encode(&self.signature).into_string()
+    }
+
+    #[inline]
+    pub fn signature_ref(&self) -> &[u8] {
+        self.signature.as_slice()
+    }
+
+    /// Rebuild from legacy history string:
+    /// `{"transactionHash":"<b58>","fee":"5000","slot":"123"}` (fee/slot string or number).
+    pub fn try_from_legacy_json_str(json_str: &str) -> std::result::Result<Self, TransactionErrors> {
+        let value: serde_json::Value = serde_json::from_str(json_str)
+            .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
+        Self::try_from_legacy_value(&value)
+    }
+
+    pub fn try_from_legacy_value(
+        value: &serde_json::Value,
+    ) -> std::result::Result<Self, TransactionErrors> {
+        let hash = value
+            .get("transactionHash")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+
+        let signature = if hash.is_empty() {
+            Vec::with_capacity(0)
+        } else {
+            bs58::decode(hash)
+                .into_vec()
+                .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?
+        };
+
+        Ok(Self {
+            message: Vec::with_capacity(0),
+            signature,
+            fee: parse_u64_field(value, "fee"),
+            slot: parse_u64_field(value, "slot"),
+        })
+    }
+}
+
+fn parse_u64_field(value: &serde_json::Value, key: &str) -> Option<u64> {
+    let field = value.get(key)?;
+    match field {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
 }
 
 impl SolanaTransaction {
@@ -302,5 +386,68 @@ mod tests {
         let mint: Pubkey = DEVNET_USDC_MINT.parse().unwrap();
         let ata = get_associated_token_address_with_program_id(&owner, &mint, &spl_token::id());
         assert_eq!(ata.to_string(), DEVNET_USDC_RICH_ATA);
+    }
+
+    #[test]
+    fn test_solana_history_from_receipt() {
+        let keypair = KeyPair::gen_solana().unwrap();
+        let message = vec![0xabu8, 0xcd, 0xef];
+        let receipt = SolanaTransaction {
+            message: message.clone(),
+        }
+        .sign(&keypair)
+        .unwrap();
+
+        let history = SolanaHistoryTransaction::from(receipt.clone());
+        assert_eq!(history.message, message);
+        assert_eq!(history.signature, receipt.signature);
+        assert!(history.fee.is_none());
+        assert!(history.slot.is_none());
+        assert_eq!(history.tx_id(), receipt.tx_id());
+    }
+
+    #[test]
+    fn test_solana_history_legacy_json_string() {
+        let sig = [7u8; 64];
+        let hash = bs58::encode(&sig).into_string();
+        let json = format!(
+            r#"{{"transactionHash":"{}","fee":"5000","slot":"12345"}}"#,
+            hash
+        );
+
+        let history = SolanaHistoryTransaction::try_from_legacy_json_str(&json).unwrap();
+        assert_eq!(history.signature, sig.to_vec());
+        assert!(history.message.is_empty());
+        assert_eq!(history.fee, Some(5000));
+        assert_eq!(history.slot, Some(12345));
+        assert_eq!(history.tx_id(), hash);
+    }
+
+    #[test]
+    fn test_solana_history_legacy_numeric_fee_slot() {
+        let sig = [9u8; 64];
+        let hash = bs58::encode(&sig).into_string();
+        let value = serde_json::json!({
+            "transactionHash": hash,
+            "fee": 4200u64,
+            "slot": 99u64,
+        });
+
+        let history = SolanaHistoryTransaction::try_from_legacy_value(&value).unwrap();
+        assert_eq!(history.fee, Some(4200));
+        assert_eq!(history.slot, Some(99));
+    }
+
+    #[test]
+    fn test_solana_history_typed_serde_roundtrip() {
+        let history = SolanaHistoryTransaction {
+            message: vec![1, 2, 3],
+            signature: vec![4; 64],
+            fee: Some(5000),
+            slot: Some(42),
+        };
+        let json = serde_json::to_string(&history).unwrap();
+        let recovered: SolanaHistoryTransaction = serde_json::from_str(&json).unwrap();
+        assert_eq!(history, recovered);
     }
 }

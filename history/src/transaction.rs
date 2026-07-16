@@ -10,6 +10,7 @@ use proto::{
     address::Address,
     btc_tx::BitcoinMetadata,
     pubkey::PubKey,
+    solana_tx::SolanaHistoryTransaction,
     tron_tx::TronTransactionReceipt,
     tx::{TransactionMetadata, TransactionReceipt},
 };
@@ -54,6 +55,46 @@ mod optional_tron_history {
     }
 }
 
+/// Dual-read helper: new typed Solana history or legacy JSON string blob.
+mod optional_solana_history {
+    use super::SolanaHistoryTransaction;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(
+        value: &Option<SolanaHistoryTransaction>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<SolanaHistoryTransaction>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Helper {
+            Typed(SolanaHistoryTransaction),
+            LegacyJson(String),
+        }
+
+        match Option::<Helper>::deserialize(deserializer)? {
+            None => Ok(None),
+            Some(Helper::Typed(tx)) => Ok(Some(tx)),
+            Some(Helper::LegacyJson(json_str)) => {
+                SolanaHistoryTransaction::try_from_legacy_json_str(&json_str)
+                    .map(Some)
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct HistoricalTransaction {
@@ -64,7 +105,8 @@ pub struct HistoricalTransaction {
     pub btc: Option<(bitcoin::Transaction, BitcoinMetadata)>,
     #[serde(with = "optional_tron_history")]
     pub tron: Option<TronTransactionReceipt>,
-    pub solana: Option<String>,
+    #[serde(with = "optional_solana_history")]
+    pub solana: Option<SolanaHistoryTransaction>,
     pub signed_message: Option<String>,
     pub timestamp: u64,
 }
@@ -126,14 +168,34 @@ impl HistoricalTransaction {
         };
     }
 
-    pub fn get_solana(&self) -> Option<Value> {
-        self.solana
-            .as_ref()
-            .and_then(|s| serde_json::from_str(s).ok())
+    pub fn get_solana(&self) -> Option<&SolanaHistoryTransaction> {
+        self.solana.as_ref()
     }
 
-    pub fn set_solana(&mut self, value: Value) {
-        self.solana = serde_json::to_string(&value).ok();
+    pub fn set_solana(&mut self, value: SolanaHistoryTransaction) {
+        self.solana = Some(value);
+    }
+
+    /// Apply `getTransaction` confirmation fields onto the typed Solana history row.
+    pub fn update_from_solana_confirmation(
+        &mut self,
+        success: bool,
+        fee: Option<u64>,
+        slot: Option<u64>,
+    ) {
+        self.status = if success {
+            TransactionStatus::Success
+        } else {
+            TransactionStatus::Failed
+        };
+        if let Some(entry) = self.solana.as_mut() {
+            if fee.is_some() {
+                entry.fee = fee;
+            }
+            if slot.is_some() {
+                entry.slot = slot;
+            }
+        }
     }
 
     pub fn get_signed_message(&self) -> Option<Value> {
@@ -359,10 +421,7 @@ impl HistoricalTransaction {
                 scilla: None,
                 btc: None,
                 tron: None,
-                solana: serde_json::to_string(&json!({
-                    "transactionHash": solana_receipt.tx_id(),
-                }))
-                .ok(),
+                solana: Some(SolanaHistoryTransaction::from(solana_receipt)),
                 signed_message: None,
                 timestamp,
             }),
@@ -502,5 +561,65 @@ mod tests {
         assert_eq!(tx.status, TransactionStatus::Success);
         assert!(tx.evm.is_none());
         assert!(tx.tron.is_some());
+    }
+
+    #[test]
+    fn solana_legacy_json_string_deserializes() {
+        use proto::solana_tx::SolanaHistoryTransaction;
+
+        let sig = [3u8; 64];
+        let hash = SolanaHistoryTransaction {
+            signature: sig.to_vec(),
+            ..Default::default()
+        }
+        .tx_id();
+        let legacy_blob = format!(
+            r#"{{"transactionHash":"{}","fee":"5000","slot":"99"}}"#,
+            hash
+        );
+        let legacy_hist = format!(
+            r#"{{"status":"Pending","metadata":{{}},"solana":{},"timestamp":1}}"#,
+            serde_json::to_string(&legacy_blob).expect("wrap legacy string")
+        );
+        let from_legacy: HistoricalTransaction =
+            serde_json::from_str(&legacy_hist).expect("deserialize legacy solana string form");
+        let solana = from_legacy.get_solana().expect("solana present");
+        assert_eq!(solana.signature, sig.to_vec());
+        assert_eq!(solana.fee, Some(5000));
+        assert_eq!(solana.slot, Some(99));
+        assert!(solana.message.is_empty());
+    }
+
+    #[test]
+    fn solana_typed_roundtrip_and_confirmation_update() {
+        use proto::solana_tx::SolanaHistoryTransaction;
+
+        let mut tx = HistoricalTransaction {
+            status: TransactionStatus::Pending,
+            solana: Some(SolanaHistoryTransaction {
+                message: vec![0xde, 0xad],
+                signature: vec![0xbe; 64],
+                fee: None,
+                slot: None,
+            }),
+            timestamp: 1,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&tx).expect("serialize");
+        let restored: HistoricalTransaction =
+            serde_json::from_str(&json).expect("deserialize typed solana");
+        assert!(restored.solana.is_some());
+        assert_eq!(
+            restored.get_solana().map(|s| s.message.as_slice()),
+            Some([0xde, 0xad].as_slice())
+        );
+
+        tx.update_from_solana_confirmation(true, Some(5000), Some(123));
+        assert_eq!(tx.status, TransactionStatus::Success);
+        let solana = tx.get_solana().expect("solana present");
+        assert_eq!(solana.fee, Some(5000));
+        assert_eq!(solana.slot, Some(123));
+        assert_eq!(solana.message, vec![0xde, 0xad]);
     }
 }

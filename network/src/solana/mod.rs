@@ -296,11 +296,18 @@ impl SolanaOperations for NetworkProvider {
                 continue;
             }
 
-            let signature = match tx.get_solana().and_then(|v| {
-                v.get("transactionHash")
-                    .and_then(|h| h.as_str())
-                    .map(|s| s.to_string())
-            }) {
+            // Prefer metadata.hash (canonical network/broadcast string), then typed sig.
+            let signature = match tx
+                .metadata
+                .hash
+                .as_ref()
+                .filter(|h| !h.is_empty())
+                .cloned()
+                .or_else(|| {
+                    tx.get_solana()
+                        .filter(|s| !s.signature.is_empty())
+                        .map(|s| s.tx_id())
+                }) {
                 Some(sig) => sig,
                 None => continue,
             };
@@ -329,22 +336,9 @@ impl SolanaOperations for NetworkProvider {
                     .as_ref()
                     .map(|m| m.err.is_none())
                     .unwrap_or(false);
-
-                tx.status = if success {
-                    TransactionStatus::Success
-                } else {
-                    TransactionStatus::Failed
-                };
-
-                if let Some(mut solana_data) = tx.get_solana() {
-                    if let Some(fee) = result.meta.as_ref().and_then(|m| m.fee) {
-                        solana_data["fee"] = json!(fee.to_string());
-                    }
-                    if let Some(slot) = result.slot {
-                        solana_data["slot"] = json!(slot.to_string());
-                    }
-                    tx.set_solana(solana_data);
-                }
+                let fee = result.meta.as_ref().and_then(|m| m.fee);
+                let slot = result.slot;
+                tx.update_from_solana_confirmation(success, fee, slot);
             }
         }
 
@@ -622,7 +616,7 @@ fn solana_err_msg(err: &Option<ErrorRes>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proto::solana_tx::SolanaTransaction;
+    use proto::solana_tx::{SolanaHistoryTransaction, SolanaTransaction};
     use proto::tx::TransactionMetadata;
     use test_data::{gen_sol_devnet_conf, gen_sol_mainnet_conf, gen_sol_spl_token, gen_sol_token};
 
@@ -636,6 +630,13 @@ mod tests {
         "x7SUrZF6nV97XF1hg2NPZpLimi6StUbpH2nVdGC4jR2ojnnzYQ18y4CpLnCR6JkcH4gCQgW3sobJC2wVcnQE2xR";
     const DEVNET_FAILED_TX_SIG: &str =
         "2V2erUdPadyTiFRFS98g6kkXHDVFgWX1ZeDMH67bpsPekm9BaCCkLs6rN15Y6oDeHWETFb5sagfR7syifbWLPMcG";
+
+    fn solana_history_from_sig(sig_b58: &str) -> Option<SolanaHistoryTransaction> {
+        SolanaHistoryTransaction::try_from_legacy_json_str(
+            &format!(r#"{{"transactionHash":"{}"}}"#, sig_b58),
+        )
+        .ok()
+    }
 
     #[tokio::test]
     async fn test_solana_get_block_number() {
@@ -711,17 +712,17 @@ mod tests {
     #[tokio::test]
     async fn test_solana_update_transactions_receipt_unknown_sig() {
         let provider = NetworkProvider::new(gen_sol_devnet_conf());
+        let unknown =
+            "1111111111111111111111111111111111111111111111111111111111111111".to_string();
         let mut tx = HistoricalTransaction {
             status: TransactionStatus::Pending,
             metadata: TransactionMetadata {
                 chain_hash: gen_sol_devnet_conf().hash(),
-                hash: Some("1111111111111111111111111111111111111111111111111111111111111111".to_string()),
+                hash: Some(unknown.clone()),
                 broadcast: true,
                 ..Default::default()
             },
-            solana: serde_json::to_string(&json!({
-                "transactionHash": "1111111111111111111111111111111111111111111111111111111111111111"
-            })).ok(),
+            solana: solana_history_from_sig(&unknown),
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -848,8 +849,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_solana_update_tx_receipt_confirmed() {
-        let provider = NetworkProvider::new(gen_sol_devnet_conf());
+    async fn test_solana_update_tx_receipt_confirmed_mock() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/")
+            .with_body(
+                r#"[{
+                    "jsonrpc":"2.0",
+                    "id":1,
+                    "result":{"slot":12345,"meta":{"err":null,"fee":5000}}
+                }]"#,
+            )
+            .create_async()
+            .await;
+
+        let mut net_conf = gen_sol_devnet_conf();
+        net_conf.rpc = vec![server.url()];
+        let provider = NetworkProvider::new(net_conf);
+
         let mut tx = HistoricalTransaction {
             status: TransactionStatus::Pending,
             metadata: TransactionMetadata {
@@ -858,10 +875,7 @@ mod tests {
                 broadcast: true,
                 ..Default::default()
             },
-            solana: serde_json::to_string(&json!({
-                "transactionHash": DEVNET_CONFIRMED_TX_SIG
-            }))
-            .ok(),
+            solana: solana_history_from_sig(DEVNET_CONFIRMED_TX_SIG),
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -869,34 +883,38 @@ mod tests {
             ..Default::default()
         };
 
-        println!("Querying confirmed tx: {}", DEVNET_CONFIRMED_TX_SIG);
         let mut list = vec![&mut tx];
         provider
             .solana_update_transactions_receipt(&mut list)
             .await
             .unwrap();
 
-        let solana_data = list[0].get_solana().unwrap();
-        dbg!(&solana_data);
-        dbg!(&list[0].status);
-        assert_eq!(
-            list[0].status,
-            TransactionStatus::Success,
-            "Confirmed tx should be Success"
-        );
-
-        let fee = solana_data.get("fee").and_then(|v| v.as_str());
-        assert!(fee.is_some(), "Fee should be set in solana data");
-        println!("Confirmed tx fee: {:?}", fee);
-
-        let slot = solana_data.get("slot").and_then(|v| v.as_str());
-        assert!(slot.is_some(), "Slot should be set in solana data");
-        println!("Confirmed tx slot: {:?}", slot);
+        assert_eq!(list[0].status, TransactionStatus::Success);
+        let solana_data = list[0].get_solana().expect("solana typed row");
+        assert_eq!(solana_data.fee, Some(5000));
+        assert_eq!(solana_data.slot, Some(12345));
+        assert!(!solana_data.signature.is_empty());
     }
 
     #[tokio::test]
-    async fn test_solana_update_tx_receipt_failed() {
-        let provider = NetworkProvider::new(gen_sol_devnet_conf());
+    async fn test_solana_update_tx_receipt_failed_mock() {
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/")
+            .with_body(
+                r#"[{
+                    "jsonrpc":"2.0",
+                    "id":1,
+                    "result":{"slot":99,"meta":{"err":{"InstructionError":[0,"Custom"]},"fee":5000}}
+                }]"#,
+            )
+            .create_async()
+            .await;
+
+        let mut net_conf = gen_sol_devnet_conf();
+        net_conf.rpc = vec![server.url()];
+        let provider = NetworkProvider::new(net_conf);
+
         let mut tx = HistoricalTransaction {
             status: TransactionStatus::Pending,
             metadata: TransactionMetadata {
@@ -905,10 +923,7 @@ mod tests {
                 broadcast: true,
                 ..Default::default()
             },
-            solana: serde_json::to_string(&json!({
-                "transactionHash": DEVNET_FAILED_TX_SIG
-            }))
-            .ok(),
+            solana: solana_history_from_sig(DEVNET_FAILED_TX_SIG),
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -916,23 +931,16 @@ mod tests {
             ..Default::default()
         };
 
-        println!("Querying failed tx: {}", DEVNET_FAILED_TX_SIG);
         let mut list = vec![&mut tx];
         provider
             .solana_update_transactions_receipt(&mut list)
             .await
             .unwrap();
 
-        dbg!(&list[0].status);
-        assert_eq!(
-            list[0].status,
-            TransactionStatus::Failed,
-            "Failed tx should be Failed status"
-        );
-
-        let solana_data = list[0].get_solana().unwrap();
-        dbg!(&solana_data);
-        println!("Failed tx data: {:?}", solana_data);
+        assert_eq!(list[0].status, TransactionStatus::Failed);
+        let solana_data = list[0].get_solana().expect("solana typed row");
+        assert_eq!(solana_data.fee, Some(5000));
+        assert_eq!(solana_data.slot, Some(99));
     }
 
     #[tokio::test]
@@ -946,10 +954,7 @@ mod tests {
                 broadcast: true,
                 ..Default::default()
             },
-            solana: serde_json::to_string(&json!({
-                "transactionHash": DEVNET_CONFIRMED_TX_SIG
-            }))
-            .ok(),
+            solana: solana_history_from_sig(DEVNET_CONFIRMED_TX_SIG),
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
