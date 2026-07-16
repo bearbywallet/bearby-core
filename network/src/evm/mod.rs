@@ -554,6 +554,11 @@ mod tests {
             "raw_data_hex": "0a026b4822084448fdd628a1901b40e0999280cf335aae01081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a15419705bf55c3dcc6d277ebb8fe2a68762268822ba21215418df49db5dbf07e498492d2dafcf7b305cdc724712244a9059cbb000000000000000000000000e2e1a54926527fbb4e4420de4c6bab82beaee24d0000000000000000000000000000000000000000000000000de0b6b3a76400007080f2ffffce339001cceb51"
         });
 
+        let tron_receipt = proto::tron_tx::TronTransactionReceipt::try_from_tron_web_value(
+            &tron_tx_json,
+        )
+        .expect("valid tron history sample");
+
         let mut tx = HistoricalTransaction {
             status: TransactionStatus::Pending,
             metadata: TransactionMetadata {
@@ -566,7 +571,7 @@ mod tests {
             evm: None,
             scilla: None,
             btc: None,
-            tron: Some(tron_tx_json.to_string()),
+            tron: Some(tron_receipt),
             solana: None,
             signed_message: None,
             timestamp: 1773553056000,
@@ -579,5 +584,7 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(tx.status, TransactionStatus::Success);
+        assert!(tx.evm.is_none());
+        assert!(tx.tron.is_some());
     }
 }

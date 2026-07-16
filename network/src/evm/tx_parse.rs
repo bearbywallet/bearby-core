@@ -102,6 +102,8 @@ pub fn process_tx_receipt_response(
                     tx.status = TransactionStatus::Failed;
                 }
             }
+        } else if tx.tron.is_some() {
+            tx.update_from_tron_receipt_status(&result);
         } else {
             tx.update_from_evm_receipt(result);
         }

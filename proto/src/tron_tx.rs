@@ -608,6 +608,59 @@ pub struct TronTransactionReceipt {
 }
 
 impl TronTransactionReceipt {
+    /// Rebuild a receipt from a legacy TronWeb JSON history blob (string form).
+    /// Used when loading pre-typed history rows from wallet storage.
+    pub fn try_from_tron_web_json_str(json_str: &str) -> Result<Self, TransactionErrors> {
+        let value: serde_json::Value = serde_json::from_str(json_str)
+            .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
+        Self::try_from_tron_web_value(&value)
+    }
+
+    pub fn try_from_tron_web_value(value: &serde_json::Value) -> Result<Self, TransactionErrors> {
+        let web: TronWebTransaction = serde_json::from_value(value.clone())
+            .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
+        let tx = TronTransaction::from_tron_web(&web)?;
+        let raw_data_bytes = tx.encode();
+
+        let tx_id = match web.tx_id.as_deref() {
+            Some(id) => {
+                let hex_str = id.strip_prefix("0x").unwrap_or(id);
+                let bytes = hex::decode(hex_str)
+                    .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
+                <[u8; 32]>::try_from(bytes.as_slice())
+                    .map_err(|_| TransactionErrors::ConvertTxError("invalid txID length".into()))?
+            }
+            None => tx.tx_id(),
+        };
+
+        let signature = value
+            .get("signature")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|arr| arr.first())
+            .and_then(serde_json::Value::as_str)
+            .map(|sig| {
+                let hex_str = sig.strip_prefix("0x").unwrap_or(sig);
+                hex::decode(hex_str).map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        let owner_address = tx.owner_address().unwrap_or_else(|_| Address::Secp256k1Tron([0u8; ADDR_LEN]));
+
+        Ok(Self {
+            raw_data_bytes,
+            tx_id,
+            signature,
+            owner_address,
+        })
+    }
+
+    /// Decode the embedded protobuf raw payload.
+    pub fn raw(&self) -> Result<protocol::transaction::Raw, TransactionErrors> {
+        protocol::transaction::Raw::decode(&self.raw_data_bytes[..])
+            .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))
+    }
+
     pub fn verify(&self) -> Result<bool, TransactionErrors> {
         use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 

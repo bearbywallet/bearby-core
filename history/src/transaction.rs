@@ -10,10 +10,49 @@ use proto::{
     address::Address,
     btc_tx::BitcoinMetadata,
     pubkey::PubKey,
+    tron_tx::TronTransactionReceipt,
     tx::{TransactionMetadata, TransactionReceipt},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+/// Dual-read helper: new typed receipt or legacy TronWeb JSON string.
+mod optional_tron_history {
+    use super::TronTransactionReceipt;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(
+        value: &Option<TronTransactionReceipt>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        value.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<TronTransactionReceipt>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Helper {
+            Receipt(TronTransactionReceipt),
+            LegacyJson(String),
+        }
+
+        match Option::<Helper>::deserialize(deserializer)? {
+            None => Ok(None),
+            Some(Helper::Receipt(receipt)) => Ok(Some(receipt)),
+            Some(Helper::LegacyJson(json_str)) => {
+                TronTransactionReceipt::try_from_tron_web_json_str(&json_str)
+                    .map(Some)
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -23,7 +62,8 @@ pub struct HistoricalTransaction {
     pub evm: Option<String>,
     pub scilla: Option<String>,
     pub btc: Option<(bitcoin::Transaction, BitcoinMetadata)>,
-    pub tron: Option<String>,
+    #[serde(with = "optional_tron_history")]
+    pub tron: Option<TronTransactionReceipt>,
     pub solana: Option<String>,
     pub signed_message: Option<String>,
     pub timestamp: u64,
@@ -62,14 +102,28 @@ impl HistoricalTransaction {
         }
     }
 
-    pub fn get_tron(&self) -> Option<Value> {
-        self.tron
-            .as_ref()
-            .and_then(|s| serde_json::from_str(s).ok())
+    pub fn get_tron(&self) -> Option<&TronTransactionReceipt> {
+        self.tron.as_ref()
     }
 
-    pub fn set_tron(&mut self, value: Value) {
-        self.tron = serde_json::to_string(&value).ok();
+    pub fn set_tron(&mut self, receipt: TronTransactionReceipt) {
+        self.tron = Some(receipt);
+    }
+
+    /// Update status from an eth-compatible getTransactionReceipt payload.
+    /// Does not write into `evm` — Tron history stays under `tron` only.
+    pub fn update_from_tron_receipt_status(&mut self, receipt: &Value) {
+        let success = receipt
+            .get("status")
+            .and_then(Value::as_str)
+            .map(|s| s == "0x1" || s == "1")
+            .unwrap_or(false);
+
+        self.status = if success {
+            TransactionStatus::Success
+        } else {
+            TransactionStatus::Failed
+        };
     }
 
     pub fn get_solana(&self) -> Option<Value> {
@@ -287,21 +341,17 @@ impl HistoricalTransaction {
                 signed_message: None,
                 timestamp,
             }),
-            TransactionReceipt::Tron((tron_tx, metadata)) => {
-                let tron = tron_tx.to_tron_web_json()?;
-
-                Ok(Self {
-                    status: TransactionStatus::Pending,
-                    metadata,
-                    evm: None,
-                    scilla: None,
-                    btc: None,
-                    tron: serde_json::to_string(&tron).ok(),
-                    solana: None,
-                    signed_message: None,
-                    timestamp,
-                })
-            }
+            TransactionReceipt::Tron((tron_tx, metadata)) => Ok(Self {
+                status: TransactionStatus::Pending,
+                metadata,
+                evm: None,
+                scilla: None,
+                btc: None,
+                tron: Some(tron_tx),
+                solana: None,
+                signed_message: None,
+                timestamp,
+            }),
             TransactionReceipt::Solana((solana_receipt, metadata)) => Ok(Self {
                 status: TransactionStatus::Pending,
                 metadata,
@@ -392,5 +442,65 @@ impl TryFrom<TransactionReceipt> for HistoricalTransaction {
 
     fn try_from(receipt: TransactionReceipt) -> Result<Self, Self::Error> {
         Self::from_transaction_receipt(receipt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proto::tron_tx::TronTransactionReceipt;
+
+    #[test]
+    fn tron_legacy_json_string_deserializes() {
+        let receipt = TronTransactionReceipt::try_from_tron_web_json_str(
+            r#"{"visible":false,"txID":"960188a94300ab78687bc8b9e42824c86d2c11a8ac7518022d868a96dd8c92a7","raw_data":{"contract":[{"parameter":{"value":{"data":"a9059cbb000000000000000000000000e2e1a54926527fbb4e4420de4c6bab82beaee24d0000000000000000000000000000000000000000000000000de0b6b3a7640000","owner_address":"419705bf55c3dcc6d277ebb8fe2a68762268822ba2","contract_address":"418df49db5dbf07e498492d2dafcf7b305cdc72471"},"type_url":"type.googleapis.com/protocol.TriggerSmartContract"},"type":"TriggerSmartContract"}],"ref_block_bytes":"6b48","ref_block_hash":"4448fdd628a1901b","expiration":1773553356000,"fee_limit":1340876,"timestamp":1773553056000},"raw_data_hex":"0a026b4822084448fdd628a1901b40e0999280cf335aae01081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a15419705bf55c3dcc6d277ebb8fe2a68762268822ba21215418df49db5dbf07e498492d2dafcf7b305cdc724712244a9059cbb000000000000000000000000e2e1a54926527fbb4e4420de4c6bab82beaee24d0000000000000000000000000000000000000000000000000de0b6b3a76400007080f2ffffce339001cceb51","signature":["4735316cacefae2cfccd7d686ff25f8910ca7b05d11d2dd583c9b7c6af03427554f5a7017033bc0db9d5b654d0a9e864b4e30877c6a9b88798158c19e380f04201"]}"#,
+        );
+        assert!(receipt.is_ok(), "legacy helper: {receipt:?}");
+        let receipt = receipt.unwrap();
+        assert_eq!(
+            alloy::hex::encode(receipt.tx_id),
+            "960188a94300ab78687bc8b9e42824c86d2c11a8ac7518022d868a96dd8c92a7"
+        );
+
+        let hist = HistoricalTransaction {
+            tron: Some(receipt),
+            timestamp: 1,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&hist).expect("serialize");
+        let restored: HistoricalTransaction =
+            serde_json::from_str(&json).expect("deserialize typed");
+        assert!(restored.tron.is_some());
+        assert!(restored.evm.is_none());
+
+        // Dual-read: field stored as a raw TronWeb JSON string (legacy rows).
+        let legacy_hist = format!(
+            r#"{{"status":"Pending","metadata":{{}},"tron":{},"timestamp":1}}"#,
+            serde_json::to_string(
+                r#"{"visible":false,"txID":"960188a94300ab78687bc8b9e42824c86d2c11a8ac7518022d868a96dd8c92a7","raw_data":{"contract":[{"parameter":{"value":{"data":"a9059cbb000000000000000000000000e2e1a54926527fbb4e4420de4c6bab82beaee24d0000000000000000000000000000000000000000000000000de0b6b3a7640000","owner_address":"419705bf55c3dcc6d277ebb8fe2a68762268822ba2","contract_address":"418df49db5dbf07e498492d2dafcf7b305cdc72471"},"type_url":"type.googleapis.com/protocol.TriggerSmartContract"},"type":"TriggerSmartContract"}],"ref_block_bytes":"6b48","ref_block_hash":"4448fdd628a1901b","expiration":1773553356000,"fee_limit":1340876,"timestamp":1773553056000},"raw_data_hex":"0a026b4822084448fdd628a1901b40e0999280cf335aae01081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a15419705bf55c3dcc6d277ebb8fe2a68762268822ba21215418df49db5dbf07e498492d2dafcf7b305cdc724712244a9059cbb000000000000000000000000e2e1a54926527fbb4e4420de4c6bab82beaee24d0000000000000000000000000000000000000000000000000de0b6b3a76400007080f2ffffce339001cceb51","signature":["4735316cacefae2cfccd7d686ff25f8910ca7b05d11d2dd583c9b7c6af03427554f5a7017033bc0db9d5b654d0a9e864b4e30877c6a9b88798158c19e380f04201"]}"#
+            )
+            .unwrap()
+        );
+        let from_legacy: HistoricalTransaction =
+            serde_json::from_str(&legacy_hist).expect("deserialize legacy string form");
+        assert!(from_legacy.tron.is_some());
+    }
+
+    #[test]
+    fn tron_status_update_does_not_set_evm() {
+        let mut tx = HistoricalTransaction {
+            status: TransactionStatus::Pending,
+            tron: Some(TronTransactionReceipt {
+                raw_data_bytes: vec![0x0a],
+                tx_id: [0u8; 32],
+                signature: Vec::new(),
+                owner_address: Address::Secp256k1Tron([0u8; 20]),
+            }),
+            ..Default::default()
+        };
+        tx.update_from_tron_receipt_status(&json!({"status": "0x1"}));
+        assert_eq!(tx.status, TransactionStatus::Success);
+        assert!(tx.evm.is_none());
+        assert!(tx.tron.is_some());
     }
 }
