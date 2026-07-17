@@ -240,6 +240,80 @@ pub fn build_versioned_message_from_instructions(
     bincode::serialize(&VersionedMessage::V0(message)).map_err(|error| error.to_string())
 }
 
+/// Strict parse: the entire byte slice must be exactly one Solana message
+/// (legacy or versioned v0 — `VersionedMessage`'s deserializer handles both).
+fn is_bare_message(bytes: &[u8]) -> bool {
+    use bincode::Options;
+    bincode::options()
+        .with_fixint_encoding()
+        .reject_trailing_bytes()
+        .deserialize::<VersionedMessage>(bytes)
+        .is_ok()
+}
+
+#[inline]
+fn invalid_payload() -> String {
+    String::from("invalid solana transaction payload")
+}
+
+/// Solana shortvec (compact-u16): 1–3 bytes, canonical form only.
+///
+/// Mirrors `solana_short_vec::decode_shortu16_len` / `visit_byte`:
+/// - rejects multi-byte aliases of a shorter encoding (`0x80 0x00`, …)
+/// - rejects continuation on the 3rd byte
+/// - rejects values that overflow `u16` (3rd-byte data bits above the low 2)
+///
+/// Returns `(value, bytes_consumed)`.
+fn decode_compact_u16(bytes: &[u8]) -> Option<(usize, usize)> {
+    let mut val: u32 = 0;
+    for nth_byte in 0..3 {
+        let elem = *bytes.get(nth_byte)?;
+        // Non-canonical multi-byte alias of a smaller encoding.
+        if elem == 0 && nth_byte != 0 {
+            return None;
+        }
+        let elem_val = u32::from(elem & 0x7f);
+        let done = elem & 0x80 == 0;
+        // 3rd byte must terminate (continuation bit clear).
+        if nth_byte == 2 && !done {
+            return None;
+        }
+        // nth_byte ∈ {0,1,2} ⇒ shift ∈ {0,7,14}; elem_val ≤ 0x7f ⇒ product fits u32.
+        let shift = (nth_byte as u32) * 7;
+        val |= elem_val << shift;
+        // Overflow past u16 (covers 3rd-byte high data bits, e.g. `0x80 0x80 0x04`).
+        if val > u32::from(u16::MAX) {
+            return None;
+        }
+        if done {
+            return Some((val as usize, nth_byte + 1));
+        }
+    }
+    None
+}
+
+/// Accepts either bare Solana message bytes (what internal builders produce)
+/// or a full serialized transaction (what WalletConnect dapps send:
+/// shortvec sig-count + N×64-byte signatures + message) and returns the bare
+/// message bytes in both cases.
+pub fn normalize_solana_message(bytes: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    if is_bare_message(bytes) {
+        return Ok(bytes.to_vec());
+    }
+
+    let (sig_count, prefix_len) = decode_compact_u16(bytes).ok_or_else(invalid_payload)?;
+    let sig_bytes = sig_count.checked_mul(64).ok_or_else(invalid_payload)?;
+    let message_offset = prefix_len
+        .checked_add(sig_bytes)
+        .ok_or_else(invalid_payload)?;
+    let message = bytes
+        .get(message_offset..)
+        .filter(|rest| !rest.is_empty() && is_bare_message(rest))
+        .ok_or_else(invalid_payload)?;
+
+    Ok(message.to_vec())
+}
+
 pub fn build_spl_transfer_message(
     owner: &Pubkey,
     mint: &Pubkey,
@@ -449,5 +523,112 @@ mod tests {
         let json = serde_json::to_string(&history).unwrap();
         let recovered: SolanaHistoryTransaction = serde_json::from_str(&json).unwrap();
         assert_eq!(history, recovered);
+    }
+
+    #[test]
+    fn test_normalize_bare_legacy_message_passthrough() {
+        let from = Pubkey::new_unique();
+        let to = Pubkey::new_unique();
+        let msg = build_sol_transfer_message(&from, &to, 1_000, &[7u8; 32]).unwrap();
+        assert_eq!(normalize_solana_message(&msg).unwrap(), msg);
+    }
+
+    #[test]
+    fn test_normalize_bare_versioned_message_passthrough() {
+        let payer = Pubkey::new_unique();
+        let table_key = Pubkey::new_unique();
+        let extra = Pubkey::new_unique();
+        let ix = system_transfer(&payer, &extra, 500);
+        let tables = vec![AddressLookupTableAccount {
+            key: table_key,
+            addresses: vec![extra],
+        }];
+        let msg =
+            build_versioned_message_from_instructions(&[ix], &payer, &[9u8; 32], &tables).unwrap();
+        assert_eq!(msg[0] & 0x80, 0x80, "expected v0 prefix");
+        assert_eq!(normalize_solana_message(&msg).unwrap(), msg);
+    }
+
+    #[test]
+    fn test_normalize_full_legacy_transaction_strips_signatures() {
+        let from = Pubkey::new_unique();
+        let to = Pubkey::new_unique();
+        let msg = build_sol_transfer_message(&from, &to, 1_000, &[7u8; 32]).unwrap();
+
+        // Wire tx: shortvec(1) + one 64-byte placeholder signature + message.
+        let mut wire = Vec::with_capacity(1 + 64 + msg.len());
+        wire.push(0x01);
+        wire.extend_from_slice(&[0u8; 64]);
+        wire.extend_from_slice(&msg);
+
+        assert_eq!(normalize_solana_message(&wire).unwrap(), msg);
+    }
+
+    #[test]
+    fn test_normalize_full_versioned_transaction_strips_signatures() {
+        let payer = Pubkey::new_unique();
+        let table_key = Pubkey::new_unique();
+        let extra = Pubkey::new_unique();
+        let ix = system_transfer(&payer, &extra, 500);
+        let tables = vec![AddressLookupTableAccount {
+            key: table_key,
+            addresses: vec![extra],
+        }];
+        let msg =
+            build_versioned_message_from_instructions(&[ix], &payer, &[9u8; 32], &tables).unwrap();
+
+        let mut wire = Vec::with_capacity(1 + 64 + msg.len());
+        wire.push(0x01);
+        wire.extend_from_slice(&[1u8; 64]);
+        wire.extend_from_slice(&msg);
+
+        assert_eq!(normalize_solana_message(&wire).unwrap(), msg);
+    }
+
+    #[test]
+    fn test_normalize_rejects_garbage() {
+        assert!(normalize_solana_message(&[]).is_err());
+        assert!(normalize_solana_message(&[0xff, 0xff, 0xff, 0xff]).is_err());
+        assert!(normalize_solana_message(&[0x01; 40]).is_err());
+    }
+
+    #[test]
+    fn test_decode_compact_u16_canonical() {
+        assert_eq!(decode_compact_u16(&[0x00]), Some((0, 1)));
+        assert_eq!(decode_compact_u16(&[0x01]), Some((1, 1)));
+        assert_eq!(decode_compact_u16(&[0x7f]), Some((0x7f, 1)));
+        assert_eq!(decode_compact_u16(&[0x80, 0x01]), Some((0x80, 2)));
+        assert_eq!(decode_compact_u16(&[0xff, 0x7f]), Some((0x3fff, 2)));
+        assert_eq!(decode_compact_u16(&[0x80, 0x80, 0x01]), Some((0x4000, 3)));
+        assert_eq!(decode_compact_u16(&[0xff, 0xff, 0x03]), Some((0xffff, 3)));
+    }
+
+    #[test]
+    fn test_decode_compact_u16_rejects_noncanonical() {
+        // Multi-byte aliases of a shorter encoding.
+        assert!(decode_compact_u16(&[0x80, 0x00]).is_none());
+        assert!(decode_compact_u16(&[0x80, 0x80, 0x00]).is_none());
+        assert!(decode_compact_u16(&[0xff, 0x00]).is_none());
+        // Continuation on 3rd byte.
+        assert!(decode_compact_u16(&[0x80, 0x80, 0x80]).is_none());
+        // Overflow past u16 (3rd-byte high data bits).
+        assert!(decode_compact_u16(&[0x80, 0x80, 0x04]).is_none());
+        // Truncated multi-byte form.
+        assert!(decode_compact_u16(&[]).is_none());
+        assert!(decode_compact_u16(&[0x80]).is_none());
+    }
+
+    #[test]
+    fn test_normalize_rejects_noncanonical_shortvec_prefix() {
+        let from = Pubkey::new_unique();
+        let to = Pubkey::new_unique();
+        let msg = build_sol_transfer_message(&from, &to, 1_000, &[7u8; 32]).unwrap();
+
+        // 3-byte alias of sig_count=1 — shortvec rejects; must not strip as if count=1.
+        let mut wire = Vec::with_capacity(3 + 64 + msg.len());
+        wire.extend_from_slice(&[0x81, 0x80, 0x00]);
+        wire.extend_from_slice(&[0u8; 64]);
+        wire.extend_from_slice(&msg);
+        assert!(normalize_solana_message(&wire).is_err());
     }
 }

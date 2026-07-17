@@ -645,7 +645,9 @@ impl TronTransactionReceipt {
             .transpose()?
             .unwrap_or_default();
 
-        let owner_address = tx.owner_address().unwrap_or_else(|_| Address::Secp256k1Tron([0u8; ADDR_LEN]));
+        let owner_address = tx
+            .owner_address()
+            .unwrap_or(Address::Secp256k1Tron([0u8; ADDR_LEN]));
 
         Ok(Self {
             raw_data_bytes,

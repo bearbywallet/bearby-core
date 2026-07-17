@@ -164,7 +164,7 @@ impl ProvidersManagement for Background {
 
         if let WalletTypes::Ledger(_) = data.wallet_type {
             if default_provider.config.slip_44 == slip44::ZILLIQA {
-                return Err(WalletErrors::InvalidAccountType)?;
+                Err(WalletErrors::InvalidAccountType)?;
             }
         }
 

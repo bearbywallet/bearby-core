@@ -560,7 +560,7 @@ impl TronOperations for NetworkProvider {
     ) -> Result<Vec<TransactionReceipt>> {
         for tx in &txns {
             if !tx.verify()? {
-                return Err(TransactionErrors::SignatureError(
+                Err(TransactionErrors::SignatureError(
                     SignatureError::InvalidLength,
                 ))?;
             }

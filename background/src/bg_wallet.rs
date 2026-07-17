@@ -232,7 +232,7 @@ impl WalletManagement for Background {
                 account.pub_key = Some(PubKey::Secp256k1Sha256(*pub_key));
             }
             _ => {
-                return Err(AccountErrors::InvalidPubKeyType)?;
+                Err(AccountErrors::InvalidPubKeyType)?;
             }
         }
 

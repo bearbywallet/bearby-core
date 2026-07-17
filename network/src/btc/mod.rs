@@ -912,7 +912,7 @@ impl BtcOperations for NetworkProvider {
     ) -> Result<Vec<TransactionReceipt>> {
         for tx_receipt in &txns {
             if !tx_receipt.verify()? {
-                return Err(TransactionErrors::SignatureError(
+                Err(TransactionErrors::SignatureError(
                     SignatureError::InvalidLength,
                 ))?;
             }

@@ -174,17 +174,27 @@ pub fn update_tx_from_params(
                 tron_tx.set_fee_limit(fee_limit);
             }
         }
-        TransactionRequest::Solana((ref mut sol_tx, _)) => {
+        TransactionRequest::Solana((ref mut sol_tx, ref metadata)) => {
             let fee: u64 = params
                 .current
                 .try_into()
                 .map_err(|_| TransactionErrors::ConvertTxError("Fee overflow".to_string()))?;
             let balance_u64: u64 = balance.try_into().unwrap_or(u64::MAX);
 
-            if let Some(adjusted) =
-                adjust_sol_native_transfer_lamports(&sol_tx.message, balance_u64, fee)
-            {
-                sol_tx.message = adjusted;
+            // Only rewrite wallet-built max native SOL sends (`token_info.amount == balance`).
+            // WalletConnect / dapp payloads set `token_info` to zero (or omit a matching amount)
+            // and must never be silently mutated before signing.
+            let is_wallet_max_native = metadata
+                .token_info
+                .as_ref()
+                .is_some_and(|(amount, _, _)| *amount == balance);
+
+            if is_wallet_max_native {
+                if let Some(adjusted) =
+                    adjust_sol_native_transfer_lamports(&sol_tx.message, balance_u64, fee)
+                {
+                    sol_tx.message = adjusted;
+                }
             }
         }
         TransactionRequest::Bitcoin((ref mut btc_tx, ref metadata, ref btc_meta)) => {
@@ -1507,6 +1517,89 @@ mod tests_background_transactions {
                 assert_eq!(btc_tx.output[1].value.to_sat(), 95_000);
             }
             _ => panic!("expected Bitcoin variant"),
+        }
+    }
+
+    fn make_sol_full_balance_tx(
+        token_info: Option<(U256, u8, String)>,
+        balance: u64,
+    ) -> (TransactionRequest, Vec<u8>) {
+        use proto::solana_tx::{build_sol_transfer_message, SolanaTransaction};
+        use solana_pubkey::Pubkey;
+
+        let from = Pubkey::new_unique();
+        let to = Pubkey::new_unique();
+        let message = build_sol_transfer_message(&from, &to, balance, &[0u8; 32]).unwrap();
+        let original = message.clone();
+        let tx = TransactionRequest::Solana((
+            SolanaTransaction { message },
+            proto::tx::TransactionMetadata {
+                token_info,
+                ..Default::default()
+            },
+        ));
+        (tx, original)
+    }
+
+    #[test]
+    fn test_update_tx_solana_skips_adjust_for_dapp_payload() {
+        let balance: u64 = 80_574_080;
+        let fee: u64 = 5_000;
+        // WalletConnect sets token_info value to 0 — must not rewrite the dapp message.
+        let (mut tx, original) =
+            make_sol_full_balance_tx(Some((U256::ZERO, 9, "SOL".into())), balance);
+
+        update_tx_from_params(&mut tx, make_params(fee), U256::from(balance)).unwrap();
+
+        match tx {
+            TransactionRequest::Solana((sol_tx, _)) => {
+                assert_eq!(
+                    sol_tx.message, original,
+                    "dapp payload must remain byte-identical"
+                );
+            }
+            _ => panic!("expected Solana variant"),
+        }
+    }
+
+    #[test]
+    fn test_update_tx_solana_skips_adjust_when_token_info_absent() {
+        let balance: u64 = 80_574_080;
+        let fee: u64 = 5_000;
+        // Gate defaults closed when token_info is None (safe direction for unknown origins).
+        let (mut tx, original) = make_sol_full_balance_tx(None, balance);
+
+        update_tx_from_params(&mut tx, make_params(fee), U256::from(balance)).unwrap();
+
+        match tx {
+            TransactionRequest::Solana((sol_tx, _)) => {
+                assert_eq!(
+                    sol_tx.message, original,
+                    "token_info=None must not rewrite the message"
+                );
+            }
+            _ => panic!("expected Solana variant"),
+        }
+    }
+
+    #[test]
+    fn test_update_tx_solana_adjusts_wallet_max_native() {
+        use proto::solana_tx::adjust_sol_native_transfer_lamports;
+
+        let balance: u64 = 80_574_080;
+        let fee: u64 = 5_000;
+        let (mut tx, original) =
+            make_sol_full_balance_tx(Some((U256::from(balance), 9, "SOL".into())), balance);
+        let expected = adjust_sol_native_transfer_lamports(&original, balance, fee)
+            .expect("wallet max native message should be adjustable");
+
+        update_tx_from_params(&mut tx, make_params(fee), U256::from(balance)).unwrap();
+
+        match tx {
+            TransactionRequest::Solana((sol_tx, _)) => {
+                assert_eq!(sol_tx.message, expected);
+            }
+            _ => panic!("expected Solana variant"),
         }
     }
 }

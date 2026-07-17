@@ -295,7 +295,7 @@ impl EvmOperations for NetworkProvider {
 
         for tx in txns.iter() {
             if !tx.verify()? {
-                return Err(TransactionErrors::SignatureError(
+                Err(TransactionErrors::SignatureError(
                     SignatureError::InvalidLength,
                 ))?;
             }
