@@ -1,5 +1,6 @@
 pub mod address;
 pub mod bip32;
+pub mod btc_msg;
 pub mod btc_tx;
 pub mod btc_utils;
 pub mod keypair;

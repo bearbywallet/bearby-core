@@ -26,6 +26,7 @@ bincode.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 secrecy.workspace = true
+base64.workspace = true
 
 crypto = { path = "../crypto" }
 config = { path = "../config" }

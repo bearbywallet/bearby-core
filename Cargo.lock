@@ -4920,6 +4920,7 @@ name = "proto"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "base64 0.22.1",
  "bech32",
  "bincode",
  "bitcoin",
