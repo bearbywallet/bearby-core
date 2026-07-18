@@ -57,6 +57,14 @@ pub struct Background {
     pub wallets: Vec<Wallet>,
 }
 
+impl Background {
+    /// Shared sled handle for modules that need direct key/value access
+    /// (e.g. WalletConnect state). Prefer typed helpers when available.
+    pub fn storage(&self) -> Arc<LocalStorage> {
+        Arc::clone(&self.storage)
+    }
+}
+
 impl Clone for Background {
     fn clone(&self) -> Self {
         Self {
