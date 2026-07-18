@@ -23,6 +23,7 @@ pub use spl_token;
 pub use thiserror;
 pub use tokio;
 pub use tokio_tungstenite;
+/// Prefer `StaticSecret::from([u8; 32])` seeded via `zilpay::rand` (rand_core 0.6 vs workspace rand 0.10).
 pub use x25519_dalek;
 pub use zeroize;
 

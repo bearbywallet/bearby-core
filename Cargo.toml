@@ -114,7 +114,7 @@ prost-types = "0.13.5"
 rmp-serde = "1.3"
 ed25519-dalek = { version = "2.2", features = ["zeroize"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-chacha20poly1305 = "0.11"
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 hkdf = "0.13"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 solana-pubkey = { version = "4", features = ["curve25519"] }
