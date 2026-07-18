@@ -1,7 +1,11 @@
 pub use alloy;
 pub use base64;
 pub use bitcoin;
+pub use bs58;
+pub use chacha20poly1305;
+pub use ed25519_dalek;
 pub use hex;
+pub use hkdf;
 pub use rand;
 pub use rand_chacha;
 pub use reqwest;
@@ -18,6 +22,8 @@ pub use spl_associated_token_account;
 pub use spl_token;
 pub use thiserror;
 pub use tokio;
+pub use tokio_tungstenite;
+pub use x25519_dalek;
 pub use zeroize;
 
 pub use background;
