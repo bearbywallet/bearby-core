@@ -1,12 +1,25 @@
 use crate::address::Address;
 use crate::keypair::KeyPair;
 use crate::tron_generated::protocol;
+use alloy::primitives::keccak256;
 use config::address::ADDR_LEN;
 use errors::tx::TransactionErrors;
 use prost::Message;
 use protocol::transaction::contract::ContractType;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// TIP-191 style personal-message digest (`signMessageV2` / `verifyMessageV2`):
+/// `keccak256("\x19TRON Signed Message:\n" + decimal_len + message)`.
+pub fn tron_personal_message_hash(message: &[u8]) -> [u8; 32] {
+    const PREFIX: &[u8] = b"\x19TRON Signed Message:\n";
+    let len = message.len().to_string();
+    let mut full = Vec::with_capacity(PREFIX.len() + len.len() + message.len());
+    full.extend_from_slice(PREFIX);
+    full.extend_from_slice(len.as_bytes());
+    full.extend_from_slice(message);
+    keccak256(&full).0
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TronResource {

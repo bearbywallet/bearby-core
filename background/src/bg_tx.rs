@@ -13,6 +13,7 @@ use proto::{
     pubkey::PubKey,
     signature::Signature,
     solana_tx::adjust_sol_native_transfer_lamports,
+    tron_tx::tron_personal_message_hash,
     tx::{TransactionReceipt, TransactionRequest},
 };
 use sha2::{Digest, Sha256};
@@ -369,13 +370,7 @@ impl TransactionsManagement for Background {
 
                 Ok(hash.0)
             }
-            Address::Secp256k1Tron(_) => {
-                let prefix = format!("\x19TRON Signed Message:\n{}", message.len());
-                let full_message = format!("{}{}", prefix, message);
-                let hash = keccak256(full_message.as_bytes());
-
-                Ok(hash.0)
-            }
+            Address::Secp256k1Tron(_) => Ok(tron_personal_message_hash(message.as_bytes())),
             Address::Ed25519Solana(_) => Err(BackgroundError::BincodeError(
                 "Personal sign not supported for Solana".to_string(),
             ))?,
@@ -464,11 +459,8 @@ impl TransactionsManagement for Background {
                 } else {
                     message.as_bytes().to_vec()
                 };
-                let prefix = format!("\x19TRON Signed Message:\n{}", bytes.len());
-                let mut full_msg = prefix.into_bytes();
-                full_msg.extend_from_slice(&bytes);
-                let hash = keccak256(&full_msg);
-                key_pair.sign_hash(&hash.0)?
+                let hash = tron_personal_message_hash(&bytes);
+                key_pair.sign_hash(&hash)?
             }
             Address::Ed25519Solana(_) => {
                 return Err(BackgroundError::WalletError(
@@ -1272,12 +1264,9 @@ mod tests_background_transactions {
 
         assert_eq!(pubkey.as_bytes(), key_pair.get_pubkey_bytes());
 
-        let prefixed_msg = format!("\x19TRON Signed Message:\n{}", message.len());
-        let mut full_msg = prefixed_msg.into_bytes();
-        full_msg.extend_from_slice(message.as_bytes());
-        let hash = keccak256(&full_msg);
+        let hash = tron_personal_message_hash(message.as_bytes());
 
-        let is_valid = key_pair.verify_hash(&hash.0, &signature).unwrap();
+        let is_valid = key_pair.verify_hash(&hash, &signature).unwrap();
         assert!(is_valid, "Tron message signature verification failed");
     }
 
@@ -1332,12 +1321,9 @@ mod tests_background_transactions {
             .unwrap();
 
         let decoded = hex::decode(&hex_message[2..]).unwrap();
-        let prefixed_msg = format!("\x19TRON Signed Message:\n{}", decoded.len());
-        let mut full_msg = prefixed_msg.into_bytes();
-        full_msg.extend_from_slice(&decoded);
-        let hash = keccak256(&full_msg);
+        let hash = tron_personal_message_hash(&decoded);
 
-        let is_valid = key_pair.verify_hash(&hash.0, &signature).unwrap();
+        let is_valid = key_pair.verify_hash(&hash, &signature).unwrap();
         assert!(is_valid, "Tron hex message signature verification failed");
     }
 
