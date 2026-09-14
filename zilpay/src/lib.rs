@@ -2,10 +2,8 @@ pub use alloy;
 pub use base64;
 pub use bitcoin;
 pub use bs58;
-pub use chacha20poly1305;
 pub use ed25519_dalek;
 pub use hex;
-pub use hkdf;
 pub use rand;
 pub use rand_chacha;
 pub use reqwest;
@@ -22,9 +20,6 @@ pub use spl_associated_token_account;
 pub use spl_token;
 pub use thiserror;
 pub use tokio;
-pub use tokio_tungstenite;
-/// Prefer `StaticSecret::from([u8; 32])` seeded via `zilpay::rand` (rand_core 0.6 vs workspace rand 0.10).
-pub use x25519_dalek;
 pub use zeroize;
 
 pub use background;
@@ -46,6 +41,12 @@ pub use token;
 pub use wallet;
 
 pub fn init() -> Result<(), String> {
+    // `install_default` errors if a provider is already installed (e.g. a
+    // parallel test beat us to it), so treat "already set" as success.
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return Ok(());
+    }
+
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| "Failed to install crypto provider".to_string())?;
