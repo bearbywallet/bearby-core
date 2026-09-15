@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use cipher::argon2::Argon2Seed;
 use config::sha::SHA256_SIZE;
 use errors::{background::BackgroundError, tx::TransactionErrors, wallet::WalletErrors};
+use std::borrow::Cow;
 use history::{status::TransactionStatus, transaction::HistoricalTransaction};
 use network::evm::RequiredTxParams;
 use network::tron::FEE_LIMIT;
@@ -23,6 +24,30 @@ use wallet::{
 
 use crate::Background;
 use secrecy::SecretString;
+
+/// Decode a `sign_message` payload by convention: `0x`-prefixed hex is raw
+/// bytes (EVM/Tron); whitespace-free Base58 (Solana style, ≥ 44 chars) is raw
+/// bytes; anything else is used verbatim as UTF-8.
+fn decode_message_payload(message: &str) -> Cow<'_, [u8]> {
+    if let Some(hex_part) = message
+        .strip_prefix("0x")
+        .or_else(|| message.strip_prefix("0X"))
+    {
+        if let Ok(bytes) = hex::decode(hex_part) {
+            return Cow::Owned(bytes);
+        }
+    }
+    const SOLANA_MIN_B58: usize = 44;
+    let plausible_b58 = message.len() >= SOLANA_MIN_B58
+        && !message.chars().any(char::is_whitespace)
+        && bs58::decode(message).into_vec().is_ok();
+    if plausible_b58 {
+        if let Ok(bytes) = bs58::decode(message).into_vec() {
+            return Cow::Owned(bytes);
+        }
+    }
+    Cow::Borrowed(message.as_bytes())
+}
 
 pub fn update_tx_from_params(
     tx: &mut TransactionRequest,
@@ -445,28 +470,12 @@ impl TransactionsManagement for Background {
 
                 key_pair.sign_message(&hash)?
             }
-            Address::Secp256k1Keccak256(_) => {
-                let bytes = if message.starts_with("0x") || message.starts_with("0X") {
-                    hex::decode(&message[2..]).unwrap_or_else(|_| message.as_bytes().to_vec())
-                } else {
-                    message.as_bytes().to_vec()
-                };
-                key_pair.sign_message(&bytes)?
-            }
+            Address::Secp256k1Keccak256(_) => key_pair.sign_message(decode_message_payload(message).as_ref())?,
             Address::Secp256k1Tron(_) => {
-                let bytes = if message.starts_with("0x") || message.starts_with("0X") {
-                    hex::decode(&message[2..]).unwrap_or_else(|_| message.as_bytes().to_vec())
-                } else {
-                    message.as_bytes().to_vec()
-                };
-                let hash = tron_personal_message_hash(&bytes);
+                let hash = tron_personal_message_hash(decode_message_payload(message).as_ref());
                 key_pair.sign_hash(&hash)?
             }
-            Address::Ed25519Solana(_) => {
-                return Err(BackgroundError::WalletError(
-                    WalletErrors::InvalidHexToWalletType,
-                ));
-            }
+            Address::Ed25519Solana(_) => key_pair.sign_message(decode_message_payload(message).as_ref())?,
         };
         let pub_key = key_pair.get_pubkey()?;
 

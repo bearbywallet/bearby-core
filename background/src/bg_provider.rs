@@ -151,11 +151,7 @@ impl ProvidersManagement for Background {
         Ok(())
     }
 
-    async fn select_accounts_chain(
-        &self,
-        wallet_index: usize,
-        chain_hash: u64,
-    ) -> Result<()> {
+    async fn select_accounts_chain(&self, wallet_index: usize, chain_hash: u64) -> Result<()> {
         let provider = self.get_provider(chain_hash)?;
         let wallet = self.get_wallet_by_index(wallet_index)?;
         let mut data = wallet.get_wallet_data()?;

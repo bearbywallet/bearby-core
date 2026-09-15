@@ -79,12 +79,8 @@ mod tests {
         let message = b"Hello Bitcoin";
         let sig = sign_message_bip137(&sk, message, bitcoin::AddressType::P2pkh).expect("sign");
 
-        let recovered = recover_pubkey(
-            std::str::from_utf8(message).expect("utf8"),
-            &sig,
-        );
-        let recovered_addr =
-            Address::p2pkh(CompressedPublicKey(recovered), Network::Bitcoin);
+        let recovered = recover_pubkey(std::str::from_utf8(message).expect("utf8"), &sig);
+        let recovered_addr = Address::p2pkh(CompressedPublicKey(recovered), Network::Bitcoin);
         assert_eq!(recovered_addr.to_string(), addr.to_string());
 
         // Header in compressed-P2PKH range 31–34.
@@ -97,8 +93,8 @@ mod tests {
     #[test]
     fn bip137_p2wpkh_header_range() {
         let sk = SecretKey::from_slice(&[0x22u8; 32]).expect("sk");
-        let sig = sign_message_bip137(&sk, b"segwit msg", bitcoin::AddressType::P2wpkh)
-            .expect("sign");
+        let sig =
+            sign_message_bip137(&sk, b"segwit msg", bitcoin::AddressType::P2wpkh).expect("sign");
         let raw = base64::engine::general_purpose::STANDARD
             .decode(&sig)
             .expect("b64");
