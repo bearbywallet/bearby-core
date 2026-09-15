@@ -448,7 +448,10 @@ impl Background {
         let mut known_ids: HashSet<Txid> = HashSet::with_capacity(chain_history_len);
         let mut known_txs: HashMap<Txid, &bitcoin::Transaction> =
             HashMap::with_capacity(chain_history_len);
-        for h in history.iter().filter(|h| h.metadata.chain_hash == chain_hash) {
+        for h in history
+            .iter()
+            .filter(|h| h.metadata.chain_hash == chain_hash)
+        {
             if let Some((t, _)) = h.get_btc() {
                 let id = t.compute_txid();
                 known_ids.insert(id);
@@ -723,10 +726,7 @@ mod tests_background_tokens {
             let mut seen = std::collections::HashSet::new();
             for h in hist {
                 if let Some(hash) = h.metadata.hash.as_ref() {
-                    assert!(
-                        seen.insert(hash.as_str()),
-                        "duplicate history txid: {hash}"
-                    );
+                    assert!(seen.insert(hash.as_str()), "duplicate history txid: {hash}");
                 }
             }
         };
@@ -756,9 +756,7 @@ mod tests_background_tokens {
         // and must not produce a history entry for that fake txid.
         let data = wallet.get_wallet_data().unwrap();
         let account_idx = data.selected_account;
-        let mut chains = wallet
-            .get_btc_addresses(account_idx, chain_hash)
-            .unwrap();
+        let mut chains = wallet.get_btc_addresses(account_idx, chain_hash).unwrap();
         let fake_txid = bitcoin::Txid::from_str(
             "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
         )
@@ -777,7 +775,10 @@ mod tests_background_tokens {
                 break;
             }
         }
-        assert!(planted, "need an address entry with history to plant fake txid");
+        assert!(
+            planted,
+            "need an address entry with history to plant fake txid"
+        );
         wallet
             .save_btc_addresses(account_idx, &chains, chain_hash)
             .unwrap();

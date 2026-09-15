@@ -1,9 +1,9 @@
-use crate::{Result, bg_provider::ProvidersManagement, bg_wallet::WalletManagement};
+use crate::{bg_provider::ProvidersManagement, bg_wallet::WalletManagement, Result};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use cipher::{
-    argon2::{self, ARGON2_DEFAULT_CONFIG, Argon2Seed},
+    argon2::{self, Argon2Seed, ARGON2_DEFAULT_CONFIG},
     keychain::KeyChain,
     options::CipherOrders,
 };
@@ -23,11 +23,10 @@ use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Serialize};
 use session::management::{SessionManagement, SessionManager};
 use settings::common_settings::CommonSettings;
-use storage::LocalStorage;
 use storage::codec;
+use storage::LocalStorage;
 use token::ft::FToken;
 use wallet::{
-    Wallet, WalletAddrType,
     account_type::AccountType,
     bitcoin_wallet::BitcoinWallet,
     wallet_crypto::WalletCrypto,
@@ -35,6 +34,7 @@ use wallet::{
     wallet_init::WalletInit,
     wallet_storage::StorageOperations,
     wallet_types::WalletTypes,
+    Wallet, WalletAddrType,
 };
 
 use crate::Background;
@@ -278,7 +278,8 @@ impl StorageManagement for Background {
 
         indicators.push(wallet.wallet_address);
         self.wallets.push(wallet);
-        self.sync_chain_accounts(self.wallets.len() - 1, &argon_seed).await?;
+        self.sync_chain_accounts(self.wallets.len() - 1, &argon_seed)
+            .await?;
         self.save_indicators(indicators)?;
         self.storage.flush()?;
 
@@ -440,8 +441,8 @@ impl StorageManagement for Background {
 mod tests_background_storage {
     use super::*;
     use crate::{
-        BackgroundBip39Params, BackgroundSKParams, bg_crypto::CryptoOperations,
-        bg_provider::ProvidersManagement, bg_wallet::WalletManagement,
+        bg_crypto::CryptoOperations, bg_provider::ProvidersManagement, bg_wallet::WalletManagement,
+        BackgroundBip39Params, BackgroundSKParams,
     };
     use crypto::{
         bip49::DerivationPath,
@@ -455,8 +456,8 @@ mod tests_background_storage {
     use wallet::wallet_data::WalletDataV1;
 
     use test_data::{
-        ANVIL_MNEMONIC, TEST_PASSWORD, empty_passphrase, gen_anvil_net_conf, gen_btc_regtest_conf,
-        gen_zil_mainnet_conf,
+        empty_passphrase, gen_anvil_net_conf, gen_btc_regtest_conf, gen_zil_mainnet_conf,
+        ANVIL_MNEMONIC, TEST_PASSWORD,
     };
 
     fn setup_test_background() -> (Background, String) {
@@ -1138,13 +1139,8 @@ mod tests_background_storage {
         keystore.btc_address_chains = Vec::new();
         let keystore_plain = codec::serialize(&keystore).unwrap().to_bytes();
         let keychain = KeyChain::from_seed(&keystore_argon_seed).unwrap();
-        let cipher_bytes = keychain
-            .encrypt(keystore_plain, &cipher_orders)
-            .unwrap();
-        let cipher_orders_bytes = cipher_orders
-            .iter()
-            .map(|c| c.code())
-            .collect::<Vec<u8>>();
+        let cipher_bytes = keychain.encrypt(keystore_plain, &cipher_orders).unwrap();
+        let cipher_orders_bytes = cipher_orders.iter().map(|c| c.code()).collect::<Vec<u8>>();
 
         let mut modified_backup = Vec::with_capacity(
             SIGNATURE.len() + 1 + 1 + cipher_orders_bytes.len() + cipher_bytes.len(),

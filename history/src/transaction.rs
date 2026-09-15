@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::status::TransactionStatus;
 use alloy::{
     consensus::{transaction::SignerRecoverable, Transaction, TxType},
+    eips::Encodable2718,
     primitives::TxKind,
 };
 use errors::tx::TransactionErrors;
@@ -338,7 +339,7 @@ impl HistoricalTransaction {
                     timestamp,
                 })
             }
-            TransactionReceipt::Ethereum((tx, metadata)) => {
+            TransactionReceipt::Ethereum((tx, mut metadata)) => {
                 let from = tx.recover_signer().unwrap_or_default();
                 let to = match tx.kind() {
                     TxKind::Call(addr) => Some(addr.to_string()),
@@ -352,8 +353,17 @@ impl HistoricalTransaction {
                     TxType::Eip7702 => "eip7702",
                 };
 
+                // EIP-2718 raw — required by Wagmi eth_signTransaction / sendRawTransaction.
+                let mut encoded = Vec::with_capacity(tx.eip2718_encoded_length());
+                tx.encode_2718(&mut encoded);
+                let signed_tx = alloy::hex::encode_prefixed(&encoded);
+                if metadata.hash.as_ref().is_none_or(|h| h.is_empty()) {
+                    metadata.hash = Some(alloy::hex::encode_prefixed(tx.tx_hash()));
+                }
+
                 let mut evm = json!({
                     "transactionHash": metadata.hash.clone().unwrap_or_default(),
+                    "signedTransaction": signed_tx,
                     "from": from.to_string(),
                     "to": to,
                     "type": tx_type,

@@ -11,6 +11,9 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
 use spl_token::instruction::transfer as token_transfer;
 
+/// Ed25519 signature length reserved per signer slot on the wire.
+const WIRE_SIGNATURE_LEN: usize = 64;
+
 type Result<T> = std::result::Result<T, KeyPairError>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,7 +73,9 @@ impl SolanaHistoryTransaction {
 
     /// Rebuild from legacy history string:
     /// `{"transactionHash":"<b58>","fee":"5000","slot":"123"}` (fee/slot string or number).
-    pub fn try_from_legacy_json_str(json_str: &str) -> std::result::Result<Self, TransactionErrors> {
+    pub fn try_from_legacy_json_str(
+        json_str: &str,
+    ) -> std::result::Result<Self, TransactionErrors> {
         let value: serde_json::Value = serde_json::from_str(json_str)
             .map_err(|e| TransactionErrors::ConvertTxError(e.to_string()))?;
         Self::try_from_legacy_value(&value)
@@ -238,6 +243,104 @@ pub fn build_versioned_message_from_instructions(
         .map_err(|error| error.to_string())?;
 
     bincode::serialize(&VersionedMessage::V0(message)).map_err(|error| error.to_string())
+}
+
+/// Layout offsets parsed from a serialized legacy Solana transaction
+/// (wire format `[prefix][sig_count][signatures..][message]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerializedTxLayout {
+    /// Byte offset of the first 64-byte signature slot (fee payer).
+    pub first_signature_offset: usize,
+    /// Byte offset of the serialized message — the Ed25519 signing payload.
+    pub message_offset: usize,
+    /// Declared signature-slot count.
+    pub signature_count: usize,
+}
+
+impl SerializedTxLayout {
+    /// The exact byte range that Ed25519 signatures commit to.
+    pub fn message<'a>(&self, raw: &'a [u8]) -> Result<&'a [u8]> {
+        raw.get(self.message_offset..)
+            .filter(|msg| !msg.is_empty())
+            .ok_or_else(|| KeyPairError::FailToSignTx("truncated transaction".to_owned()))
+    }
+
+    /// The fee payer: first static account key of the message — message is
+    /// `[3-byte header][compact-u16 keys count][keys..][blockhash..]`.
+    /// Serialized legacy messages only.
+    pub fn fee_payer<'a>(&self, raw: &'a [u8]) -> Result<&'a [u8]> {
+        const HEADER_LEN: usize = 3;
+        const PUBKEY_LEN: usize = 32;
+        let msg = self.message(raw)?;
+        let (keys_count, count_len) = decode_compact_u16(&msg[HEADER_LEN..])
+            .ok_or_else(|| KeyPairError::FailToSignTx("invalid account keys".to_owned()))?;
+        if keys_count == 0 {
+            return Err(KeyPairError::FailToSignTx("no account keys".to_owned()));
+        }
+        let start = HEADER_LEN
+            .checked_add(count_len)
+            .ok_or_else(|| KeyPairError::FailToSignTx("layout overflow".to_owned()))?;
+        msg.get(start..start + PUBKEY_LEN)
+            .ok_or_else(|| KeyPairError::FailToSignTx("missing fee payer".to_owned()))
+    }
+}
+
+/// Parse the fixed wire layout of a serialized legacy Solana transaction.
+///
+/// Versioned wire variants are rejected explicitly so callers never
+/// silently splice into an unknown layout.
+pub fn parse_serialized_transaction(raw: &[u8]) -> Result<SerializedTxLayout> {
+    let invalid = |what: &str| {
+        KeyPairError::FailToSignTx(format!("invalid transaction: {what}"))
+    };
+
+    // Versioned wire format starts with `0x80 | version`; legacy starts
+    // directly with the compact-u16 signature count (signer count ≤ 0x7f).
+    if raw.first().is_some_and(|b| b & 0x80 != 0) {
+        return Err(invalid("unsupported transaction version"));
+    }
+
+    let (signature_count, count_len) =
+        decode_compact_u16(raw).ok_or_else(|| invalid("signature count"))?;
+    if signature_count == 0 {
+        return Err(invalid("no signer slots"));
+    }
+
+    let slots_len = signature_count
+        .checked_mul(WIRE_SIGNATURE_LEN)
+        .ok_or_else(|| invalid("signature count overflow"))?;
+    let message_offset = count_len
+        .checked_add(slots_len)
+        .ok_or_else(|| invalid("layout overflow"))?;
+    if raw.len() <= message_offset {
+        return Err(invalid("truncated"));
+    }
+
+    Ok(SerializedTxLayout {
+        first_signature_offset: count_len,
+        message_offset,
+        signature_count,
+    })
+}
+
+/// Return a copy of `raw` with `signature` spliced into the first
+/// (fee-payer) signature slot.
+///
+/// Remaining signer slots are left untouched so multi-signer flows can be
+/// completed by their owners before submission.
+pub fn splice_first_signature(raw: &[u8], signature: &[u8]) -> Result<Vec<u8>> {
+    if signature.len() != WIRE_SIGNATURE_LEN {
+        return Err(KeyPairError::FailToSignTx(format!(
+            "signature must be {WIRE_SIGNATURE_LEN} bytes"
+        )));
+    }
+    let layout = parse_serialized_transaction(raw)?;
+    let mut out = Vec::with_capacity(raw.len());
+    out.extend_from_slice(&raw[..layout.first_signature_offset]);
+    out.extend_from_slice(signature);
+    out.extend_from_slice(&raw[layout.first_signature_offset + WIRE_SIGNATURE_LEN..]);
+    Ok(out)
+
 }
 
 /// Strict parse: the entire byte slice must be exactly one Solana message
