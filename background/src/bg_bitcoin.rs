@@ -17,6 +17,7 @@ use wallet::bitcoin_wallet::{
     scan_btc_chains_for_xpubs, BitcoinWallet,
 };
 use wallet::wallet_storage::StorageOperations;
+use wallet::wallet_token::TokenManagement;
 
 #[async_trait]
 pub trait BitcoinManagement {
@@ -82,8 +83,8 @@ impl BitcoinManagement for Background {
         let provider = self.get_provider(data.chain_hash)?;
 
         let old_addr = data.get_account(account_index)?.addr.clone();
-        let mut ftokens = wallet.get_ftokens()?;
-        let old_balance = ftokens
+        let old_balance = wallet
+            .get_ftokens()?
             .iter()
             .find(|t| t.native && t.chain_hash == data.chain_hash)
             .and_then(|t| t.balances.get(&old_addr.to_hash()).copied())
@@ -96,14 +97,17 @@ impl BitcoinManagement for Background {
         let data = wallet.get_wallet_data()?;
         let new_addr = data.get_account(account_index)?.addr.clone();
 
-        if let Some(token) = ftokens
-            .iter_mut()
-            .find(|t| t.native && t.chain_hash == data.chain_hash)
-        {
-            token.balances.remove(&old_addr.to_hash());
-            token.balances.insert(new_addr.to_hash(), old_balance);
-        }
-        wallet.save_ftokens(&ftokens)?;
+        wallet.update_ftokens(|ftokens| {
+            if let Some(token) = ftokens
+                .iter_mut()
+                .find(|t| t.native && t.chain_hash == data.chain_hash)
+            {
+                token.balances.remove(&old_addr.to_hash());
+                token.balances.insert(new_addr.to_hash(), old_balance);
+            }
+
+            Ok(())
+        })?;
 
         Ok(())
     }

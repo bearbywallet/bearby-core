@@ -21,7 +21,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use token::ft::FToken;
 use wallet::{
-    account::AccountV2, bitcoin_wallet::BitcoinWallet, wallet_storage::StorageOperations, Wallet,
+    account::AccountV2, bitcoin_wallet::BitcoinWallet, wallet_storage::StorageOperations,
+    wallet_token::TokenManagement, Wallet,
 };
 
 #[async_trait]
@@ -369,6 +370,8 @@ impl TokensManagement for Background {
         }
 
         let provider = self.get_provider(data.chain_hash)?;
+        let selected_account = data.get_selected_account()?;
+        let balance_key = selected_account.addr.to_hash();
 
         let matching_tokens: Vec<&mut FToken> = ftokens
             .iter_mut()
@@ -376,7 +379,6 @@ impl TokensManagement for Background {
             .collect();
 
         if provider.config.slip_44 == BITCOIN {
-            let selected_account = data.get_selected_account()?;
             match w.get_btc_addresses(data.selected_account, data.chain_hash) {
                 Ok(mut chains) => {
                     provider
@@ -407,14 +409,31 @@ impl TokensManagement for Background {
                 }
             }
         } else {
-            let selected_account = data.get_selected_account()?;
             let addresses: Vec<&Address> = vec![&selected_account.addr];
             provider
                 .update_balances(matching_tokens, &addresses)
                 .await?;
         }
 
-        w.save_ftokens(&ftokens)?;
+        // The fetch above can take seconds while the user switches account or
+        // chain and another sync saves. Merge only this account's fetched
+        // balances into a fresh read; saving the pre-await snapshot would
+        // revert those newer writes.
+        w.update_ftokens(|fresh| {
+            for fetched in ftokens.iter().filter(|t| t.chain_hash == data.chain_hash) {
+                let Some(&balance) = fetched.balances.get(&balance_key) else {
+                    continue;
+                };
+                if let Some(token) = fresh
+                    .iter_mut()
+                    .find(|t| t.addr == fetched.addr && t.chain_hash == fetched.chain_hash)
+                {
+                    token.balances.insert(balance_key, balance);
+                }
+            }
+
+            Ok(())
+        })?;
 
         Ok(())
     }

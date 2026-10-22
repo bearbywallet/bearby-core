@@ -1,7 +1,12 @@
 use crate::{wallet_storage::StorageOperations, Result, Wallet, WalletAddrType};
 use config::storage::FTOKENS_DB_KEY_V1;
 use errors::wallet::WalletErrors;
+use std::sync::Mutex;
 use token::ft::FToken;
+
+/// Serializes ftokens read-modify-write cycles. Held only across sync
+/// storage calls, never across an `.await`.
+static FTOKENS_LOCK: Mutex<()> = Mutex::new(());
 
 /// Token handling operations
 pub trait TokenManagement {
@@ -9,6 +14,13 @@ pub trait TokenManagement {
 
     fn add_ftoken(&self, token: FToken) -> std::result::Result<(), Self::Error>;
     fn remove_ftoken(&self, index: usize) -> std::result::Result<(), Self::Error>;
+    /// Atomic read-modify-write of the stored ftokens list. Code that awaits
+    /// between reading and saving must merge its results here instead of
+    /// saving its pre-await snapshot, or it clobbers writes made meanwhile.
+    fn update_ftokens<R>(
+        &self,
+        f: impl FnOnce(&mut Vec<FToken>) -> std::result::Result<R, Self::Error>,
+    ) -> std::result::Result<R, Self::Error>;
     fn get_token_db_key(key: &WalletAddrType) -> Vec<u8>;
 }
 
@@ -16,36 +28,44 @@ impl TokenManagement for Wallet {
     type Error = WalletErrors;
 
     fn add_ftoken(&self, token: FToken) -> Result<()> {
-        let mut ftokens = self.get_ftokens()?;
+        self.update_ftokens(|ftokens| {
+            if ftokens.iter().any(|t| t.addr == token.addr) {
+                return Err(WalletErrors::TokenAlreadyExists(token.addr.auto_format()));
+            }
 
-        if ftokens.iter().any(|t| t.addr == token.addr) {
-            return Err(WalletErrors::TokenAlreadyExists(token.addr.auto_format()));
-        }
+            ftokens.push(token);
 
-        ftokens.push(token);
-        self.save_ftokens(&ftokens)?;
-
-        Ok(())
+            Ok(())
+        })
     }
 
     fn remove_ftoken(&self, index: usize) -> Result<()> {
-        let mut ftokens = self.get_ftokens()?;
-        let mb_token = ftokens.get(index);
+        self.update_ftokens(|ftokens| {
+            let mb_token = ftokens.get(index);
 
-        if mb_token.is_none() {
-            return Err(WalletErrors::TokenNotExists(index));
-        }
-
-        if let Some(token) = mb_token {
-            if token.default {
-                return Err(WalletErrors::DefaultTokenRemove(index));
+            if mb_token.is_none() {
+                return Err(WalletErrors::TokenNotExists(index));
             }
-        }
 
-        ftokens.remove(index);
+            if let Some(token) = mb_token {
+                if token.default {
+                    return Err(WalletErrors::DefaultTokenRemove(index));
+                }
+            }
+
+            ftokens.remove(index);
+
+            Ok(())
+        })
+    }
+
+    fn update_ftokens<R>(&self, f: impl FnOnce(&mut Vec<FToken>) -> Result<R>) -> Result<R> {
+        let _guard = FTOKENS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ftokens = self.get_ftokens()?;
+        let out = f(&mut ftokens)?;
         self.save_ftokens(&ftokens)?;
 
-        Ok(())
+        Ok(out)
     }
 
     #[inline]
@@ -457,5 +477,41 @@ mod tests_wallet_tokens {
         assert_eq!(ftokens[0].symbol, "BSC");
         assert_eq!(ftokens[1].symbol, "TK1");
         assert_eq!(ftokens[2].symbol, "TK3");
+    }
+
+    #[test]
+    fn test_update_ftokens_concurrent_writers_do_not_clobber() {
+        let (storage, _dir) = setup_test_storage();
+        let wallet = Wallet::from(storage, [7u8; 32]);
+        wallet.save_ftokens(&[gen_bsc_token()]).unwrap();
+
+        // Each thread writes its own account key, like balance syncs for
+        // different accounts finishing concurrently.
+        let threads: Vec<_> = (0..8usize)
+            .map(|account| {
+                let wallet = wallet.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        wallet
+                            .update_ftokens(|ftokens| {
+                                let balance = ftokens[0]
+                                    .balances
+                                    .entry(account)
+                                    .or_insert(alloy::primitives::U256::ZERO);
+                                *balance += alloy::primitives::U256::from(1);
+                                Ok(())
+                            })
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        threads.into_iter().for_each(|t| t.join().unwrap());
+
+        let balances = &wallet.get_ftokens().unwrap()[0].balances;
+        assert_eq!(balances.len(), 8);
+        assert!(balances
+            .values()
+            .all(|b| *b == alloy::primitives::U256::from(25)));
     }
 }
