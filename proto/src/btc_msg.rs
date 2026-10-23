@@ -35,7 +35,7 @@ pub fn sign_message_bip137(
     };
 
     let mut out = [0u8; 65];
-    out[0] = base.saturating_add(u8::from(rec_id.to_byte()));
+    out[0] = base.saturating_add(rec_id.to_byte());
     out[1..].copy_from_slice(&sig.to_bytes());
     Ok(base64::engine::general_purpose::STANDARD.encode(out))
 }
