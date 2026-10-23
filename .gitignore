@@ -28,6 +28,7 @@ perf.*
 .idea
 .claude
 .rpiv
+.rlm
 
 # Added by cargo
 
