@@ -5,7 +5,6 @@ pub mod address;
 pub mod argon;
 pub mod bip39;
 pub mod cipher;
-pub mod contracts;
 pub mod key;
 pub mod provider;
 pub mod session;

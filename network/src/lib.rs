@@ -8,4 +8,3 @@ pub mod evm;
 pub mod provider;
 pub mod solana;
 pub mod tron;
-pub mod zil;
