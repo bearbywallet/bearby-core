@@ -97,7 +97,7 @@ thiserror = "2.0.18"
 sled = "0.34.7"
 directories = "6.0.0"
 hmac = "0.13.0"
-rust-argon2 = "2.1.0"
+rust-argon2 = "3.0"
 bitcoin = { version = "0.32.8", features = ["serde", "base64"], default-features = false }
 secp256k1 = { version = "0.29.1", features = ["global-context", "std"] }
 electrum-client = { version = "0.25", default-features = false, features = ["proxy", "use-rustls-ring"] }

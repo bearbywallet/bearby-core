@@ -1,4 +1,4 @@
-use argon2::{Config, Variant, Version};
+use argon2::{Config, ThreadMode, Variant, Version};
 use config::sha::SHA256_SIZE;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,6 +34,7 @@ impl ArgonParams {
             ad: &[],
             hash_length: 64,
             lanes: self.threads,
+            thread_mode: ThreadMode::from_threads(self.threads),
             mem_cost: self.memory,
             secret: &self.secret,
             time_cost: self.iterations,

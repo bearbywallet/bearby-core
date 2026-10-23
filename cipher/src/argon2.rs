@@ -1,4 +1,4 @@
-use argon2::{self, Config, Variant, Version};
+use argon2::{self, Config, ThreadMode, Variant, Version};
 use config::argon::{APP_ID, KEY_SIZE, WALLET_SALT};
 use errors::cipher::CipherErrors;
 
@@ -11,6 +11,7 @@ pub const ARGON2_DEFAULT_CONFIG: Config = Config {
     mem_cost: 65536,
     time_cost: 1,
     lanes: 1,
+    thread_mode: ThreadMode::Sequential,
     secret: &[],
     ad: APP_ID,
     hash_length: 64,
@@ -33,10 +34,30 @@ pub fn derive_key(password: &[u8], salt: &[u8], config: &Config) -> Result<Argon
 
 #[cfg(test)]
 mod tests {
-    use argon2::{Config, Variant, Version};
+    use argon2::{Config, ThreadMode, Variant, Version};
+
     use config::argon::APP_ID;
 
-    use super::derive_key;
+    use super::{derive_key, ARGON2_DEFAULT_CONFIG};
+
+    #[test]
+    fn test_derive_key_default_config() {
+        // Regression canary for the PRODUCTION path (ARGON2_DEFAULT_CONFIG,
+        // lanes=1, Sequential, non-empty user salt). Bytes verified
+        // bit-identical across rust-argon2 2.1.5 and 3.0.0.
+        let key = derive_key(b"test_password", b"", &ARGON2_DEFAULT_CONFIG).unwrap();
+        // db5191e3e077edf1ca873b47f1fdb2e5bba86c30b8f11aecd0e93e394a47f3f0
+        // a6eaeb9e3150a262ccbde8414d1ea5add94f4c43327129a40d014961116c7a79
+        assert_eq!(
+            key,
+            [
+                219, 81, 145, 227, 224, 119, 237, 241, 202, 135, 59, 71, 241, 253, 178, 229, 187,
+                168, 108, 48, 184, 241, 26, 236, 208, 233, 62, 57, 74, 71, 243, 240, 166, 234,
+                235, 158, 49, 80, 162, 98, 204, 189, 232, 65, 77, 30, 165, 173, 217, 79, 76, 67,
+                50, 113, 41, 164, 13, 1, 73, 97, 17, 108, 122, 121
+            ]
+        )
+    }
 
     #[test]
     fn test_derive_key() {
@@ -47,6 +68,7 @@ mod tests {
             mem_cost: 65536,
             time_cost: 1,
             lanes: 2,
+            thread_mode: ThreadMode::from_threads(2),
             secret: &[],
             ad: APP_ID,
             hash_length: 64,
