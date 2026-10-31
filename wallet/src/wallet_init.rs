@@ -284,8 +284,9 @@ impl WalletInit for Wallet {
                         )
                         .await?;
                     if pos_idx != *idx {
-                        let chains = wallet.get_btc_addresses(*idx, chain_hash)?;
-                        wallet.save_btc_addresses(pos_idx, &chains, chain_hash)?;
+                        let eff_chain_hash = effective_chain.hash();
+                        let chains = wallet.get_btc_addresses(*idx, eff_chain_hash)?;
+                        wallet.save_btc_addresses(pos_idx, &chains, eff_chain_hash)?;
                     }
                     account
                 } else {
