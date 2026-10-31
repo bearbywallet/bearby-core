@@ -60,9 +60,30 @@ impl AccountManagement for Wallet {
 
     fn delete_account(&self, account_index: usize) -> Result<()> {
         let mut data = self.get_wallet_data()?;
+        let accounts_len = data.get_accounts()?.len();
+
+        if accounts_len <= 1 || account_index == 0 {
+            return Err(WalletErrors::InvalidAccountIndex(account_index));
+        }
+
+        if account_index >= accounts_len {
+            return Err(WalletErrors::NotExistsAccount(account_index));
+        }
+
+        let prev_selected = data.selected_account;
         data.remove_account(account_index);
-        let accounts = data.get_accounts()?;
-        data.selected_account = accounts.len() - 1;
+        let new_len = data.get_accounts()?.len();
+
+        if new_len == 0 {
+            data.selected_account = 0;
+        } else if prev_selected == account_index {
+            data.selected_account = account_index.saturating_sub(1).min(new_len - 1);
+        } else if prev_selected > account_index {
+            data.selected_account = (prev_selected - 1).min(new_len - 1);
+        } else {
+            data.selected_account = prev_selected.min(new_len - 1);
+        }
+
         self.save_wallet_data(&data)?;
 
         Ok(())

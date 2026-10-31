@@ -136,7 +136,9 @@ impl WalletDataV2 {
     pub fn remove_account(&mut self, index: usize) {
         for bip_map in self.slip44_accounts.values_mut() {
             for accounts in bip_map.values_mut() {
-                accounts.remove(index);
+                if index < accounts.len() {
+                    accounts.remove(index);
+                }
             }
         }
     }
